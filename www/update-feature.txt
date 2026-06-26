@@ -1,0 +1,92 @@
+// ========== 自动更新相关 ==========
+const APP_VERSION = '3.0.0';
+const GITHUB_REPO = 'feiji12148/stock-t-helper';
+const GITHUB_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+const GITHUB_DOWNLOAD = `https://github.com/${GITHUB_REPO}/releases/latest`;
+
+async function checkForUpdate() {
+    const btn = document.getElementById('checkUpdateBtn');
+    const originalText = btn ? btn.innerText : '检查更新';
+    
+    if (btn) {
+        btn.innerText = '检查中...';
+        btn.disabled = true;
+    }
+    
+    try {
+        const Http = getCapacitorHttp();
+        let data;
+        
+        if (Http) {
+            const response = await Http.get({ url: GITHUB_API });
+            data = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+        } else {
+            const response = await fetch(GITHUB_API, { mode: 'cors' });
+            data = await response.json();
+        }
+        
+        if (data.tag_name) {
+            const latestVersion = data.tag_name.replace(/^v/, '');
+            const currentVersion = APP_VERSION;
+            
+            if (compareVersions(latestVersion, currentVersion) > 0) {
+                const updateContent = `
+                    <div style="padding: 20px; text-align: center;">
+                        <div style="font-size: 48px; margin-bottom: 16px;">🆕</div>
+                        <div style="font-size: 18px; font-weight: 700; color: var(--accent); margin-bottom: 12px;">
+                            发现新版本：v${latestVersion}
+                        </div>
+                        <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">
+                            当前版本：v${currentVersion}
+                        </div>
+                        <div style="background: rgba(255,255,255,0.05); border-radius: 10px; padding: 14px; text-align: left; margin-bottom: 16px; max-height: 200px; overflow-y: auto;">
+                            <div style="font-size: 13px; font-weight: 600; margin-bottom: 8px;">更新说明：</div>
+                            <div style="font-size: 12px; color: var(--text-secondary); line-height: 1.6; white-space: pre-wrap;">${data.body || '暂无更新说明'}</div>
+                        </div>
+                        <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 16px;">
+                            发布日期：${new Date(data.published_at).toLocaleDateString('zh-CN')}
+                        </div>
+                        <button onclick="downloadUpdate()" style="width: 100%; padding: 14px; background: var(--accent); color: white; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer;">
+                            📥 前往下载新版本
+                        </button>
+                    </div>
+                `;
+                openModal('发现新版本', updateContent);
+            } else {
+                showToast('当前已是最新版本 ✓');
+            }
+        } else {
+            showToast('检查更新失败');
+        }
+    } catch (e) {
+        console.error('检查更新失败:', e);
+        showToast('检查更新失败，请稍后重试');
+    } finally {
+        if (btn) {
+            btn.innerText = originalText;
+            btn.disabled = false;
+        }
+    }
+}
+
+function compareVersions(v1, v2) {
+    const parts1 = v1.split('.').map(Number);
+    const parts2 = v2.split('.').map(Number);
+    
+    for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+        const p1 = parts1[i] || 0;
+        const p2 = parts2[i] || 0;
+        if (p1 > p2) return 1;
+        if (p1 < p2) return -1;
+    }
+    return 0;
+}
+
+function downloadUpdate() {
+    closeModal();
+    if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser) {
+        window.Capacitor.Plugins.Browser.open({ url: GITHUB_DOWNLOAD });
+    } else {
+        window.open(GITHUB_DOWNLOAD, '_blank');
+    }
+}

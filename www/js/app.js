@@ -14,14 +14,28 @@ let _settings = {};
 let _autoRefreshTimer = null;
 let _refreshCountdown = 0;
 
+function getCapacitorHttp() {
+    if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Http) {
+        return window.Capacitor.Plugins.Http;
+    }
+    if (window.Capacitor && window.Capacitor.Http) {
+        return window.Capacitor.Http;
+    }
+    return null;
+}
+
 async function httpGet(url) {
-    try {
-        if (window.Capacitor && window.Capacitor.Http) {
-            const response = await Capacitor.Http.get({ url });
-            return JSON.parse(response.data);
+    const Http = getCapacitorHttp();
+    if (Http) {
+        try {
+            const response = await Http.get({ url });
+            if (typeof response.data === 'string') {
+                return JSON.parse(response.data);
+            }
+            return response.data;
+        } catch (e) {
+            console.log('Capacitor HTTP 请求失败，尝试 fetch:', e);
         }
-    } catch (e) {
-        console.log('Capacitor HTTP not available, using fetch');
     }
     
     const response = await fetch(url, { mode: 'cors' });
@@ -43,10 +57,15 @@ async function getCurrentPrice(code) {
     try {
         const prefix = getTencentPrefix(code);
         const url = `https://qt.gtimg.cn/q=${prefix}${code}`;
-        const response = await fetch(url);
-        const text = await response.text();
-        // 腾讯API返回格式: v_str="sh600519=..."
-        // qt数组索引: [0:代码, 1:名称, 2:代码, 3:当前价, 4:昨收, 5:今开, ...]
+        let text;
+        const Http = getCapacitorHttp();
+        if (Http) {
+            const response = await Http.get({ url });
+            text = response.data;
+        } else {
+            const response = await fetch(url);
+            text = await response.text();
+        }
         const match = text.match(/="([^"]+)"/);
         if (match) {
             const qt = match[1].split('~');
@@ -56,7 +75,6 @@ async function getCurrentPrice(code) {
                 return price;
             }
         }
-        // 备用解析方式
         const parts = text.split('~');
         if (parts.length > 3) {
             const price = parseFloat(parts[3]) || 0;
@@ -562,31 +580,39 @@ async function doSearch() {
 }
 
 async function searchStockByName(name) {
-    // 优先使用腾讯搜索API（对中文支持好）
-    // 返回格式：v_hint="sz\~000796\~\u51ef\u6492\u65c5\u4e1a\~ksly\~GP-A^sz\~002425\~..."
-    // 实际数据是一个字符串（不是JSON数组），多条用 ^ 分隔，字段用 ~ 分隔
     const url = `https://smartbox.gtimg.cn/s3/?v=2&q=${encodeURIComponent(name)}&t=all&p=1&o=0&n=10`;
     try {
-        const response = await fetch(url, { mode: 'cors' });
-        let text = await response.text();
-        // 去掉 v_hint=" 前缀和末尾 " 后缀
-        text = text.replace(/^v_hint=?"/, '').replace(/"$/, '').trim();
-        // 用 ^ 分割成多条
+        let text;
+        const Http = getCapacitorHttp();
+        
+        if (Http) {
+            const response = await Http.get({ url });
+            text = response.data;
+        } else {
+            const response = await fetch(url, { mode: 'cors' });
+            text = await response.text();
+        }
+        
+        if (!text || text.length === 0) {
+            console.log('搜索返回空数据');
+            return [];
+        }
+        
+        text = text.replace(/^v_hint=?"?/, '').replace(/"?$/, '').trim();
         const items = text.split('^').filter(s => s.trim());
         const results = [];
         for (const item of items) {
-            // 用 ~ 分割字段
             const parts = item.split('~');
             if (parts.length >= 5) {
-                const code = parts[1];        // 000796
-                const nameStr = parts[2];     // 凯撒旅业（Unicode转义格式）
-                const type = parts[4];        // GP-A (A股) 或 GP
-                // 只保留 A股
+                const code = parts[1];
+                const nameStr = parts[2];
+                const type = parts[4];
                 if (type === 'GP-A' && code && nameStr) {
-                    // 将Unicode转义 \uXXXX 转换为中文字符
                     let decodedName = nameStr;
                     try {
-                        decodedName = JSON.parse('"' + nameStr.replace(/\\u/g, '\\u') + '"');
+                        if (nameStr.indexOf('\\u') >= 0) {
+                            decodedName = JSON.parse('"' + nameStr + '"');
+                        }
                     } catch (e) {
                         decodedName = nameStr;
                     }
@@ -596,7 +622,7 @@ async function searchStockByName(name) {
         }
         return results;
     } catch (e) {
-        console.error(e);
+        console.error('搜索股票失败:', e);
         return [];
     }
 }
@@ -2302,13 +2328,14 @@ async function loadNews() {
 }
 
 async function httpGetText(url) {
-    try {
-        if (window.Capacitor && window.Capacitor.Http) {
-            const response = await Capacitor.Http.get({ url });
+    const Http = getCapacitorHttp();
+    if (Http) {
+        try {
+            const response = await Http.get({ url });
             return response.data;
+        } catch (e) {
+            console.log('Capacitor HTTP 请求失败，尝试 fetch:', e);
         }
-    } catch (e) {
-        console.log('Capacitor HTTP not available, using fetch');
     }
     
     const response = await fetch(url, { mode: 'cors' });
@@ -3333,6 +3360,101 @@ function clearAllData() {
     refreshProfit();
     
     showToast('所有数据已清除');
+}
+
+// ========== 自动更新相关 ==========
+const APP_VERSION = '3.0.0';
+const GITHUB_REPO = 'feiji12148/stock-t-helper';
+const GITHUB_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
+const GITHUB_DOWNLOAD = `https://github.com/${GITHUB_REPO}/releases/latest`;
+
+async function checkForUpdate() {
+    const btn = document.getElementById('checkUpdateBtn');
+    const originalText = btn ? btn.innerText : '检查更新';
+    
+    if (btn) {
+        btn.innerText = '检查中...';
+        btn.disabled = true;
+    }
+    
+    try {
+        const Http = getCapacitorHttp();
+        let data;
+        
+        if (Http) {
+            const response = await Http.get({ url: GITHUB_API });
+            data = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+        } else {
+            const response = await fetch(GITHUB_API, { mode: 'cors' });
+            data = await response.json();
+        }
+        
+        if (data.tag_name) {
+            const latestVersion = data.tag_name.replace(/^v/, '');
+            const currentVersion = APP_VERSION;
+            
+            if (compareVersions(latestVersion, currentVersion) > 0) {
+                // 发现新版本
+                const updateContent = `
+                    <div style="padding: 20px; text-align: center;">
+                        <div style="font-size: 48px; margin-bottom: 16px;">🆕</div>
+                        <div style="font-size: 18px; font-weight: 700; color: var(--accent); margin-bottom: 12px;">
+                            发现新版本：v${latestVersion}
+                        </div>
+                        <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 16px;">
+                            当前版本：v${currentVersion}
+                        </div>
+                        <div style="background: rgba(255,255,255,0.05); border-radius: 10px; padding: 14px; text-align: left; margin-bottom: 16px; max-height: 200px; overflow-y: auto;">
+                            <div style="font-size: 13px; font-weight: 600; margin-bottom: 8px;">更新说明：</div>
+                            <div style="font-size: 12px; color: var(--text-secondary); line-height: 1.6; white-space: pre-wrap;">${data.body || '暂无更新说明'}</div>
+                        </div>
+                        <div style="font-size: 12px; color: var(--text-muted); margin-bottom: 16px;">
+                            发布日期：${new Date(data.published_at).toLocaleDateString('zh-CN')}
+                        </div>
+                        <button onclick="downloadUpdate()" style="width: 100%; padding: 14px; background: var(--accent); color: white; border: none; border-radius: 10px; font-size: 15px; font-weight: 600; cursor: pointer;">
+                            📥 前往下载新版本
+                        </button>
+                    </div>
+                `;
+                openModal('发现新版本', updateContent);
+            } else {
+                showToast('当前已是最新版本 ✓');
+            }
+        } else {
+            showToast('检查更新失败');
+        }
+    } catch (e) {
+        console.error('检查更新失败:', e);
+        showToast('检查更新失败，请稍后重试');
+    } finally {
+        if (btn) {
+            btn.innerText = originalText;
+            btn.disabled = false;
+        }
+    }
+}
+
+function compareVersions(v1, v2) {
+    const parts1 = v1.split('.').map(Number);
+    const parts2 = v2.split('.').map(Number);
+    
+    for (let i = 0; i < Math.max(parts1.length, parts2.length); i++) {
+        const p1 = parts1[i] || 0;
+        const p2 = parts2[i] || 0;
+        if (p1 > p2) return 1;
+        if (p1 < p2) return -1;
+    }
+    return 0;
+}
+
+function downloadUpdate() {
+    closeModal();
+    // 在 Capacitor 环境中打开浏览器
+    if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser) {
+        window.Capacitor.Plugins.Browser.open({ url: GITHUB_DOWNLOAD });
+    } else {
+        window.open(GITHUB_DOWNLOAD, '_blank');
+    }
 }
 
 function getStrategySettings() {

@@ -782,6 +782,11 @@
                 <p>基于107+技术指标策略分析</p>
                 <p style="margin-top:8px;">数据仅供参考，不构成投资建议</p>
             </div>
+            <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border-glass);">
+                <button id="checkUpdateBtn" class="btn btn-secondary" onclick="checkForUpdate()" style="width:100%;">
+                    🔄 检查更新
+                </button>
+            </div>
         </div>
     </div>
 
@@ -830,6 +835,7 @@
     <!-- Toast -->
     <div id="toast" class="toast"></div>
 
+    <script src="capacitor.js"></script>
     <script src="js/strategies.js"></script>
     <script src="js/app.js"></script>
 </body>
