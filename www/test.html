@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>测试页面</title>
+    <style>
+        body { font-family: monospace; font-size: 14px; padding: 20px; background: #0b0e17; color: #e5e7eb; }
+        .log { margin: 4px 0; padding: 4px 8px; border-radius: 4px; }
+        .success { color: #34d399; background: rgba(52,211,153,0.1); }
+        .error { color: #f87171; background: rgba(248,113,113,0.1); }
+        .info { color: #818cf8; }
+    </style>
+</head>
+<body>
+    <h2>📊 股票做T助手 - 功能测试</h2>
+    <div id="output"></div>
+    
+    <script src="js/strategies.js"></script>
+    <script>
+        const output = document.getElementById('output');
+        
+        function log(msg, type = 'info') {
+            const div = document.createElement('div');
+            div.className = 'log ' + type;
+            div.textContent = msg;
+            output.appendChild(div);
+        }
+        
+        async function test() {
+            log('=== 测试开始 ===', 'info');
+            
+            // 测试1: 策略引擎加载
+            log('测试1: 策略引擎加载...', 'info');
+            try {
+                const engine = new StrategyEngine();
+                log('✓ StrategyEngine 加载成功', 'success');
+            } catch (e) {
+                log('✗ StrategyEngine 加载失败: ' + e.message, 'error');
+                return;
+            }
+            
+            // 测试2: 指标计算
+            log('测试2: 指标计算...', 'info');
+            try {
+                const engine = new StrategyEngine();
+                const closes = [100, 101, 102, 103, 104, 105, 106, 107, 108, 109, 110];
+                const sma = engine.sma(closes, 5);
+                const rsi = engine.calcRsi(closes, 14);
+                log('✓ SMA(5) = ' + sma, 'success');
+                log('✓ RSI = ' + rsi, 'success');
+            } catch (e) {
+                log('✗ 指标计算失败: ' + e.message, 'error');
+            }
+            
+            // 测试3: runAllStrategies
+            log('测试3: runAllStrategies...', 'info');
+            try {
+                const engine = new StrategyEngine();
+                const stockInfo = {
+                    code: '600519',
+                    name: '贵州茅台',
+                    current_price: 1200,
+                    open_price: 1190,
+                    high_price: 1210,
+                    low_price: 1180,
+                    prev_close: 1195,
+                    volume: 1000000,
+                    amount: 1200000000,
+                    change_percent: 0.42
+                };
+                const klines = Array(30).fill(null).map((_, i) => ({
+                    date: '2024-01-' + String(i + 1).padStart(2, '0'),
+                    open: 1180 + i,
+                    close: 1180 + i + (Math.random() - 0.5) * 10,
+                    high: 1185 + i + Math.random() * 5,
+                    low: 1175 + i - Math.random() * 5,
+                    volume: 1000000 + Math.random() * 500000,
+                    amount: 1200000000 + Math.random() * 100000000
+                }));
+                const [strategies, summary] = engine.runAllStrategies(stockInfo, klines, 0);
+                log('✓ 策略数量: ' + strategies.length, 'success');
+                log('✓ 买入信号: ' + summary.signal_counts.buy, 'success');
+                log('✓ 卖出信号: ' + summary.signal_counts.sell, 'success');
+            } catch (e) {
+                log('✗ runAllStrategies失败: ' + e.message, 'error');
+                console.error(e);
+            }
+            
+            // 测试4: API请求
+            log('测试4: API请求(可能因CORS失败)...', 'info');
+            try {
+                const url = 'https://push2.eastmoney.com/api/qt/stock/get?secid=1.600519&fields=f57,f58,f116,f115,f114,f113,f59,f117,f170,f169';
+                const response = await fetch(url, { mode: 'cors' });
+                const data = await response.json();
+                if (data.data) {
+                    log('✓ API请求成功: ' + data.data.f58, 'success');
+                } else {
+                    log('✗ API返回数据为空', 'error');
+                }
+            } catch (e) {
+                log('✗ API请求失败(浏览器CORS限制，Capacitor环境可用): ' + e.message, 'info');
+            }
+            
+            log('=== 测试结束 ===', 'info');
+        }
+        
+        test();
+    </script>
+</body>
+</html>

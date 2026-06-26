@@ -1,0 +1,23 @@
+{
+  "name": "StockTHelper",
+  "version": "1.0.0",
+  "description": "股票做T助手 - 安卓App",
+  "main": "index.html",
+  "scripts": {
+    "build": "powershell -Command \"if (!(Test-Path dist)) { New-Item -ItemType Directory -Path dist }; Copy-Item -Path www/* -Destination dist -Recurse -Force\"",
+    "cap:init": "npx cap init",
+    "cap:add": "npx cap add android",
+    "cap:sync": "npx cap sync",
+    "cap:build": "npx cap build android",
+    "cap:run": "npx cap run android"
+  },
+  "dependencies": {
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/android": "^6.0.0",
+    "@capacitor/splash-screen": "^6.0.0",
+    "@capacitor/status-bar": "^6.0.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.0.0"
+  }
+}
