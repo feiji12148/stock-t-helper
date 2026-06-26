@@ -1,0 +1,28 @@
+{
+	"appId": "com.stockthelper.app",
+	"appName": "股票做T助手",
+	"webDir": "www",
+	"bundledWebRuntime": false,
+	"server": {
+		"androidScheme": "https"
+	},
+	"plugins": {
+		"Http": {
+			"enabled": true
+		},
+		"SplashScreen": {
+			"launchShowDuration": 2000,
+			"backgroundColor": "#0f172a",
+			"androidSplashResourceName": "splash",
+			"androidScaleType": "CENTER_CROP",
+			"showSpinner": false
+		},
+		"StatusBar": {
+			"style": "Dark",
+			"backgroundColor": "#0f172a"
+		}
+	},
+	"android": {
+		"allowMixedContent": true
+	}
+}
