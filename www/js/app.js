@@ -580,6 +580,19 @@ async function doSearch() {
 }
 
 async function searchStockByName(name) {
+    try {
+        let results = await searchStockByName_tencent(name);
+        if (results && results.length > 0) return results;
+        
+        results = await searchStockByName_eastmoney(name);
+        return results || [];
+    } catch (e) {
+        console.error('搜索股票失败:', e);
+        return [];
+    }
+}
+
+async function searchStockByName_tencent(name) {
     const url = `https://smartbox.gtimg.cn/s3/?v=2&q=${encodeURIComponent(name)}&t=all&p=1&o=0&n=10`;
     try {
         let text;
@@ -594,7 +607,7 @@ async function searchStockByName(name) {
         }
         
         if (!text || text.length === 0) {
-            console.log('搜索返回空数据');
+            console.log('腾讯搜索返回空数据');
             return [];
         }
         
@@ -622,7 +635,36 @@ async function searchStockByName(name) {
         }
         return results;
     } catch (e) {
-        console.error('搜索股票失败:', e);
+        console.error('腾讯搜索失败:', e);
+        return [];
+    }
+}
+
+async function searchStockByName_eastmoney(name) {
+    const url = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(name)}&type=14&token=D43BF722C8E33BDC906FB84D85E326E8&count=10`;
+    try {
+        let data;
+        const Http = getCapacitorHttp();
+        
+        if (Http) {
+            const response = await Http.get({ url });
+            data = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
+        } else {
+            const response = await fetch(url, { mode: 'cors' });
+            data = await response.json();
+        }
+        
+        if (!data || !data.Data || !Array.isArray(data.Data)) return [];
+        
+        const results = [];
+        for (const item of data.Data) {
+            if (item.Code && item.Name && item.MarketType) {
+                results.push({ code: item.Code, name: item.Name });
+            }
+        }
+        return results;
+    } catch (e) {
+        console.error('东方财富搜索失败:', e);
         return [];
     }
 }
