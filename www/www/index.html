@@ -1,0 +1,843 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>股票做T助手</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <!-- 顶部导航 -->
+    <header class="header">
+        <div class="header-logo">
+            <span>📈</span>
+            <div class="header-title">股票做T助手</div>
+            <span class="header-badge">v3.0</span>
+        </div>
+        <div class="header-actions">
+            <span id="autoRefreshIndicator" class="auto-refresh-indicator" style="display:none;"><span class="dot"></span>10秒</span>
+            <button class="header-btn" onclick="refreshAll()" id="refreshBtn">🔄 刷新</button>
+        </div>
+    </header>
+
+    <!-- 内容区域 -->
+    <div class="content">
+        <!-- 首页：信号监控 -->
+        <div id="tab-home" class="tab-content active">
+            <!-- 搜索框 -->
+            <div class="card">
+                <div class="card-title"><span class="icon">🔍</span> 搜索股票</div>
+                <div class="search-wrapper">
+                    <div class="search-input-wrap">
+                        <span class="search-icon">🔍</span>
+                        <input type="text" id="searchInput" placeholder="输入代码或名称，如 600519 / 茅台" autocomplete="off" oninput="onHomeSearchInput()" onkeypress="if(event.key==='Enter')doSearch()">
+                        <span id="searchLoading" class="search-loading" style="display:none;">⏳</span>
+                        <button class="search-btn" onclick="doSearch()">分析</button>
+                    </div>
+                    <div class="search-suggestions" id="homeSearchSuggestions"></div>
+                </div>
+                <div id="searchHistoryWrap" style="display:none;">
+                    <div style="font-size:11px;color:var(--text-muted);margin-top:14px;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">最近搜索</div>
+                    <div class="history-tags" id="searchHistory"></div>
+                </div>
+            </div>
+
+            <!-- 做T信号迷你面板 -->
+            <div class="signal-panel-mini">
+                <div class="signal-panel-title">⚡ 做T信号</div>
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div id="watchListMini" style="display:flex; flex-wrap:wrap; gap:4px; flex:1;"></div>
+                    <button onclick="showAddWatchModal()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:12px;padding:2px 6px;">+添加</button>
+                </div>
+                <div id="liveSignalsMini"></div>
+            </div>
+
+            <!-- 收益概览 -->
+            <div class="card">
+                <div class="card-title"><span class="icon">💰</span> 收益概览</div>
+                <div class="profit-grid">
+                    <div class="profit-item">
+                        <div class="profit-item-label">总收益</div>
+                        <div class="profit-value" id="totalProfit">¥0.00</div>
+                    </div>
+                    <div class="profit-item">
+                        <div class="profit-item-label">已实现</div>
+                        <div class="profit-value" id="realizedProfit">¥0.00</div>
+                    </div>
+                    <div class="profit-item">
+                        <div class="profit-item-label">未实现</div>
+                        <div class="profit-value" id="unrealizedProfit">¥0.00</div>
+                    </div>
+                    <div class="profit-item">
+                        <div class="profit-item-label">做T收益</div>
+                        <div class="profit-value" id="tProfit">¥0.00</div>
+                    </div>
+                    <div class="profit-item">
+                        <div class="profit-item-label">做T次数</div>
+                        <div class="profit-value" id="tTradeCount" style="color:var(--accent);">0次</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 持仓统计 -->
+            <div class="card">
+                <div class="card-title"><span class="icon">📊</span> 持仓统计</div>
+                <div class="stat-grid">
+                    <div class="stat-item"><div class="stat-label">总买入</div><div class="stat-value" id="totalBuy">0股</div></div>
+                    <div class="stat-item"><div class="stat-label">总卖出</div><div class="stat-value" id="totalSell">0股</div></div>
+                    <div class="stat-item"><div class="stat-label">剩余持仓</div><div class="stat-value" id="remaining">0股</div></div>
+                    <div class="stat-item"><div class="stat-label">交易次数</div><div class="stat-value" id="tradeCount">0次</div></div>
+                </div>
+                <div id="feeDisplay"></div>
+            </div>
+
+            <!-- 持仓明细 -->
+            <div class="card">
+                <div class="card-title"><span class="icon">📋</span> 持仓明细</div>
+                <div id="stockProfits">
+                    <div class="empty-state"><div class="empty-state-icon">📊</div><div>暂无持仓</div></div>
+                </div>
+            </div>
+
+            <button class="btn btn-ghost" onclick="refreshProfit()" style="margin-top:4px;">🔄 刷新数据</button>
+
+            <!-- 当前股票行情（搜索后显示） -->
+            <div id="marketSection" style="display:none;">
+                <div class="market-hero">
+                    <div class="market-hero-name">
+                        <span id="marketName">--</span>
+                        <span class="market-hero-code" id="marketCode"></span>
+                    </div>
+                    <div class="market-hero-price" id="marketPrice">--</div>
+                    <div class="market-hero-change" id="marketChange">--</div>
+                    <div class="market-grid">
+                        <div class="market-detail-item">
+                            <div class="market-detail-label">今开</div>
+                            <div class="market-detail-value" id="marketOpen">--</div>
+                        </div>
+                        <div class="market-detail-item">
+                            <div class="market-detail-label">最高</div>
+                            <div class="market-detail-value up" id="marketHigh">--</div>
+                        </div>
+                        <div class="market-detail-item">
+                            <div class="market-detail-label">最低</div>
+                            <div class="market-detail-value down" id="marketLow">--</div>
+                        </div>
+                        <div class="market-detail-item">
+                            <div class="market-detail-label">昨收</div>
+                            <div class="market-detail-value" id="marketPreClose">--</div>
+                        </div>
+                        <div class="market-detail-item">
+                            <div class="market-detail-label">成交量</div>
+                            <div class="market-detail-value" id="marketVolume">--</div>
+                        </div>
+                        <div class="market-detail-item">
+                            <div class="market-detail-label">换手率</div>
+                            <div class="market-detail-value" id="marketTurnover">--</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 做T信号总览 -->
+                <div class="signal-panel">
+                    <div class="signal-panel-title">⚡ 做T信号总览</div>
+                    <div class="signal-main" id="signalMainText">等待分析...</div>
+                    <div class="signal-detail" id="signalDetailText"></div>
+                    <div class="signal-prices">
+                        <div class="signal-price-item">
+                            <div class="signal-price-label">压力位</div>
+                            <div class="signal-price-value" id="signalPressure">--</div>
+                        </div>
+                        <div class="signal-price-item">
+                            <div class="signal-price-label">支撑位</div>
+                            <div class="signal-price-value" id="signalSupport">--</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 策略统计 -->
+                <div class="strategy-summary" id="strategySummary"></div>
+
+                <!-- 最优操作方案 -->
+                <div class="card" id="bestPlanCard" style="display:none; margin-top:14px;">
+                    <div class="card-title"><span class="icon">🎯</span> 最优操作方案</div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
+                        <div style="text-align:center; padding:10px; background:rgba(0,0,0,0.15); border-radius:10px;">
+                            <div style="font-size:11px; color:var(--text-muted);">ATR波动率</div>
+                            <div style="font-size:16px; font-weight:700;" id="planAtr">--</div>
+                            <div style="font-size:11px; color:var(--text-muted);" id="planAtrPct">--</div>
+                        </div>
+                        <div style="text-align:center; padding:10px; background:rgba(0,0,0,0.15); border-radius:10px;">
+                            <div style="font-size:11px; color:var(--text-muted);">信号总数</div>
+                            <div style="font-size:16px; font-weight:700;" id="planTotal">--</div>
+                            <div style="font-size:11px; color:var(--text-muted);" id="planBuySell">--</div>
+                        </div>
+                    </div>
+                    <div id="planBuySection" style="background:rgba(52,211,153,0.08); border:1px solid rgba(52,211,153,0.15); border-radius:10px; padding:12px; margin-bottom:10px; display:none;">
+                        <div style="font-size:13px; font-weight:700; color:var(--green); margin-bottom:8px;">🟢 最优买入方案</div>
+                        <div style="font-size:12px; color:var(--text-secondary); margin-bottom:8px;" id="planBuyName">--</div>
+                        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px;">
+                            <div style="text-align:center;"><div style="font-size:10px; color:var(--text-muted);">入场价</div><div style="font-size:15px; font-weight:700;" id="planBuyEntry">--</div></div>
+                            <div style="text-align:center;"><div style="font-size:10px; color:var(--text-muted);">目标价</div><div style="font-size:15px; font-weight:700; color:var(--green);" id="planBuyTarget">--</div></div>
+                            <div style="text-align:center;"><div style="font-size:10px; color:var(--text-muted);">止损价</div><div style="font-size:15px; font-weight:700; color:var(--red);" id="planBuyStop">--</div></div>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.05);">
+                            <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">获利 </span><span style="color:var(--green); font-weight:700;" id="planBuyProfit">--</span></div>
+                            <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">风险 </span><span style="color:var(--red); font-weight:700;" id="planBuyRisk">--</span></div>
+                            <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">盈亏比 </span><span style="color:var(--accent); font-weight:700;" id="planBuyRatio">--</span></div>
+                        </div>
+                    </div>
+                    <div id="planSellSection" style="background:rgba(248,113,113,0.08); border:1px solid rgba(248,113,113,0.15); border-radius:10px; padding:12px; display:none;">
+                        <div style="font-size:13px; font-weight:700; color:var(--red); margin-bottom:8px;">🔴 最优卖出方案</div>
+                        <div style="font-size:12px; color:var(--text-secondary); margin-bottom:8px;" id="planSellName">--</div>
+                        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px;">
+                            <div style="text-align:center;"><div style="font-size:10px; color:var(--text-muted);">入场价</div><div style="font-size:15px; font-weight:700;" id="planSellEntry">--</div></div>
+                            <div style="text-align:center;"><div style="font-size:10px; color:var(--text-muted);">目标价</div><div style="font-size:15px; font-weight:700; color:var(--green);" id="planSellTarget">--</div></div>
+                            <div style="text-align:center;"><div style="font-size:10px; color:var(--text-muted);">止损价</div><div style="font-size:15px; font-weight:700; color:var(--red);" id="planSellStop">--</div></div>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.05);">
+                            <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">获利 </span><span style="color:var(--green); font-weight:700;" id="planSellProfit">--</span></div>
+                            <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">风险 </span><span style="color:var(--red); font-weight:700;" id="planSellRisk">--</span></div>
+                            <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">盈亏比 </span><span style="color:var(--accent); font-weight:700;" id="planSellRatio">--</span></div>
+                        </div>
+                    </div>
+                    <div id="planTSection" style="background:linear-gradient(135deg, rgba(250,204,21,0.12), rgba(245,158,11,0.08)); border:1px solid rgba(250,204,21,0.2); border-radius:10px; padding:12px; margin-top:10px; display:none;">
+                        <div style="font-size:13px; font-weight:700; color:var(--yellow); margin-bottom:8px;">⚡ 最优做T方案（确保盈利）</div>
+                        <div style="font-size:12px; color:var(--text-secondary); margin-bottom:8px;" id="planTName">--</div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:10px;">
+                            <div style="text-align:center; padding:8px; background:rgba(52,211,153,0.1); border-radius:8px;">
+                                <div style="font-size:10px; color:var(--text-muted);">买入价</div>
+                                <div style="font-size:14px; font-weight:700; color:var(--green);" id="planTBuy">--</div>
+                            </div>
+                            <div style="text-align:center; padding:8px; background:rgba(248,113,113,0.1); border-radius:8px;">
+                                <div style="font-size:10px; color:var(--text-muted);">卖出价</div>
+                                <div style="font-size:14px; font-weight:700; color:var(--red);" id="planTSell">--</div>
+                            </div>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.05);">
+                            <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">差价 </span><span style="color:var(--yellow); font-weight:700;" id="planTSpread">--</span></div>
+                            <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">收益 </span><span style="color:var(--green); font-weight:700;" id="planTProfit">--</span></div>
+                            <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">操作 </span><span style="color:var(--accent); font-weight:700;" id="planTAction">--</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="text-align:center;margin-bottom:12px;">
+                    <button class="btn btn-primary" style="width:auto;padding:10px 24px;" onclick="addToWatchlist()">
+                        ➕ 加入监控
+                    </button>
+                </div>
+            </div>
+
+            <!-- 空状态 -->
+            <div id="emptyHome" class="empty-state">
+                <div class="empty-state-icon">🔍</div>
+                <div>输入股票代码开始分析</div>
+                <div style="font-size:12px;margin-top:8px;">如：600519、000001</div>
+            </div>
+        </div>
+
+        <!-- 策略页 -->
+        <div id="tab-strategy" class="tab-content">
+            <!-- 策略/全景/舆情 顶部选项卡 -->
+            <div class="top-tabs">
+                <button class="top-tab active" data-subtab="strategy" onclick="switchStrategySubtab('strategy')">
+                    <span>🧠</span> 策略分析
+                </button>
+                <button class="top-tab" data-subtab="panorama" onclick="switchStrategySubtab('panorama')">
+                    <span>🌐</span> 全景分析
+                </button>
+                <button class="top-tab" data-subtab="news" onclick="switchStrategySubtab('news')">
+                    <span>📰</span> 舆情监控
+                </button>
+            </div>
+
+            <!-- 策略分析子页 -->
+            <div id="subtab-strategy" class="strategy-subtab active">
+                <div class="card">
+                    <div class="card-title"><span class="icon">🧠</span> 全量策略分析</div>
+                    <div class="search-wrapper">
+                        <div class="search-input-wrap">
+                            <span class="search-icon">🔍</span>
+                            <input type="text" id="strategyInput" placeholder="输入股票代码或名称" autocomplete="off" oninput="onStrategySearchInput()" onkeypress="if(event.key==='Enter')loadStrategyDetail()">
+                            <span id="strategyLoading" class="search-loading" style="display:none;">⏳</span>
+                            <button class="search-btn" onclick="loadStrategyDetail()">分析</button>
+                        </div>
+                        <div id="strategySuggestions" class="search-suggestions"></div>
+                    </div>
+                    <div id="strategyHistory" style="display:none;">
+                        <div style="font-size:11px;color:var(--text-muted);margin-top:14px;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">最近搜索</div>
+                        <div class="history-tags" id="strategyHistoryList"></div>
+                    </div>
+                </div>
+
+                <div id="coreAdvice" style="display:none;"></div>
+
+                <div id="strategyDetailSection" style="display:none;">
+                    <div class="card">
+                        <div class="card-title"><span class="icon">📊</span>策略统计</div>
+                        <div class="profit-grid">
+                            <div class="profit-item">
+                                <div class="profit-item-label">买入信号</div>
+                                <div class="profit-value positive" id="buyCount">0</div>
+                            </div>
+                            <div class="profit-item">
+                                <div class="profit-item-label">卖出信号</div>
+                                <div class="profit-value negative" id="sellCount">0</div>
+                            </div>
+                            <div class="profit-item">
+                                <div class="profit-item-label">做T机会</div>
+                                <div class="profit-value" id="tCount" style="color:var(--yellow)">0</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="category-tabs" id="categoryTabs"></div>
+
+                    <div id="strategyList"></div>
+                </div>
+
+                <div id="detailedAnalysis" style="display:none;">
+                    <div class="card">
+                        <div class="card-title"><span class="icon">📊</span> 技术指标详情</div>
+                        <div id="analysisDetails"></div>
+                    </div>
+                </div>
+
+                <div id="emptyStrategy" class="empty-state">
+                    <div class="empty-state-icon">📈</div>
+                    <div>输入股票代码查看策略分析</div>
+                </div>
+            </div>
+
+            <!-- 全景分析子页 -->
+            <div id="subtab-panorama" class="strategy-subtab">
+                <div class="card">
+                    <div class="card-title"><span class="icon">🌐</span> 全景策略分析</div>
+                    <div class="search-wrapper">
+                        <div class="search-input-wrap">
+                            <span class="search-icon">🔍</span>
+                            <input type="text" id="panoramaInput" placeholder="输入股票代码或名称，全方位分析" autocomplete="off" oninput="onPanoramaSearchInput()" onkeypress="if(event.key==='Enter')loadPanoramaDetail()">
+                            <span id="panoramaLoading" class="search-loading" style="display:none;">⏳</span>
+                            <button class="search-btn" onclick="loadPanoramaDetail()">全景分析</button>
+                        </div>
+                        <div id="panoramaSuggestions" class="search-suggestions"></div>
+                    </div>
+                    <div id="panoramaHistory" style="display:none;">
+                        <div style="font-size:11px;color:var(--text-muted);margin-top:14px;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">最近搜索</div>
+                        <div class="history-tags" id="panoramaHistoryList"></div>
+                    </div>
+                </div>
+
+                <div id="panoramaOverview" style="display:none;">
+                    <div class="card">
+                        <div class="card-title"><span class="icon">📊</span> 六维全景评分 <span style="font-size:11px;color:var(--text-muted);font-weight:400;margin-left:auto;">💡 点击查看详细来源</span></div>
+                        <div class="panorama-score-grid">
+                            <div class="score-card clickable" onclick="showDimensionDetail('volume')" data-dim="volume">
+                                <div class="score-icon">📊</div>
+                                <div class="score-label">量价关系</div>
+                                <div class="score-bar">
+                                    <div class="score-fill" id="scoreVolume" style="width:0%;"></div>
+                                </div>
+                                <div class="score-value" id="scoreVolumeValue">--</div>
+                                <div class="score-hint">点击查看 →</div>
+                            </div>
+                            <div class="score-card clickable" onclick="showDimensionDetail('money')" data-dim="money">
+                                <div class="score-icon">💰</div>
+                                <div class="score-label">资金流向</div>
+                                <div class="score-bar">
+                                    <div class="score-fill" id="scoreMoney" style="width:0%;"></div>
+                                </div>
+                                <div class="score-value" id="scoreMoneyValue">--</div>
+                                <div class="score-hint">点击查看 →</div>
+                            </div>
+                            <div class="score-card clickable" onclick="showDimensionDetail('sentiment')" data-dim="sentiment">
+                                <div class="score-icon">😊</div>
+                                <div class="score-label">市场情绪</div>
+                                <div class="score-bar">
+                                    <div class="score-fill" id="scoreSentiment" style="width:0%;"></div>
+                                </div>
+                                <div class="score-value" id="scoreSentimentValue">--</div>
+                                <div class="score-hint">点击查看 →</div>
+                            </div>
+                            <div class="score-card clickable" onclick="showDimensionDetail('chip')" data-dim="chip">
+                                <div class="score-icon">🎯</div>
+                                <div class="score-label">筹码分布</div>
+                                <div class="score-bar">
+                                    <div class="score-fill" id="scoreChip" style="width:0%;"></div>
+                                </div>
+                                <div class="score-value" id="scoreChipValue">--</div>
+                                <div class="score-hint">点击查看 →</div>
+                            </div>
+                            <div class="score-card clickable" onclick="showDimensionDetail('institution')" data-dim="institution">
+                                <div class="score-icon">🏢</div>
+                                <div class="score-label">机构动向</div>
+                                <div class="score-bar">
+                                    <div class="score-fill" id="scoreInstitution" style="width:0%;"></div>
+                                </div>
+                                <div class="score-value" id="scoreInstitutionValue">--</div>
+                                <div class="score-hint">点击查看 →</div>
+                            </div>
+                            <div class="score-card clickable" onclick="showDimensionDetail('news')" data-dim="news">
+                                <div class="score-icon">📰</div>
+                                <div class="score-label">消息面</div>
+                                <div class="score-bar">
+                                    <div class="score-fill" id="scoreNews" style="width:0%;"></div>
+                                </div>
+                                <div class="score-value" id="scoreNewsValue">--</div>
+                                <div class="score-hint">点击查看 →</div>
+                            </div>
+                        </div>
+                        <div class="panorama-total-score">
+                            <div class="total-label">综合评分</div>
+                            <div class="total-value" id="totalPanoramaScore">--</div>
+                            <div class="total-action" id="totalPanoramaAction">--</div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-title"><span class="icon">📈</span> 策略统计</div>
+                        <div class="profit-grid">
+                            <div class="profit-item">
+                                <div class="profit-item-label">买入信号</div>
+                                <div class="profit-value positive" id="panoBuyCount">0</div>
+                            </div>
+                            <div class="profit-item">
+                                <div class="profit-item-label">卖出信号</div>
+                                <div class="profit-value negative" id="panoSellCount">0</div>
+                            </div>
+                            <div class="profit-item">
+                                <div class="profit-item-label">观望信号</div>
+                                <div class="profit-value" id="panoWatchCount" style="color:var(--yellow)">0</div>
+                            </div>
+                            <div class="profit-item">
+                                <div class="profit-item-label">策略总数</div>
+                                <div class="profit-value" id="panoTotalCount" style="color:var(--accent)">0</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="category-tabs" id="panoramaCategoryTabs"></div>
+
+                    <div id="panoramaStrategyList"></div>
+                </div>
+
+                <div id="emptyPanorama" class="empty-state">
+                    <div class="empty-state-icon">🌐</div>
+                    <div>输入股票代码，六维全景分析</div>
+                    <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">量价 · 资金 · 情绪 · 筹码 · 机构 · 消息</div>
+                </div>
+            </div>
+
+            <!-- 舆情监控子页 -->
+            <div id="subtab-news" class="strategy-subtab">
+                <div class="card">
+                    <div class="card-title"><span class="icon">📡</span> 舆情监控</div>
+                    <div class="search-wrapper">
+                        <div class="search-input-wrap">
+                            <span class="search-icon">🔍</span>
+                            <input type="text" id="newsInput" placeholder="输入股票代码或中文名称，如 600519 / 茅台" autocomplete="off" oninput="onNewsSearchInput()" onkeypress="if(event.key==='Enter')loadNews()">
+                            <button class="search-btn" onclick="loadNews()">查询</button>
+                        </div>
+                        <div id="newsSuggestions" class="search-suggestions"></div>
+                    </div>
+                    <div id="sentimentHistory" style="display:none;">
+                        <div style="font-size:11px;color:var(--text-muted);margin-top:14px;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">最近查询</div>
+                        <div class="history-tags" id="sentimentHistoryList"></div>
+                    </div>
+                </div>
+
+                <div id="newsSection" style="display:none;">
+                    <div class="card">
+                        <div class="card-title"><span class="icon">📢</span>最新公告</div>
+                        <div id="noticeList"></div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-title"><span class="icon">📰</span>最新研报</div>
+                        <div id="reportList"></div>
+                    </div>
+                </div>
+
+                <div id="emptyNews" class="empty-state">
+                    <div class="empty-state-icon">📰</div>
+                    <div>输入股票代码查看舆情信息</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 交易页 -->
+        <div id="tab-trade" class="tab-content">
+            <div class="card">
+                <div class="card-title"><span class="icon">✏️</span> 添加交易</div>
+                <div class="form-group">
+                    <label class="form-label">股票代码</label>
+                    <div class="search-wrapper">
+                        <input type="text" class="form-input" id="stockCode" placeholder="输入代码搜索" autocomplete="off" oninput="onTradeCodeInput()">
+                        <div class="search-suggestions" id="codeSuggestions"></div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">股票名称</label>
+                    <div class="search-wrapper">
+                        <input type="text" class="form-input" id="stockName" placeholder="输入名称搜索" autocomplete="off" oninput="onTradeNameInput()">
+                        <div class="search-suggestions" id="nameSuggestions"></div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">交易类型</label>
+                    <select class="form-select" id="tradeType" onchange="onTradeTypeChange()">
+                        <option value="BUY">买入</option>
+                        <option value="SELL">卖出</option>
+                    </select>
+                </div>
+                
+                <!-- 配对卖出选择 -->
+                <div id="pairBuySection" style="display:none;">
+                    <div class="form-group">
+                        <label class="form-label">选择配对买入（做T用）</label>
+                        <div id="pairBuyList" style="max-height:150px;overflow-y:auto;border:1px solid var(--border-glass);border-radius:8px;padding:8px;">
+                            <div style="color:var(--text-muted);font-size:12px;text-align:center;padding:10px;">先选择股票代码</div>
+                        </div>
+                        <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">💡 选一笔买入对应卖出，自动计算这笔做T收益</div>
+                    </div>
+                </div>
+                
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+                    <div class="form-group">
+                        <label class="form-label">价格</label>
+                        <input type="number" class="form-input" id="price" placeholder="0.00" step="0.01" min="0" oninput="updatePairProfitPreview()">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">数量</label>
+                        <input type="number" class="form-input" id="quantity" placeholder="100" step="100" min="1" oninput="updatePairProfitPreview()">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">备注（可选）</label>
+                    <input type="text" class="form-input" id="note" placeholder="备注信息">
+                </div>
+                
+                <!-- 预计收益显示 -->
+                <div id="pairProfitPreview" style="display:none;margin-bottom:12px;padding:10px;background:rgba(52,211,153,0.08);border:1px solid rgba(52,211,153,0.2);border-radius:8px;">
+                    <div style="font-size:12px;color:var(--text-muted);margin-bottom:4px;">预计做T收益</div>
+                    <div id="pairProfitAmount" style="font-size:18px;font-weight:700;color:var(--green);">¥0.00</div>
+                    <div id="pairProfitPercent" style="font-size:12px;color:var(--text-muted);">+0.00%</div>
+                </div>
+                
+                <button class="btn btn-primary" onclick="addTrade()">添加交易</button>
+            </div>
+
+            <!-- 交易收益概览 -->
+            <div class="card">
+                <div class="card-title"><span class="icon">💰</span> 交易收益</div>
+                <div class="profit-grid">
+                    <div class="profit-item">
+                        <div class="profit-item-label">做T总收益</div>
+                        <div class="profit-value" id="tradeTProfit">¥0.00</div>
+                    </div>
+                    <div class="profit-item">
+                        <div class="profit-item-label">做T成功次数</div>
+                        <div class="profit-value" id="tradeTCount" style="color:var(--accent);">0次</div>
+                    </div>
+                    <div class="profit-item">
+                        <div class="profit-item-label">累计手续费</div>
+                        <div class="profit-value" id="tradeTotalFee" style="color:var(--red);">¥0.00</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-title"><span class="icon">💹</span> 当前持仓</div>
+                <div id="holdingsList">
+                    <div class="empty-state"><div class="empty-state-icon">💹</div><div>暂无持仓记录</div></div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-title"><span class="icon">📝</span> 交易记录</div>
+                <div id="tradeList">
+                    <div class="empty-state"><div class="empty-state-icon">📝</div><div>暂无交易记录</div></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 底部导航 -->
+    <nav class="tab-nav">
+        <button class="tab-btn active" onclick="switchTab('home')">
+            <span class="tab-icon">🏠</span>
+            <span class="tab-label">首页</span>
+        </button>
+        <button class="tab-btn" onclick="switchTab('trade')">
+            <span class="tab-icon">✏️</span>
+            <span class="tab-label">交易</span>
+        </button>
+        <button class="tab-btn" onclick="switchTab('strategy')">
+            <span class="tab-icon">🧠</span>
+            <span class="tab-label">策略</span>
+        </button>
+        <button class="tab-btn" onclick="switchTab('settings')">
+            <span class="tab-icon">⚙️</span>
+            <span class="tab-label">设置</span>
+        </button>
+    </nav>
+
+    <!-- 设置页面 -->
+    <div id="tab-settings" class="tab-content">
+        <div class="card">
+            <div class="card-title"><span class="icon">🎨</span> 主题皮肤</div>
+            <div class="setting-desc" style="margin-bottom:12px;">选择你喜欢的界面风格</div>
+            <div class="theme-grid">
+                <div class="theme-option active" data-theme="dark-purple" onclick="changeTheme('dark-purple')">
+                    <div class="theme-preview" style="background:linear-gradient(135deg, #0b0e17, #111827);">
+                        <div style="position:absolute;top:8px;left:8px;width:20px;height:4px;background:#818cf8;border-radius:2px;"></div>
+                        <div style="position:absolute;top:18px;left:8px;right:8px;height:10px;background:rgba(129,140,248,0.2);border-radius:2px;"></div>
+                    </div>
+                    <span>暗夜紫</span>
+                </div>
+                <div class="theme-option" data-theme="deep-blue" onclick="changeTheme('deep-blue')">
+                    <div class="theme-preview" style="background:linear-gradient(135deg, #0a1628, #0f2137);">
+                        <div style="position:absolute;top:8px;left:8px;width:20px;height:4px;background:#38bdf8;border-radius:2px;"></div>
+                        <div style="position:absolute;top:18px;left:8px;right:8px;height:10px;background:rgba(56,189,248,0.2);border-radius:2px;"></div>
+                    </div>
+                    <span>深邃蓝</span>
+                </div>
+                <div class="theme-option" data-theme="emerald-gold" onclick="changeTheme('emerald-gold')">
+                    <div class="theme-preview" style="background:linear-gradient(135deg, #0a1a14, #0f241d);">
+                        <div style="position:absolute;top:8px;left:8px;width:20px;height:4px;background:#34d399;border-radius:2px;"></div>
+                        <div style="position:absolute;top:18px;left:8px;right:8px;height:10px;background:rgba(52,211,153,0.2);border-radius:2px;"></div>
+                    </div>
+                    <span>墨绿金</span>
+                </div>
+                <div class="theme-option" data-theme="warm-orange" onclick="changeTheme('warm-orange')">
+                    <div class="theme-preview" style="background:linear-gradient(135deg, #1a0f0a, #2d1810);">
+                        <div style="position:absolute;top:8px;left:8px;width:20px;height:4px;background:#fb923c;border-radius:2px;"></div>
+                        <div style="position:absolute;top:18px;left:8px;right:8px;height:10px;background:rgba(251,146,60,0.2);border-radius:2px;"></div>
+                    </div>
+                    <span>暖阳橙</span>
+                </div>
+                <div class="theme-option" data-theme="rose-red" onclick="changeTheme('rose-red')">
+                    <div class="theme-preview" style="background:linear-gradient(135deg, #1a0a12, #2d1020);">
+                        <div style="position:absolute;top:8px;left:8px;width:20px;height:4px;background:#f472b6;border-radius:2px;"></div>
+                        <div style="position:absolute;top:18px;left:8px;right:8px;height:10px;background:rgba(244,114,182,0.2);border-radius:2px;"></div>
+                    </div>
+                    <span>玫瑰红</span>
+                </div>
+                <div class="theme-option" data-theme="light" onclick="changeTheme('light')">
+                    <div class="theme-preview" style="background:linear-gradient(135deg, #f1f5f9, #ffffff);">
+                        <div style="position:absolute;top:8px;left:8px;width:20px;height:4px;background:#6366f1;border-radius:2px;"></div>
+                        <div style="position:absolute;top:18px;left:8px;right:8px;height:10px;background:rgba(99,102,241,0.15);border-radius:2px;"></div>
+                    </div>
+                    <span>浅色简约</span>
+                </div>
+                <div class="theme-option" data-theme="ths" onclick="changeTheme('ths')">
+                    <div class="theme-preview" style="background:linear-gradient(135deg, #1a1a2e, #16213e);">
+                        <div style="position:absolute;top:8px;left:8px;width:20px;height:4px;background:#e94560;border-radius:2px;"></div>
+                        <div style="position:absolute;top:18px;left:8px;right:8px;height:10px;background:rgba(233,69,96,0.2);border-radius:2px;"></div>
+                    </div>
+                    <span>同花顺</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title"><span class="icon">⚙️</span> 基本设置</div>
+            
+            <!-- 自动刷新设置 -->
+            <div class="setting-item">
+                <div class="setting-label">
+                    <div class="setting-title">自动刷新</div>
+                    <div class="setting-desc">自动更新行情数据</div>
+                </div>
+                <select id="autoRefreshInterval" class="setting-select" onchange="saveSettings()">
+                    <option value="0">关闭</option>
+                    <option value="5">5秒</option>
+                    <option value="10">10秒</option>
+                    <option value="30">30秒</option>
+                    <option value="60">1分钟</option>
+                </select>
+            </div>
+
+            <!-- 声音提醒 -->
+            <div class="setting-item">
+                <div class="setting-label">
+                    <div class="setting-title">声音提醒</div>
+                    <div class="setting-desc">做T信号时播放提示音</div>
+                </div>
+                <label class="toggle">
+                    <input type="checkbox" id="soundEnabled" onchange="saveSettings()">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+
+            <!-- 数据显示 -->
+            <div class="setting-item">
+                <div class="setting-label">
+                    <div class="setting-title">显示涨跌幅</div>
+                    <div class="setting-desc">显示价格变化百分比</div>
+                </div>
+                <label class="toggle">
+                    <input type="checkbox" id="showChangePercent" checked onchange="saveSettings()">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title"><span class="icon">🎯</span> 策略偏好</div>
+            <div class="setting-desc" style="margin-bottom:12px;">选择常用的策略分类</div>
+            
+            <div class="strategy-toggles">
+                <div class="strategy-toggle-item">
+                    <span>趋势类</span>
+                    <label class="toggle">
+                        <input type="checkbox" id="enableTrend" checked onchange="saveSettings()">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div class="strategy-toggle-item">
+                    <span>震荡类</span>
+                    <label class="toggle">
+                        <input type="checkbox" id="enableOscillation" checked onchange="saveSettings()">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div class="strategy-toggle-item">
+                    <span>量价类</span>
+                    <label class="toggle">
+                        <input type="checkbox" id="enableVolume" checked onchange="saveSettings()">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div class="strategy-toggle-item">
+                    <span>形态类</span>
+                    <label class="toggle">
+                        <input type="checkbox" id="enablePattern" checked onchange="saveSettings()">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div class="strategy-toggle-item">
+                    <span>日内微操类</span>
+                    <label class="toggle">
+                        <input type="checkbox" id="enableIntraday" checked onchange="saveSettings()">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+                <div class="strategy-toggle-item">
+                    <span>自创策略</span>
+                    <label class="toggle">
+                        <input type="checkbox" id="enableCustom" checked onchange="saveSettings()">
+                        <span class="toggle-slider"></span>
+                    </label>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title"><span class="icon">🔔</span> 做T提醒设置</div>
+            
+            <div class="setting-item">
+                <div class="setting-label">
+                    <div class="setting-title">做T信号阈值</div>
+                    <div class="setting-desc">振幅大于此值时提醒（%）</div>
+                </div>
+                <input type="number" id="tSignalThreshold" class="setting-input" value="2" min="0.5" max="10" step="0.5" onchange="saveSettings()">
+            </div>
+
+            <div class="setting-item">
+                <div class="setting-label">
+                    <div class="setting-title">买入信号强度</div>
+                    <div class="setting-desc">买入策略数量大于此值时提醒</div>
+                </div>
+                <input type="number" id="buySignalThreshold" class="setting-input" value="5" min="1" max="20" onchange="saveSettings()">
+            </div>
+
+            <div class="setting-item">
+                <div class="setting-label">
+                    <div class="setting-title">卖出信号强度</div>
+                    <div class="setting-desc">卖出策略数量大于此值时提醒</div>
+                </div>
+                <input type="number" id="sellSignalThreshold" class="setting-input" value="5" min="1" max="20" onchange="saveSettings()">
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title"><span class="icon">💾</span> 数据管理</div>
+            
+            <div style="display:flex; flex-direction:column; gap:10px;">
+                <button class="btn btn-secondary" onclick="exportData()">📤 导出数据</button>
+                <button class="btn btn-secondary" onclick="document.getElementById('importFile').click()">📥 导入数据</button>
+                <input type="file" id="importFile" accept=".json" style="display:none;" onchange="importData(this)">
+                <button class="btn btn-danger" onclick="clearAllData()">🗑️ 清除所有数据</button>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title"><span class="icon">ℹ️</span> 关于</div>
+            <div style="text-align:center; color:var(--text-muted); font-size:12px;">
+                <p>股票做T助手 v3.0</p>
+                <p>基于107+技术指标策略分析</p>
+                <p style="margin-top:8px;">数据仅供参考，不构成投资建议</p>
+            </div>
+            <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border-glass);">
+                <button id="checkUpdateBtn" class="btn btn-secondary" onclick="checkForUpdate()" style="width:100%;">
+                    🔄 检查更新
+                </button>
+            </div>
+            <div style="height: 40px;"></div>
+        </div>
+    </div>
+
+    <!-- 添加监控股票模态框 -->
+    <div id="watchModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); z-index:1000; align-items:center; justify-content:center;">
+        <div style="background:var(--bg-card); border-radius:16px; padding:24px; width:90%; max-width:400px; margin:auto; backdrop-filter: blur(20px);">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <h3 style="margin:0; font-size:18px;">📌 添加监控股票</h3>
+                <button onclick="closeWatchModal()" style="background:none; border:none; color:var(--text-muted); font-size:20px; cursor:pointer;">×</button>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">股票代码</label>
+                <input type="text" id="watchCodeInput" class="form-input" placeholder="如：600519" autocomplete="off">
+            </div>
+            
+            <div style="display:flex; gap:10px; margin-top:16px;">
+                <button class="btn btn-secondary" onclick="closeWatchModal()" style="flex:1;">取消</button>
+                <button class="btn btn-primary" onclick="addWatchStock()" style="flex:1;">添加</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 策略详情弹窗 -->
+    <div id="strategyModal" class="modal" style="display:none;" onclick="if(event.target===this)closeModal()">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title" id="modalTitle">策略详情</div>
+                <button class="modal-close" onclick="closeModal()">×</button>
+            </div>
+            <div class="modal-body" id="modalBody"></div>
+        </div>
+    </div>
+
+    <!-- 维度详情弹窗 -->
+    <div id="dimensionModal" class="modal" style="display:none;" onclick="if(event.target===this)closeDimensionModal()">
+        <div class="modal-content">
+            <div class="modal-header">
+                <div class="modal-title" id="dimModalTitle">📊 维度详情</div>
+                <button class="modal-close" onclick="closeDimensionModal()">×</button>
+            </div>
+            <div class="modal-body" id="dimModalBody"></div>
+        </div>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="toast"></div>
+
+    <script src="capacitor.js"></script>
+    <script src="js/strategies.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
