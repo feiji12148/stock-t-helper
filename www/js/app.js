@@ -15,6 +15,12 @@ let _autoRefreshTimer = null;
 let _refreshCountdown = 0;
 
 function getCapacitorHttp() {
+    if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.CapacitorHttp) {
+        return window.Capacitor.Plugins.CapacitorHttp;
+    }
+    if (window.Capacitor && window.Capacitor.CapacitorHttp) {
+        return window.Capacitor.CapacitorHttp;
+    }
     if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Http) {
         return window.Capacitor.Plugins.Http;
     }
