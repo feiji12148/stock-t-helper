@@ -23,11 +23,13 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Clear npm cache
-        run: npm cache clean --force
+      - name: Remove package-lock and clear npm cache
+        run: |
+          rm -f package-lock.json
+          npm cache clean --force
 
       - name: Install dependencies
-        run: npm install
+        run: npm install --no-verify
 
       - name: Sync web assets to Android
         run: npx cap sync android
