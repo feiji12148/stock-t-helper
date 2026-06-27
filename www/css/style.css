@@ -131,7 +131,7 @@ body::before {
     position: fixed;
     top: 0; left: 0; right: 0;
     z-index: 1000;
-    padding: 14px 20px;
+    padding: 8px 16px;
     background: color-mix(in srgb, var(--bg-primary) 85%, transparent);
     backdrop-filter: var(--glass-blur);
     -webkit-backdrop-filter: var(--glass-blur);
@@ -144,15 +144,15 @@ body::before {
 .header-logo {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
 }
 
 .header-logo span {
-    font-size: 20px;
+    font-size: 18px;
 }
 
 .header-title {
-    font-size: 17px;
+    font-size: 15px;
     font-weight: 700;
     background: linear-gradient(135deg, var(--accent), #a78bfa);
     -webkit-background-clip: text;
@@ -161,8 +161,8 @@ body::before {
 }
 
 .header-badge {
-    font-size: 10px;
-    padding: 2px 8px;
+    font-size: 9px;
+    padding: 1px 6px;
     border-radius: 20px;
     background: var(--accent-glow);
     color: var(--accent);
@@ -256,9 +256,8 @@ body::before {
 .content {
     position: relative;
     z-index: 1;
-    margin-top: 56px;
-    padding: 16px;
-    padding-bottom: 100px;
+    margin-top: 44px;
+    padding: 8px 16px 0px 16px;
     max-width: 480px;
     margin-left: auto;
     margin-right: auto;
@@ -266,6 +265,19 @@ body::before {
 
 .tab-content { display: none; }
 .tab-content.active { display: block; animation: fadeIn 0.25s ease; }
+
+#tab-settings > .card:first-child {
+    margin-top: -4px;
+    padding-top: 14px;
+}
+
+#tab-settings > .card:first-child .card-title {
+    margin-bottom: 12px;
+}
+
+#tab-settings > .card:last-child {
+    padding-bottom: 100px;
+}
 
 /* ==================== 策略页顶部选项卡 ==================== */
 .top-tabs {
@@ -318,8 +330,8 @@ body::before {
     -webkit-backdrop-filter: var(--glass-blur);
     border: 1px solid var(--border-glass);
     border-radius: var(--radius);
-    padding: 18px;
-    margin-bottom: 14px;
+    padding: 16px;
+    margin-bottom: 10px;
     transition: var(--transition);
 }
 
@@ -1577,6 +1589,181 @@ body::before {
 
 .toggle input:checked + .toggle-slider:before {
     transform: translateX(22px);
+}
+
+/* ========== 学习页面 ========== */
+#learnModalBody h4 {
+    margin: 18px 0 10px 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--accent);
+    padding-left: 10px;
+    border-left: 3px solid var(--accent);
+}
+
+#learnModalBody h4:first-child {
+    margin-top: 0;
+}
+
+#learnModalBody p {
+    margin: 8px 0;
+    color: var(--text-primary);
+    line-height: 1.8;
+}
+
+#learnModalBody strong {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+#learnModalBody p:has(> strong) {
+    font-weight: 500;
+}
+
+/* 学习页面 */
+#tab-learn {
+    padding: 0;
+}
+
+.learn-header {
+    padding: 12px 0 10px 0;
+    border-bottom: 1px solid var(--border-glass);
+}
+
+.learn-header-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 16px;
+    margin-bottom: 12px;
+}
+
+.learn-header-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.learn-header-title .icon {
+    font-size: 22px;
+}
+
+.learn-header-count {
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.learn-tabs {
+    display: flex;
+    gap: 8px;
+    padding: 0 16px;
+    flex-wrap: wrap;
+}
+
+.learn-tab {
+    flex-shrink: 0;
+    padding: 7px 14px;
+    border: 1px solid var(--border-glass);
+    border-radius: 20px;
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--text-secondary);
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.learn-tab.active {
+    background: linear-gradient(135deg, var(--accent) 0%, #a78bfa 100%);
+    border-color: transparent;
+    color: white;
+    box-shadow: 0 2px 10px rgba(129, 140, 248, 0.25);
+}
+
+.learn-tab:active {
+    transform: scale(0.96);
+}
+
+.learn-list {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    padding: 12px 16px;
+}
+
+.learn-card {
+    background: var(--bg-card);
+    backdrop-filter: var(--glass-blur);
+    -webkit-backdrop-filter: var(--glass-blur);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius);
+    padding: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+    -webkit-tap-highlight-color: transparent;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.learn-card:active {
+    transform: scale(0.97);
+    border-color: rgba(255, 255, 255, 0.1);
+}
+
+.learn-card-icon {
+    font-size: 26px;
+    margin-bottom: 2px;
+}
+
+.learn-card-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.3;
+}
+
+.learn-card-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.4;
+    height: 3.08em;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+}
+
+.learn-card-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 2px;
+}
+
+.learn-card-tag {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgba(129, 140, 248, 0.12);
+    color: var(--accent);
+    font-weight: 500;
+}
+
+.learn-card-arrow {
+    font-size: 14px;
+    color: var(--text-muted);
+    opacity: 0.5;
+}
+
+@media (max-width: 360px) {
+    .learn-list {
+        grid-template-columns: 1fr;
+    }
 }
 
 /* 策略开关 */
