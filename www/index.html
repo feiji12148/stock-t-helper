@@ -222,6 +222,29 @@
                             <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">操作 </span><span style="color:var(--accent); font-weight:700;" id="planTAction">--</span></div>
                         </div>
                     </div>
+                    
+                    <!-- 首页今日价格预测 -->
+                    <div id="homePricePrediction" style="display:none; margin-top:10px; background:linear-gradient(135deg, rgba(99,102,241,0.1), rgba(139,92,246,0.08)); border:1px solid rgba(99,102,241,0.2); border-radius:10px; padding:12px;">
+                        <div style="font-size:13px; font-weight:700; color:var(--accent); margin-bottom:8px;">🔮 今日价格预测</div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:10px;">
+                            <div style="text-align:center; padding:6px; background:rgba(248,113,113,0.1); border-radius:8px;">
+                                <div style="font-size:10px; color:var(--text-muted);">预测最高</div>
+                                <div style="font-size:15px; font-weight:700; color:var(--red);" id="homePredictedHigh">--</div>
+                            </div>
+                            <div style="text-align:center; padding:6px; background:rgba(52,211,153,0.1); border-radius:8px;">
+                                <div style="font-size:10px; color:var(--text-muted);">预测最低</div>
+                                <div style="font-size:15px; font-weight:700; color:var(--green);" id="homePredictedLow">--</div>
+                            </div>
+                        </div>
+                        <div style="position:relative; height:12px; background:linear-gradient(to right, rgba(52,211,153,0.3), rgba(250,204,21,0.3), rgba(248,113,113,0.3)); border-radius:6px; overflow:hidden;">
+                            <div id="homePriceDot" style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); width:10px; height:10px; background:white; border:2px solid var(--accent); border-radius:50%;"></div>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted); margin-top:4px;">
+                            <span>最低</span>
+                            <span id="homePricePosLabel">位置: --</span>
+                            <span>最高</span>
+                        </div>
+                    </div>
                 </div>
 
                 <div style="text-align:center;margin-bottom:12px;">
@@ -289,6 +312,86 @@
                             <div class="profit-item">
                                 <div class="profit-item-label">做T机会</div>
                                 <div class="profit-value" id="tCount" style="color:var(--yellow)">0</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 今日价格预测 -->
+                    <div class="card" id="pricePredictionCard" style="display:none; margin-top:14px;">
+                        <div class="card-title" style="display:flex; justify-content:space-between; align-items:center;">
+                            <span><span class="icon">🔮</span> 今日价格预测</span>
+                            <span style="font-size:11px; color:#60a5fa; cursor:pointer;" onclick="if(_currentStock)showPredictionHistoryModal(_currentStock.code, _currentStock.name)">查看历史 →</span>
+                        </div>
+                        <div style="background:linear-gradient(135deg, rgba(99,102,241,0.1), rgba(139,92,246,0.08)); border:1px solid rgba(99,102,241,0.2); border-radius:10px; padding:12px;">
+                            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
+                                <div style="text-align:center; padding:8px; background:rgba(248,113,113,0.1); border-radius:8px;">
+                                    <div style="font-size:10px; color:var(--text-muted);">预测最高价</div>
+                                    <div style="font-size:16px; font-weight:700; color:var(--red);" id="predictedHigh">--</div>
+                                    <div style="font-size:10px; margin-top:4px; padding-top:4px; border-top:1px solid rgba(255,255,255,0.08);">
+                                        <div style="color:var(--text-muted);">实际最高 <span id="actualHigh" style="color:var(--text-secondary);">--</span></div>
+                                        <div id="predictedHighDelta" style="margin-top:2px;"></div>
+                                    </div>
+                                </div>
+                                <div style="text-align:center; padding:8px; background:rgba(52,211,153,0.1); border-radius:8px;">
+                                    <div style="font-size:10px; color:var(--text-muted);">预测最低价</div>
+                                    <div style="font-size:16px; font-weight:700; color:var(--green);" id="predictedLow">--</div>
+                                    <div style="font-size:10px; margin-top:4px; padding-top:4px; border-top:1px solid rgba(255,255,255,0.08);">
+                                        <div style="color:var(--text-muted);">实际最低 <span id="actualLow" style="color:var(--text-secondary);">--</span></div>
+                                        <div id="predictedLowDelta" style="margin-top:2px;"></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div style="margin-bottom:8px;">
+                                <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-muted); margin-bottom:4px;">
+                                    <span>最低</span>
+                                    <span id="pricePositionLabel">当前位置: --</span>
+                                    <span>最高</span>
+                                </div>
+                                <div style="position:relative; height:16px; background:linear-gradient(to right, rgba(52,211,153,0.3), rgba(250,204,21,0.3), rgba(248,113,113,0.3)); border-radius:8px; overflow:hidden;">
+                                    <div id="pricePositionDot" style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); width:12px; height:12px; background:white; border:2px solid var(--accent); border-radius:50%; box-shadow:0 2px 8px rgba(0,0,0,0.3); transition:left 0.3s ease;"></div>
+                                </div>
+                            </div>
+                            <div style="display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:6px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.05);">
+                                <div style="text-align:center; font-size:10px;">
+                                    <span style="color:var(--text-muted);">振幅 </span>
+                                    <span style="color:var(--yellow); font-weight:600;" id="predictedAmp">--</span>
+                                </div>
+                                <div style="text-align:center; font-size:10px;">
+                                    <span style="color:var(--text-muted);">趋势 </span>
+                                    <span style="color:var(--accent); font-weight:600;" id="predictedTrend">--</span>
+                                </div>
+                                <div style="text-align:center; font-size:10px;">
+                                    <span style="color:var(--text-muted);">置信度 </span>
+                                    <span style="color:var(--text-secondary); font-weight:600;" id="predictedConfidence">--</span>
+                                </div>
+                                <div style="text-align:center; font-size:10px;">
+                                    <span style="color:var(--text-muted);">准确度 </span>
+                                    <span style="color:#22c55e; font-weight:600;" id="predictedSuccessRate">--</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 策略页做T方案 -->
+                    <div class="card" id="strategyBestPlanCard" style="display:none; margin-top:14px;">
+                        <div class="card-title"><span class="icon">🎯</span> 最优做T方案</div>
+                        <div id="strategyPlanTSection" style="background:linear-gradient(135deg, rgba(250,204,21,0.12), rgba(245,158,11,0.08)); border:1px solid rgba(250,204,21,0.2); border-radius:10px; padding:12px;">
+                            <div style="font-size:13px; font-weight:700; color:var(--yellow); margin-bottom:8px;">⚡ 最优做T方案（确保盈利）</div>
+                            <div style="font-size:12px; color:var(--text-secondary); margin-bottom:8px;" id="strategyPlanTName">--</div>
+                            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:10px;">
+                                <div style="text-align:center; padding:8px; background:rgba(52,211,153,0.1); border-radius:8px;">
+                                    <div style="font-size:10px; color:var(--text-muted);">买入价</div>
+                                    <div style="font-size:14px; font-weight:700; color:var(--green);" id="strategyPlanTBuy">--</div>
+                                </div>
+                                <div style="text-align:center; padding:8px; background:rgba(248,113,113,0.1); border-radius:8px;">
+                                    <div style="font-size:10px; color:var(--text-muted);">卖出价</div>
+                                    <div style="font-size:14px; font-weight:700; color:var(--red);" id="strategyPlanTSell">--</div>
+                                </div>
+                            </div>
+                            <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; padding-top:8px; border-top:1px solid rgba(255,255,255,0.05);">
+                                <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">差价 </span><span style="color:var(--yellow); font-weight:700;" id="strategyPlanTSpread">--</span></div>
+                                <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">收益 </span><span style="color:var(--green); font-weight:700;" id="strategyPlanTProfit">--</span></div>
+                                <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">操作 </span><span style="color:var(--accent); font-weight:700;" id="strategyPlanTAction">--</span></div>
                             </div>
                         </div>
                     </div>

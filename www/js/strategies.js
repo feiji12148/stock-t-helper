@@ -4235,7 +4235,7 @@ class StrategyEngine {
 
         const BUY_ACTIONS = new Set(['BUY', 'STRONG_BUY']);
         const SELL_ACTIONS = new Set(['SELL', 'STRONG_SELL']);
-        const T_ACTIONS = new Set(['BUY_THEN_SELL', 'SELL_THEN_BUY', 'BOX_TRADING']);
+        const T_ACTIONS = new Set(['BUY_THEN_SELL', 'SELL_THEN_BUY', 'BOX_TRADING', 'TRADING_OPPORTUNITY']);
 
         const buySignals = results.filter(s => BUY_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
         const sellSignals = results.filter(s => SELL_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
@@ -4288,6 +4288,69 @@ class StrategyEngine {
                 loss_risk: bestT.loss_risk,
                 risk_reward: bestT.risk_reward,
                 action: bestT.action,
+            };
+        }
+
+        // ============ 今日价格预测 ============
+        if (hasKline && closes.length >= 5) {
+            let amp5 = 0, amp10 = 0;
+            const ampDays = Math.min(10, closes.length - 1);
+            for (let i = 1; i <= ampDays; i++) {
+                const idx = closes.length - 1 - i;
+                if (idx >= 0 && closes[idx] > 0) {
+                    const dailyAmp = (highs[idx] - lows[idx]) / closes[idx] * 100;
+                    if (i <= 5) amp5 += dailyAmp;
+                    if (i <= 10) amp10 += dailyAmp;
+                }
+            }
+            amp5 = amp5 / Math.min(5, ampDays);
+            amp10 = amp10 / Math.min(10, ampDays);
+            
+            const avgAmplitude = (amp5 * 0.6 + amp10 * 0.4);
+            const atrRange = atrVal > 0 ? atrVal : (pc * avgAmplitude / 100);
+            const trendBias = trend === '上升' ? 0.3 : (trend === '下跌' ? -0.3 : 0);
+            const basePrice = op > 0 ? op : pc;
+            
+            const halfRange = basePrice * avgAmplitude / 100 / 2;
+            let predictedHigh = basePrice + halfRange * (1 + trendBias * 0.3);
+            let predictedLow = basePrice - halfRange * (1 - trendBias * 0.3);
+            
+            if (hp > predictedHigh) predictedHigh = hp + atrRange * 0.2;
+            if (lp < predictedLow) predictedLow = lp - atrRange * 0.2;
+            
+            if (hasKline && closes.length >= 20) {
+                const [sR, rR] = this.findSupportResistance(highs, lows, closes);
+                if (rR && rR.length > 0) {
+                    const nearestResistance = rR[rR.length - 1];
+                    if (nearestResistance > cp && nearestResistance < predictedHigh * 1.05) {
+                        predictedHigh = Math.max(predictedHigh, nearestResistance);
+                    }
+                }
+                if (sR && sR.length > 0) {
+                    const nearestSupport = sR[sR.length - 1];
+                    if (nearestSupport < cp && nearestSupport > predictedLow * 0.95) {
+                        predictedLow = Math.min(predictedLow, nearestSupport);
+                    }
+                }
+            }
+            
+            const pricePosition = predictedHigh > predictedLow 
+                ? ((cp - predictedLow) / (predictedHigh - predictedLow) * 100) 
+                : 50;
+            
+            let confidence = 60;
+            if (closes.length >= 20) confidence += 10;
+            if (Math.abs(amp5 - amp10) < 1) confidence += 10;
+            if (confidence > 85) confidence = 85;
+            
+            summary.price_prediction = {
+                predicted_high: Math.round(predictedHigh * 100) / 100,
+                predicted_low: Math.round(predictedLow * 100) / 100,
+                avg_amplitude: Math.round(avgAmplitude * 100) / 100,
+                price_position: Math.round(pricePosition * 10) / 10,
+                confidence: confidence,
+                trend: trend,
+                atr: Math.round(atrVal * 100) / 100,
             };
         }
 

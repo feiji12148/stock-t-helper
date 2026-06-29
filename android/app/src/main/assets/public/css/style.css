@@ -101,7 +101,7 @@ body.theme-ths {
 }
 
 /* ==================== Reset ==================== */
-* { margin: 0; padding: 0; box-sizing: border-box; }
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; }
 
 body {
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto,
@@ -113,6 +113,8 @@ body {
     -moz-osx-font-smoothing: grayscale;
     min-height: 100vh;
     overflow-x: hidden;
+    overscroll-behavior-y: none;
+    -webkit-overflow-scrolling: touch;
 }
 
 body::before {
@@ -132,6 +134,7 @@ body::before {
     top: 0; left: 0; right: 0;
     z-index: 1000;
     padding: 14px 20px;
+    padding-top: calc(14px + env(safe-area-inset-top));
     background: color-mix(in srgb, var(--bg-primary) 85%, transparent);
     backdrop-filter: var(--glass-blur);
     -webkit-backdrop-filter: var(--glass-blur);
@@ -256,9 +259,9 @@ body::before {
 .content {
     position: relative;
     z-index: 1;
-    margin-top: 56px;
+    margin-top: calc(56px + env(safe-area-inset-top));
     padding: 16px;
-    padding-bottom: 80px;
+    padding-bottom: 120px;
     max-width: 480px;
     margin-left: auto;
     margin-right: auto;

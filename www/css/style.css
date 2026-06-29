@@ -101,7 +101,7 @@ body.theme-ths {
 }
 
 /* ==================== Reset ==================== */
-* { margin: 0; padding: 0; box-sizing: border-box; }
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none; }
 
 body {
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Roboto,
@@ -113,6 +113,8 @@ body {
     -moz-osx-font-smoothing: grayscale;
     min-height: 100vh;
     overflow-x: hidden;
+    overscroll-behavior-y: none;
+    -webkit-overflow-scrolling: touch;
 }
 
 body::before {
@@ -132,6 +134,7 @@ body::before {
     top: 0; left: 0; right: 0;
     z-index: 1000;
     padding: 8px 16px;
+    padding-top: calc(8px + env(safe-area-inset-top));
     background: color-mix(in srgb, var(--bg-primary) 85%, transparent);
     backdrop-filter: var(--glass-blur);
     -webkit-backdrop-filter: var(--glass-blur);
@@ -256,15 +259,93 @@ body::before {
 .content {
     position: relative;
     z-index: 1;
-    margin-top: 44px;
+    margin-top: calc(44px + env(safe-area-inset-top));
     padding: 8px 16px 0px 16px;
     max-width: 480px;
     margin-left: auto;
     margin-right: auto;
+    overflow-x: hidden;
 }
 
 .tab-content { display: none; }
-.tab-content.active { display: block; animation: fadeIn 0.25s ease; }
+.tab-content.active { display: block; }
+
+/* 页面切换动画 - 滑动效果 */
+.page-enter {
+    animation: pageSlideIn 0.3s ease forwards;
+}
+
+.page-exit {
+    animation: pageSlideOut 0.3s ease forwards;
+}
+
+@keyframes pageSlideIn {
+    from { opacity: 0; transform: translateX(20px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes pageSlideOut {
+    from { opacity: 1; transform: translateX(0); }
+    to { opacity: 0; transform: translateX(-20px); }
+}
+
+/* 子标签切换动画 */
+.subtab-enter {
+    animation: subtabSlideIn 0.25s ease forwards;
+}
+
+@keyframes subtabSlideIn {
+    from { opacity: 0; transform: translateX(15px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+/* 下拉刷新指示器 */
+.pull-refresh-indicator {
+    position: absolute;
+    top: -50px;
+    left: 0;
+    right: 0;
+    height: 50px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    color: var(--text-muted);
+    transition: transform 0.2s ease;
+    z-index: 5;
+}
+
+.pull-refresh-indicator.pulling {
+    transform: translateY(0);
+}
+
+.pull-refresh-indicator.refreshing {
+    transform: translateY(50px);
+    color: var(--accent);
+}
+
+.pull-refresh-indicator .refresh-icon {
+    font-size: 18px;
+    margin-right: 8px;
+    transition: transform 0.3s ease;
+}
+
+.pull-refresh-indicator.refreshing .refresh-icon {
+    animation: spin 0.8s linear infinite;
+}
+
+/* 策略子页底部留出足够空间 */
+#subtab-strategy,
+#subtab-panorama,
+#subtab-news {
+    padding-bottom: 140px;
+}
+
+/* 交易页和学习页底部留空 */
+#tab-trade,
+#tab-learn {
+    padding-bottom: 80px;
+}
 
 #tab-settings > .card:first-child {
     margin-top: -4px;

@@ -14,6 +14,9 @@ let _settings = {};
 let _autoRefreshTimer = null;
 let _refreshCountdown = 0;
 
+// 预测记录存储
+let _predictionRecords = JSON.parse(localStorage.getItem('predictionRecords') || '{}');
+
 function getCapacitorHttp() {
     if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.CapacitorHttp) {
         return window.Capacitor.Plugins.CapacitorHttp;
@@ -106,21 +109,26 @@ async function getCurrentPrice(code) {
 }
 
 function init() {
+    loadSettings();
     loadWatchList();
     loadTrades();
     loadSearchHistory();
     loadPanoramaHistory();
-    loadSettings();
-    loadHoldingsSignals();
     renderWatchList();
-    renderTrades();
-    renderSearchHistory();
-    refreshProfit();
-    updateAutoRefresh();
     
-    if (typeof strategyEngine === 'undefined') {
-        console.error('StrategyEngine not loaded');
-    }
+    requestAnimationFrame(() => {
+        loadHoldingsSignals();
+        renderTrades();
+        renderSearchHistory();
+        refreshProfit();
+        updateAutoRefresh();
+    });
+    
+    setTimeout(() => {
+        if (typeof strategyEngine === 'undefined') {
+            console.error('StrategyEngine not loaded');
+        }
+    }, 300);
     
     document.addEventListener('click', function (e) {
         if (!e.target.closest('.search-wrapper') && !e.target.closest('.search-box')) {
@@ -129,6 +137,7 @@ function init() {
     });
     
     initSwipeTabs();
+    initPullRefresh();
 }
 
 function initSwipeTabs() {
@@ -136,27 +145,37 @@ function initSwipeTabs() {
     if (!tabContainer) return;
     
     let touchStartX = 0;
+    let touchStartY = 0;
     let touchEndX = 0;
-    const minSwipeDistance = 50;
+    let touchEndY = 0;
+    const minSwipeDistance = 80; // 增大阈值，避免误触发
+    const maxVerticalDistance = 30; // 垂直移动超过这个值就不算水平滑动
     
     tabContainer.addEventListener('touchstart', function(e) {
         touchStartX = e.changedTouches[0].screenX;
+        touchStartY = e.changedTouches[0].screenY;
     }, { passive: true });
     
     tabContainer.addEventListener('touchend', function(e) {
         touchEndX = e.changedTouches[0].screenX;
+        touchEndY = e.changedTouches[0].screenY;
         handleSwipe();
     }, { passive: true });
     
     function handleSwipe() {
-        const distance = touchEndX - touchStartX;
+        const distanceX = touchEndX - touchStartX;
+        const distanceY = touchEndY - touchStartY;
         
-        if (Math.abs(distance) < minSwipeDistance) return;
+        // 垂直移动太大，说明是滚动而不是滑动
+        if (Math.abs(distanceY) > maxVerticalDistance) return;
+        
+        // 水平距离不够
+        if (Math.abs(distanceX) < minSwipeDistance) return;
         
         const tabs = ['strategy', 'panorama', 'news'];
         const currentIndex = tabs.indexOf(_currentStrategySubtab);
         
-        if (distance < 0) {
+        if (distanceX < 0) {
             // 左滑 -> 下一个 tab
             if (currentIndex < tabs.length - 1) {
                 switchStrategySubtab(tabs[currentIndex + 1]);
@@ -168,6 +187,86 @@ function initSwipeTabs() {
             }
         }
     }
+}
+
+// 初始化下拉刷新
+function initPullRefresh() {
+    const contentArea = document.querySelector('.content');
+    if (!contentArea) return;
+    
+    let touchStartY = 0;
+    let touchMoveY = 0;
+    let isPulling = false;
+    let isRefreshing = false;
+    const threshold = 80;
+    
+    // 创建下拉刷新指示器
+    const indicator = document.createElement('div');
+    indicator.className = 'pull-refresh-indicator';
+    indicator.innerHTML = '<span class="refresh-icon">🔄</span><span class="refresh-text">下拉刷新</span>';
+    contentArea.insertBefore(indicator, contentArea.firstChild);
+    
+    contentArea.addEventListener('touchstart', function(e) {
+        if (contentArea.scrollTop === 0 && !isRefreshing) {
+            touchStartY = e.touches[0].clientY;
+            isPulling = true;
+        }
+    }, { passive: true });
+    
+    contentArea.addEventListener('touchmove', function(e) {
+        if (!isPulling || isRefreshing) return;
+        
+        touchMoveY = e.touches[0].clientY;
+        const distance = touchMoveY - touchStartY;
+        
+        if (distance > 0 && contentArea.scrollTop === 0) {
+            const pullDistance = Math.min(distance * 0.5, threshold + 20);
+            indicator.style.transform = `translateY(${pullDistance}px)`;
+            
+            if (distance >= threshold) {
+                indicator.querySelector('.refresh-text').textContent = '释放刷新';
+                indicator.querySelector('.refresh-icon').style.transform = 'rotate(180deg)';
+            } else {
+                indicator.querySelector('.refresh-text').textContent = '下拉刷新';
+                indicator.querySelector('.refresh-icon').style.transform = 'rotate(0deg)';
+            }
+        }
+    }, { passive: true });
+    
+    contentArea.addEventListener('touchend', function(e) {
+        if (!isPulling || isRefreshing) return;
+        
+        isPulling = false;
+        const distance = touchMoveY - touchStartY;
+        
+        if (distance >= threshold) {
+            // 触发刷新
+            isRefreshing = true;
+            indicator.classList.add('refreshing');
+            indicator.style.transform = 'translateY(50px)';
+            indicator.querySelector('.refresh-text').textContent = '刷新中...';
+            indicator.querySelector('.refresh-icon').style.transform = '';
+            
+            // 执行刷新
+            refreshAll().then(() => {
+                setTimeout(() => {
+                    isRefreshing = false;
+                    indicator.classList.remove('refreshing');
+                    indicator.style.transform = 'translateY(-50px)';
+                    indicator.querySelector('.refresh-text').textContent = '下拉刷新';
+                    showToast('数据已刷新');
+                }, 500);
+            }).catch(() => {
+                isRefreshing = false;
+                indicator.classList.remove('refreshing');
+                indicator.style.transform = 'translateY(-50px)';
+                indicator.querySelector('.refresh-text').textContent = '下拉刷新';
+            });
+        } else {
+            // 未达到阈值，回弹
+            indicator.style.transform = 'translateY(-50px)';
+        }
+    }, { passive: true });
 }
 
 // 加载持仓股票的做T信号
@@ -239,7 +338,12 @@ function switchStrategySubtab(subtabName) {
     if (tabBtn) tabBtn.classList.add('active');
     
     const subtab = document.getElementById('subtab-' + subtabName);
-    if (subtab) subtab.classList.add('active');
+    if (subtab) {
+        subtab.classList.add('active');
+        // 添加动画类
+        subtab.classList.add('subtab-enter');
+        setTimeout(() => subtab.classList.remove('subtab-enter'), 300);
+    }
     
     if (subtabName === 'strategy') {
         loadSearchHistory();
@@ -275,11 +379,19 @@ function switchStrategySubtab(subtabName) {
 }
 
 function switchTab(tabName) {
+    const prevTab = document.querySelector('.tab-content.active');
+    const nextTab = document.getElementById('tab-' + tabName);
+    
+    // 移除所有激活状态
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
     document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
     
-    const tab = document.getElementById('tab-' + tabName);
-    if (tab) tab.classList.add('active');
+    // 添加动画效果
+    if (nextTab) {
+        nextTab.classList.add('active');
+        nextTab.classList.add('page-enter');
+        setTimeout(() => nextTab.classList.remove('page-enter'), 300);
+    }
     
     const btns = document.querySelectorAll('.tab-btn');
     const tabMap = { home: 0, trade: 1, strategy: 2, learn: 3, settings: 4 };
@@ -729,6 +841,168 @@ async function searchStockByName_eastmoney(name) {
     }
 }
 
+// 阶梯式偏离准确度计算
+// 偏离0% → 100分
+// 偏离0.1% → 95分
+// 偏离0.3% → 90分
+// 偏离0.5% → 85分
+// 偏离1% → 75分
+// 偏离2% → 60分
+// 偏离3% → 50分
+// 偏离5% → 30分
+// 偏离>5% → 20分
+function calcDeviationAccuracy(deviationPercent) {
+    const absDev = Math.abs(deviationPercent);
+    if (absDev <= 0.05) return 100;
+    if (absDev <= 0.1) return 95;
+    if (absDev <= 0.3) return 90;
+    if (absDev <= 0.5) return 85;
+    if (absDev <= 1) return 75;
+    if (absDev <= 2) return 60;
+    if (absDev <= 3) return 50;
+    if (absDev <= 5) return 30;
+    return 20;
+}
+
+// 计算单日预测准确度（取最高价和最低价的平均准确度）
+function calcDailyAccuracy(highPrice, lowPrice, predictHigh, predictLow) {
+    // 最高价偏离：(实际最高 - 预测最高) / 预测最高 * 100
+    let highDev = 0;
+    if (highPrice >= predictHigh) {
+        highDev = 0;  // 超过预测最高，视为100分
+    } else {
+        highDev = ((predictHigh - highPrice) / predictHigh) * 100;
+    }
+    
+    // 最低价偏离：(预测最低 - 实际最低) / 预测最低 * 100
+    let lowDev = 0;
+    if (lowPrice <= predictLow) {
+        lowDev = 0;  // 低于预测最低，视为100分
+    } else {
+        lowDev = ((lowPrice - predictLow) / predictLow) * 100;
+    }
+    
+    const highAccuracy = calcDeviationAccuracy(highDev);
+    const lowAccuracy = calcDeviationAccuracy(lowDev);
+    
+    // 综合准确度 = 两者平均
+    return {
+        highAccuracy: highAccuracy,
+        lowAccuracy: lowAccuracy,
+        overall: Math.round((highAccuracy + lowAccuracy) / 2),
+        highDev: highDev,
+        lowDev: lowDev
+    };
+}
+
+// 保存预测记录
+function savePredictionRecord(code, name, currentPrice, highPrice, lowPrice, predictHigh, predictLow, direction) {
+    const today = new Date().toISOString().split('T')[0];
+    const key = `${code}_${today}`;
+
+    const accuracy = calcDailyAccuracy(highPrice, lowPrice, predictHigh, predictLow);
+
+    _predictionRecords[key] = {
+        code: code,
+        name: name,
+        date: today,
+        currentPrice: currentPrice,
+        highPrice: highPrice,
+        lowPrice: lowPrice,
+        predictHigh: predictHigh,
+        predictLow: predictLow,
+        direction: direction,
+        hitHigh: highPrice >= predictHigh,
+        hitLow: lowPrice <= predictLow,
+        isSuccess: highPrice >= predictHigh || lowPrice <= predictLow,
+        accuracy: accuracy.overall,
+        highAccuracy: accuracy.highAccuracy,
+        lowAccuracy: accuracy.lowAccuracy,
+        highDev: accuracy.highDev,
+        lowDev: accuracy.lowDev,
+        updateTime: Date.now()
+    };
+
+    localStorage.setItem('predictionRecords', JSON.stringify(_predictionRecords));
+}
+
+// 获取指定股票的历史预测记录
+function getPredictionHistory(code) {
+    const records = [];
+    for (const key in _predictionRecords) {
+        if (key.startsWith(code + '_')) {
+            records.push(_predictionRecords[key]);
+        }
+    }
+    return records.sort((a, b) => new Date(b.date) - new Date(a.date));
+}
+
+// 计算平均准确度
+function getAvgAccuracy(code) {
+    const records = getPredictionHistory(code);
+    if (records.length === 0) return { avg: 0, total: 0 };
+    const sum = records.reduce((acc, r) => acc + (r.accuracy || 0), 0);
+    return {
+        avg: Math.round(sum / records.length),
+        total: records.length
+    };
+}
+
+// 显示预测历史记录弹窗
+function showPredictionHistoryModal(code, name) {
+    const records = getPredictionHistory(code);
+    const stats = getAvgAccuracy(code);
+
+    let html = `
+        <div style="padding:10px;">
+            <div style="text-align:center; margin-bottom:16px;">
+                <div style="font-size:24px; font-weight:700; color:${stats.avg >= 80 ? '#22c55e' : stats.avg >= 60 ? '#f59e0b' : '#ef4444'};">${stats.avg}分</div>
+                <div style="font-size:12px; color:#9ca3af;">历史平均准确度 (${stats.total}天数据)</div>
+            </div>
+    `;
+
+    if (records.length === 0) {
+        html += '<div style="text-align:center; color:#9ca3af; padding:30px;">暂无预测记录</div>';
+    } else {
+        html += '<div style="max-height:400px; overflow-y:auto;">';
+        records.forEach((r, idx) => {
+            const dateStr = r.date;
+            const acc = r.accuracy || 0;
+            const accColor = acc >= 80 ? '#22c55e' : acc >= 60 ? '#f59e0b' : '#ef4444';
+
+            html += `
+                <div style="background:rgba(255,255,255,0.05); border-radius:10px; padding:12px; margin-bottom:8px;">
+                    <div style="display:flex; justify-content:space-between; margin-bottom:8px; align-items:center;">
+                        <span style="font-size:13px; font-weight:600;">${dateStr}</span>
+                        <span style="color:${accColor}; font-size:12px; font-weight:700;">${acc}分</span>
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; font-size:11px;">
+                        <div>
+                            <div style="color:#9ca3af; margin-bottom:2px;">预测最高: ¥${r.predictHigh.toFixed(2)}</div>
+                            <div style="color:#9ca3af;">实际最高: ¥${r.highPrice.toFixed(2)}</div>
+                            <div style="color:${r.highAccuracy >= 80 ? '#22c55e' : r.highAccuracy >= 60 ? '#f59e0b' : '#ef4444'}; margin-top:2px;">
+                                ${r.hitHigh ? '✓触及' : '差' + r.highDev.toFixed(2) + '%'} (${r.highAccuracy}分)
+                            </div>
+                        </div>
+                        <div>
+                            <div style="color:#9ca3af; margin-bottom:2px;">预测最低: ¥${r.predictLow.toFixed(2)}</div>
+                            <div style="color:#9ca3af;">实际最低: ¥${r.lowPrice.toFixed(2)}</div>
+                            <div style="color:${r.lowAccuracy >= 80 ? '#22c55e' : r.lowAccuracy >= 60 ? '#f59e0b' : '#ef4444'}; margin-top:2px;">
+                                ${r.hitLow ? '✓触及' : '差' + r.lowDev.toFixed(2) + '%'} (${r.lowAccuracy}分)
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+        html += '</div>';
+    }
+
+    html += '</div>';
+    openModal(`${name} 预测历史`, html);
+    document.body.style.overflow = 'hidden';
+}
+
 async function loadStockInfo(code) {
     try {
         const prefix = getTencentPrefix(code);
@@ -886,7 +1160,12 @@ async function runPanoramaAnalysis(klines) {
 function renderSignalPanel(strategies) {
     const buyCount = strategies.filter(s => s.action.includes('BUY')).length;
     const sellCount = strategies.filter(s => s.action.includes('SELL')).length;
-    const tCount = strategies.filter(s => s.action.includes('TRADING_OPPORTUNITY') || s.action.includes('BUY_THEN_SELL') || s.action.includes('SELL_THEN_BUY')).length;
+    const tCount = strategies.filter(s => 
+        s.action.includes('TRADING_OPPORTUNITY') || 
+        s.action.includes('BUY_THEN_SELL') || 
+        s.action.includes('SELL_THEN_BUY') ||
+        s.action.includes('BOX_TRADING')
+    ).length;
     
     let mainText = '等待分析';
     let detailText = '';
@@ -1001,6 +1280,49 @@ function renderBestPlan(summary) {
         setText('planTAction', actionText);
     } else {
         setDisplay('planTSection', 'none');
+    }
+    
+    // 同时更新策略页面的做T方案
+    const strategyCard = document.getElementById('strategyBestPlanCard');
+    if (strategyCard) {
+        if (summary.best_t) {
+            strategyCard.style.display = 'block';
+            const buyPrice = summary.best_t.buy_price || summary.current_price;
+            const sellPrice = summary.best_t.sell_price || summary.current_price;
+            const spread = Math.abs(sellPrice - buyPrice);
+            const spreadPct = (spread / summary.current_price * 100);
+            const action = summary.best_t.action;
+            let actionText = '正T';
+            if (action === 'SELL_THEN_BUY') actionText = '反T';
+            else if (action === 'BOX_TRADING') actionText = '箱体';
+            
+            const setStrategyText = (id, text) => {
+                const el = document.getElementById(id);
+                if (el) el.innerText = text;
+            };
+            setStrategyText('strategyPlanTName', summary.best_t.name);
+            setStrategyText('strategyPlanTBuy', '￥' + buyPrice.toFixed(2));
+            setStrategyText('strategyPlanTSell', '￥' + sellPrice.toFixed(2));
+            setStrategyText('strategyPlanTSpread', '￥' + spread.toFixed(2));
+            setStrategyText('strategyPlanTProfit', '+' + spreadPct.toFixed(2) + '%');
+            setStrategyText('strategyPlanTAction', actionText);
+        } else {
+            strategyCard.style.display = 'none';
+        }
+    }
+    
+    // 渲染首页今日价格预测
+    if (summary.price_prediction) {
+        const p = summary.price_prediction;
+        const homePred = document.getElementById('homePricePrediction');
+        if (homePred) {
+            homePred.style.display = 'block';
+            document.getElementById('homePredictedHigh').innerText = '￥' + p.predicted_high.toFixed(2);
+            document.getElementById('homePredictedLow').innerText = '￥' + p.predicted_low.toFixed(2);
+            const pos = Math.max(0, Math.min(100, p.price_position));
+            document.getElementById('homePriceDot').style.left = pos + '%';
+            document.getElementById('homePricePosLabel').innerText = '位置: ' + pos.toFixed(1) + '%';
+        }
     }
 }
 
@@ -1230,11 +1552,93 @@ function renderStrategyDetailSection(strategies) {
     
     const buyCount = strategies.filter(s => s.action.includes('BUY')).length;
     const sellCount = strategies.filter(s => s.action.includes('SELL')).length;
-    const tCount = strategies.filter(s => s.action.includes('TRADING_OPPORTUNITY') || s.action.includes('BUY_THEN_SELL') || s.action.includes('SELL_THEN_BUY')).length;
+    const tCount = strategies.filter(s => 
+        s.action.includes('TRADING_OPPORTUNITY') || 
+        s.action.includes('BUY_THEN_SELL') || 
+        s.action.includes('SELL_THEN_BUY') ||
+        s.action.includes('BOX_TRADING')
+    ).length;
     
     document.getElementById('buyCount').innerText = buyCount;
     document.getElementById('sellCount').innerText = sellCount;
     document.getElementById('tCount').innerText = tCount;
+
+    // 渲染今日价格预测
+    if (_lastSummary && _lastSummary.price_prediction) {
+        const p = _lastSummary.price_prediction;
+        const card = document.getElementById('pricePredictionCard');
+        if (card) {
+            card.style.display = 'block';
+            document.getElementById('predictedHigh').innerText = '￥' + p.predicted_high.toFixed(2);
+            document.getElementById('predictedLow').innerText = '￥' + p.predicted_low.toFixed(2);
+            document.getElementById('predictedAmp').innerText = p.avg_amplitude.toFixed(2) + '%';
+            document.getElementById('predictedTrend').innerText = p.trend;
+            document.getElementById('predictedConfidence').innerText = p.confidence + '%';
+            
+            const pos = Math.max(0, Math.min(100, p.price_position));
+            document.getElementById('pricePositionDot').style.left = pos + '%';
+            document.getElementById('pricePositionLabel').innerText = '当前位置: ' + pos.toFixed(1) + '%';
+
+            // 计算差值显示
+            const highDeltaEl = document.getElementById('predictedHighDelta');
+            const lowDeltaEl = document.getElementById('predictedLowDelta');
+            if (_currentStock && _currentStock.high_price && _currentStock.low_price) {
+                const realHigh = _currentStock.high_price;
+                const realLow = _currentStock.low_price;
+                
+                if (realHigh > 0) {
+                    const delta = p.predicted_high - realHigh;
+                    if (delta <= 0) {
+                        highDeltaEl.innerHTML = '<span style="color:#22c55e;">✓已触及</span>';
+                    } else {
+                        const percent = (delta / realHigh * 100).toFixed(2);
+                        highDeltaEl.innerHTML = '<span style="color:#ef4444;">差' + percent + '%</span>';
+                    }
+                }
+                if (realLow > 0) {
+                    const delta = realLow - p.predicted_low;
+                    if (delta >= 0) {
+                        lowDeltaEl.innerHTML = '<span style="color:#22c55e;">✓已触及</span>';
+                    } else {
+                        const percent = (-delta / realLow * 100).toFixed(2);
+                        lowDeltaEl.innerHTML = '<span style="color:#ef4444;">差' + percent + '%</span>';
+                    }
+                }
+            }
+
+            // 显示平均准确度
+            const rateEl = document.getElementById('predictedSuccessRate');
+            if (_currentStock) {
+                const stats = getAvgAccuracy(_currentStock.code);
+                rateEl.innerText = stats.avg + '分';
+                rateEl.style.color = stats.avg >= 80 ? '#22c55e' : stats.avg >= 60 ? '#f59e0b' : '#ef4444';
+                
+                // 显示实际价格
+                if (_currentStock.high_price) {
+                    document.getElementById('actualHigh').innerText = _currentStock.high_price.toFixed(2);
+                    document.getElementById('actualLow').innerText = _currentStock.low_price.toFixed(2);
+                }
+                
+                // 保存今日预测记录
+                if (_currentStock.high_price && _currentStock.low_price) {
+                    const realHigh = _currentStock.high_price;
+                    const realLow = _currentStock.low_price;
+                    if (realHigh > 0 && realLow > 0) {
+                        savePredictionRecord(
+                            _currentStock.code,
+                            _currentStock.name,
+                            _currentStock.current_price || 0,
+                            realHigh,
+                            realLow,
+                            p.predicted_high,
+                            p.predicted_low,
+                            _lastSummary.direction || 'WATCH'
+                        );
+                    }
+                }
+            }
+        }
+    }
     
     renderCategoryTabs(strategies);
     renderStrategyList(strategies);
@@ -2697,14 +3101,18 @@ async function getLiveTSignals(stockCode) {
         const tSignals = strategies.filter(s => 
             s.action === 'TRADING_OPPORTUNITY' || 
             s.action === 'BUY_THEN_SELL' || 
-            s.action === 'SELL_THEN_BUY'
+            s.action === 'SELL_THEN_BUY' ||
+            s.action === 'BOX_TRADING'
         );
         
         if (tSignals.length > 0) {
             const s = tSignals[0];
-            const isBuyT = s.action === 'BUY_THEN_SELL';
+            const isBuyT = s.action === 'BUY_THEN_SELL' || s.action === 'TRADING_OPPORTUNITY';
             const color = isBuyT ? 'var(--green)' : 'var(--red)';
-            const tType = isBuyT ? '正T (先买后卖)' : (s.action === 'SELL_THEN_BUY' ? '反T (先卖后买)' : '做T机会');
+            let tType = '做T机会';
+            if (s.action === 'BUY_THEN_SELL') tType = '正T (先买后卖)';
+            else if (s.action === 'SELL_THEN_BUY') tType = '反T (先卖后买)';
+            else if (s.action === 'BOX_TRADING') tType = '箱体做T';
             
             cardDiv.innerHTML = `
                 <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -3244,17 +3652,17 @@ function renderCoreAdvice(info, strategies) {
     const profitPercent = cp > 0 ? (profitAmount / cp * 100).toFixed(1) : '0';
     
     const signalStats = `
-        <div style="display:flex; gap:8px; margin-top:12px; font-size:12px; flex-wrap:wrap;">
-            <span style="color:#22c55e; cursor:pointer; padding:6px 12px; background:rgba(34,197,94,0.15); border-radius:20px; font-weight:600;" onclick="showStrategyModal('买入信号', filterBuyStrategies(_lastStrategies))">
+        <div style="display:flex; flex-direction:row; justify-content:center; gap:8px; margin-top:12px; font-size:12px; flex-wrap:wrap;">
+            <span style="color:#22c55e; cursor:pointer; padding:6px 12px; background:rgba(34,197,94,0.15); border-radius:20px; font-weight:600; white-space:nowrap;" onclick="showStrategyModal('买入信号', filterBuyStrategies(_lastStrategies))">
                 🟢买入信号 ${buySignals.length}个
             </span>
-            <span style="color:#ef4444; cursor:pointer; padding:6px 12px; background:rgba(239,68,68,0.15); border-radius:20px; font-weight:600;" onclick="showStrategyModal('卖出信号', filterSellStrategies(_lastStrategies))">
+            <span style="color:#ef4444; cursor:pointer; padding:6px 12px; background:rgba(239,68,68,0.15); border-radius:20px; font-weight:600; white-space:nowrap;" onclick="showStrategyModal('卖出信号', filterSellStrategies(_lastStrategies))">
                 🔴卖出信号 ${sellSignals.length}个
             </span>
-            <span style="color:#8b5cf6; cursor:pointer; padding:6px 12px; background:rgba(139,92,246,0.15); border-radius:20px; font-weight:600;" onclick="showStrategyModal('做T机会', filterTStrategies(_lastStrategies))">
+            <span style="color:#8b5cf6; cursor:pointer; padding:6px 12px; background:rgba(139,92,246,0.15); border-radius:20px; font-weight:600; white-space:nowrap;" onclick="showStrategyModal('做T机会', filterTStrategies(_lastStrategies))">
                 ⚡做T机会 ${tSignals.length}个
             </span>
-            <span style="color:#fbbf24; cursor:pointer; padding:6px 12px; background:rgba(251,191,36,0.15); border-radius:20px; font-weight:600;" onclick="showStrategyModal('观望信号', filterHoldStrategies(_lastStrategies))">
+            <span style="color:#fbbf24; cursor:pointer; padding:6px 12px; background:rgba(251,191,36,0.15); border-radius:20px; font-weight:600; white-space:nowrap;" onclick="showStrategyModal('观望信号', filterHoldStrategies(_lastStrategies))">
                 🟡观望信号 ${holdSignals.length}个
             </span>
         </div>
@@ -3267,98 +3675,95 @@ function renderCoreAdvice(info, strategies) {
     const stockName = info.name || '';
     
     coreDiv.innerHTML = `
-        <div style="background: ${directionBg}; border: 2px solid ${directionColor}; border-radius: 16px; padding: 20px; margin: 16px 0;">
-            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
-                <div style="display:flex; align-items:center; gap:8px;">
-                    <span style="font-size:16px; font-weight:700; color:var(--text-primary);">${stockCode}</span>
-                    <span style="font-size:14px; color:var(--text-secondary);">${stockName}</span>
-                </div>
-                <span style="font-size:12px; color:var(--text-muted);">策略分析</span>
+        <div style="background:${directionBg}; border:2px solid ${directionColor}; border-radius:16px; padding:16px; margin:10px 0;">
+            <div style="margin-bottom:12px;">
+                <span style="font-size:15px; font-weight:700; color:var(--text-primary);">${stockCode}</span>
+                <span style="font-size:13px; color:var(--text-secondary); margin-left:8px;">${stockName}</span>
+                <span style="font-size:11px; color:var(--text-muted); float:right;">策略分析</span>
             </div>
-            <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">
-                <span style="font-size:28px;">${directionIcon}</span>
-                <div>
-                    <div style="font-size:20px; font-weight:700; color:${directionColor};">${directionText}</div>
-                    <div style="font-size:12px; color:#9ca3af; margin-top:4px;">${reason}</div>
-                </div>
+
+            <div style="margin-bottom:14px;">
+                <span style="font-size:24px; vertical-align:middle;">${directionIcon}</span>
+                <span style="font-size:18px; font-weight:700; color:${directionColor}; vertical-align:middle; margin-left:8px; white-space:nowrap;">${directionText}</span>
+                <div style="font-size:11px; color:#9ca3af; margin-top:6px; margin-left:32px;">${reason}</div>
             </div>
-            
+
             ${direction === 'T_TRADING' ? `
                 <div style="background:rgba(0,0,0,0.3); border-radius:12px; padding:16px; margin-bottom:12px; cursor:pointer;" onclick="showStrategyModal('做T机会详情', filterTStrategies(_lastStrategies))">
-                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:12px;">
+                    <div style="margin-bottom:12px;">
                         <span style="font-size:12px; color:#9ca3af;">⚡ 点击查看做T策略详情</span>
-                        <span style="font-size:12px; color:#8b5cf6;">→</span>
+                        <span style="font-size:12px; color:#8b5cf6; float:right;">→</span>
                     </div>
-                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; text-align:center;">
-                        <div>
+                    <div style="text-align:center;">
+                        <div style="display:inline-block; width:32%; vertical-align:top;">
                             <div style="font-size:10px; color:#9ca3af; margin-bottom:4px;">买入参考价</div>
                             <div style="font-size:18px; font-weight:700; color:#22c55e;">¥${buyPrice.toFixed(2)}</div>
                         </div>
-                        <div>
+                        <div style="display:inline-block; width:32%; vertical-align:top;">
                             <div style="font-size:10px; color:#9ca3af; margin-bottom:4px;">卖出参考价</div>
                             <div style="font-size:18px; font-weight:700; color:#ef4444;">¥${sellPrice.toFixed(2)}</div>
                         </div>
-                        <div>
+                        <div style="display:inline-block; width:32%; vertical-align:top;">
                             <div style="font-size:10px; color:#9ca3af; margin-bottom:4px;">止损价</div>
                             <div style="font-size:18px; font-weight:700; color:#fbbf24;">¥${stopLoss.toFixed(2)}</div>
                         </div>
                     </div>
                 </div>
-                <div style="display:flex; justify-content:space-between; font-size:12px; padding:10px; background:rgba(0,0,0,0.2); border-radius:8px;">
-                    <div style="color:#22c55e;">📈做T收益 +${profitPercent}% (+¥${profitAmount.toFixed(2)})</div>
-                    <div style="color:#ef4444;">📉做T风险 -${riskPercent}% (-¥${riskAmount.toFixed(2)})</div>
-                    <div style="color:#fbbf24;">⚖️盈亏比 ${riskReward}</div>
+                <div style="text-align:center; font-size:11px; padding:10px; background:rgba(0,0,0,0.2); border-radius:8px;">
+                    <div style="display:inline-block; width:32%; color:#22c55e;">📈做T收益<br/>+${profitPercent}% (+¥${profitAmount.toFixed(2)})</div>
+                    <div style="display:inline-block; width:32%; color:#ef4444;">📉做T风险<br/>-${riskPercent}% (-¥${riskAmount.toFixed(2)})</div>
+                    <div style="display:inline-block; width:32%; color:#fbbf24;">⚖️盈亏比<br/>${riskReward}</div>
                 </div>
             ` : direction === 'BUY' ? `
                 <div style="background:rgba(0,0,0,0.3); border-radius:12px; padding:16px; margin-bottom:12px;">
-                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; text-align:center;">
-                        <div>
+                    <div style="text-align:center;">
+                        <div style="display:inline-block; width:32%; vertical-align:top;">
                             <div style="font-size:10px; color:#9ca3af; margin-bottom:4px;">买入价</div>
                             <div style="font-size:18px; font-weight:700; color:#22c55e;">¥${buyPrice.toFixed(2)}</div>
                         </div>
-                        <div>
+                        <div style="display:inline-block; width:32%; vertical-align:top;">
                             <div style="font-size:10px; color:#9ca3af; margin-bottom:4px;">目标价</div>
                             <div style="font-size:18px; font-weight:700; color:#60a5fa;">¥${targetPrice.toFixed(2)}</div>
                         </div>
-                        <div>
+                        <div style="display:inline-block; width:32%; vertical-align:top;">
                             <div style="font-size:10px; color:#9ca3af; margin-bottom:4px;">止损价</div>
                             <div style="font-size:18px; font-weight:700; color:#ef4444;">¥${stopLoss.toFixed(2)}</div>
                         </div>
                     </div>
                 </div>
-                <div style="display:flex; justify-content:space-between; font-size:12px; padding:10px; background:rgba(0,0,0,0.2); border-radius:8px;">
-                    <div style="color:#22c55e;">📈预期收益 +${profitPercent}% (+¥${profitAmount.toFixed(2)})</div>
-                    <div style="color:#ef4444;">📉风险损失 -${riskPercent}% (-¥${riskAmount.toFixed(2)})</div>
-                    <div style="color:#fbbf24;">⚖️盈亏比 ${riskReward}</div>
+                <div style="text-align:center; font-size:11px; padding:10px; background:rgba(0,0,0,0.2); border-radius:8px;">
+                    <div style="display:inline-block; width:32%; color:#22c55e;">📈预期收益<br/>+${profitPercent}% (+¥${profitAmount.toFixed(2)})</div>
+                    <div style="display:inline-block; width:32%; color:#ef4444;">📉风险损失<br/>-${riskPercent}% (-¥${riskAmount.toFixed(2)})</div>
+                    <div style="display:inline-block; width:32%; color:#fbbf24;">⚖️盈亏比<br/>${riskReward}</div>
                 </div>
             ` : direction === 'SELL' ? `
                 <div style="background:rgba(0,0,0,0.3); border-radius:12px; padding:16px; margin-bottom:12px;">
-                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; text-align:center;">
-                        <div>
+                    <div style="text-align:center;">
+                        <div style="display:inline-block; width:32%; vertical-align:top;">
                             <div style="font-size:10px; color:#9ca3af; margin-bottom:4px;">卖出价</div>
                             <div style="font-size:18px; font-weight:700; color:#ef4444;">¥${cp.toFixed(2)}</div>
                         </div>
-                        <div>
+                        <div style="display:inline-block; width:32%; vertical-align:top;">
                             <div style="font-size:10px; color:#9ca3af; margin-bottom:4px;">目标价</div>
                             <div style="font-size:18px; font-weight:700; color:#60a5fa;">¥${targetPrice.toFixed(2)}</div>
                         </div>
-                        <div>
+                        <div style="display:inline-block; width:32%; vertical-align:top;">
                             <div style="font-size:10px; color:#9ca3af; margin-bottom:4px;">止损价</div>
                             <div style="font-size:18px; font-weight:700; color:#22c55e;">¥${stopLoss.toFixed(2)}</div>
                         </div>
                     </div>
                 </div>
-                <div style="display:flex; justify-content:space-between; font-size:12px; padding:10px; background:rgba(0,0,0,0.2); border-radius:8px;">
-                    <div style="color:#22c55e;">📈做空收益 +${profitPercent}% (+¥${profitAmount.toFixed(2)})</div>
-                    <div style="color:#ef4444;">📉做空风险 -${riskPercent}% (-¥${riskAmount.toFixed(2)})</div>
-                    <div style="color:#fbbf24;">⚖️盈亏比 ${riskReward}</div>
+                <div style="text-align:center; font-size:11px; padding:10px; background:rgba(0,0,0,0.2); border-radius:8px;">
+                    <div style="display:inline-block; width:32%; color:#22c55e;">📈做空收益<br/>+${profitPercent}% (+¥${profitAmount.toFixed(2)})</div>
+                    <div style="display:inline-block; width:32%; color:#ef4444;">📉做空风险<br/>-${riskPercent}% (-¥${riskAmount.toFixed(2)})</div>
+                    <div style="display:inline-block; width:32%; color:#fbbf24;">⚖️盈亏比<br/>${riskReward}</div>
                 </div>
             ` : `
                 <div style="text-align:center; padding:20px; color:#9ca3af; font-size:14px;">
                     当前市场方向不明，建议等待明确信号后再操作
                 </div>
             `}
-            
+
             ${signalStats}
         </div>
     `;
