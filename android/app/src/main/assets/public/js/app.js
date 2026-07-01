@@ -3,6 +3,7 @@ let _watchList = [];
 let _trades = [];
 let _lastStrategies = [];
 let _lastSummary = {};
+let _lastKlines = [];
 let _lastPanoramaStrategies = [];
 let _lastPanoramaSummary = null;
 let _panoramaHistory = JSON.parse(localStorage.getItem('panoramaHistory') || '[]');
@@ -270,6 +271,16 @@ function switchStrategySubtab(subtabName) {
             loadNews();
         } else if (input && input.value.trim()) {
             loadNews();
+        }
+    } else if (subtabName === 'longterm') {
+        loadLongtermHistory();
+        const input = document.getElementById('longtermInput');
+        if (_currentStock && !input.value.trim()) {
+            input.value = _currentStock.code;
+            _stockNames[_currentStock.code] = _currentStock.name;
+            loadLongtermDetail();
+        } else if (input && input.value.trim()) {
+            loadLongtermDetail();
         }
     }
 }
@@ -679,7 +690,7 @@ async function searchStockByName(name) {
         }
         return results;
     } catch (e) {
-        console.error('搜索股票失败:', e);
+        console.error('搜索失败:', e);
         return [];
     }
 }
@@ -851,15 +862,13 @@ async function loadStockInfo(code) {
         const data = await httpGet(url);
         
         if (data.code !== 0 || !data.data || !data.data[fullCode]) {
-            showToast('获取行情失败，请检查股票代码');
-            return;
+            throw new Error('行情数据接口返回错误');
         }
 
         const stockData = data.data[fullCode];
         const qt = stockData.qt?.[fullCode];
         if (!qt || qt.length < 38) {
-            showToast('获取行情失败');
-            return;
+            throw new Error('行情数据格式错误');
         }
 
         _currentStock = {
@@ -880,8 +889,9 @@ async function loadStockInfo(code) {
         renderStockInfo();
         await loadKlineData(code);
     } catch (e) {
-        console.error(e);
-        showToast('获取行情失败：' + e.message);
+        console.error('loadStockInfo错误:', e);
+        _currentStock = null; // 确保失败时清除旧数据
+        throw e; // 重新抛出错误
     }
 }
 
@@ -931,14 +941,12 @@ async function loadKlineData(code) {
         const data = await httpGet(url);
         
         if (data.code !== 0 || !data.data || !data.data[fullCode]) {
-            showToast('获取K线数据失败');
-            return;
+            throw new Error('K线数据接口返回错误');
         }
 
         const klineArray = data.data[fullCode].qfqday || data.data[fullCode].day || [];
         if (klineArray.length === 0) {
-            showToast('获取K线数据失败');
-            return;
+            throw new Error('K线数据为空');
         }
 
         const klines = klineArray.map(k => ({
@@ -954,8 +962,8 @@ async function loadKlineData(code) {
         await runStrategyAnalysis(klines);
         await runPanoramaAnalysis(klines);
     } catch (e) {
-        console.error(e);
-        showToast('获取K线数据失败：' + e.message);
+        console.error('loadKlineData错误:', e);
+        throw e; // 重新抛出错误，让调用者知道失败了
     }
 }
 
@@ -967,6 +975,7 @@ async function runStrategyAnalysis(klines) {
     
     _lastStrategies = strategies;
     _lastSummary = summary;
+    _lastKlines = klines;
     window._lastStrategies = strategies;
     renderSignalPanel(strategies);
     renderStrategySummary(strategies);
@@ -2669,6 +2678,485 @@ function renderNews(notices, reports) {
     }
 }
 
+// 长线页
+function onLongtermSearchInput() {
+    const kw = document.getElementById('longtermInput').value.trim();
+    if (!kw) {
+        document.getElementById('longtermSuggestions').style.display = 'none';
+        return;
+    }
+    clearTimeout(window.longtermSearchTimer);
+    window.longtermSearchTimer = setTimeout(async () => {
+        const results = await searchStockByName(kw);
+        const container = document.getElementById('longtermSuggestions');
+        if (results && results.length > 0) {
+            container.innerHTML = results.slice(0, 5).map(r =>
+                `<div class="suggestion-item" onclick="selectLongtermStock('${r.code}', '${r.name}')">${r.name} <span class="suggestion-code">${r.code}</span></div>`
+            ).join('');
+            container.style.display = 'block';
+        } else {
+            container.style.display = 'none';
+        }
+    }, 200);
+}
+
+function selectLongtermStock(code, name) {
+    document.getElementById('longtermInput').value = code;
+    document.getElementById('longtermSuggestions').style.display = 'none';
+    _stockNames[code] = name;
+    loadLongtermDetail();
+}
+
+function loadLongtermHistory() {
+    const history = JSON.parse(localStorage.getItem('longtermHistory') || '[]');
+    const container = document.getElementById('longtermHistory');
+    const list = document.getElementById('longtermHistoryList');
+    if (history.length > 0) {
+        container.style.display = 'block';
+        list.innerHTML = history.slice(0, 10).map(h =>
+            `<span class="history-tag" onclick="selectLongtermStock('${h.code}', '${h.name || h.code}')">${h.name || h.code}</span>`
+        ).join('');
+    } else {
+        container.style.display = 'none';
+    }
+}
+
+async function loadLongtermDetail() {
+    let code = document.getElementById('longtermInput').value.trim();
+    if (!code) {
+        showToast('请输入股票代码');
+        return;
+    }
+
+    if (!/^\d{6}$/.test(code)) {
+        const searchResult = await searchStockByName(code);
+        if (searchResult && searchResult.length > 0) {
+            code = searchResult[0].code;
+            _stockNames[code] = searchResult[0].name;
+            document.getElementById('longtermInput').value = code;
+        } else {
+            showToast('未找到该股票');
+            return;
+        }
+    }
+
+    try {
+        // 保存历史
+        const history = JSON.parse(localStorage.getItem('longtermHistory') || '[]');
+        const newHistory = [{ code, name: _stockNames[code] || code, time: Date.now() }]
+            .concat(history.filter(h => h.code !== code))
+            .slice(0, 20);
+        localStorage.setItem('longtermHistory', JSON.stringify(newHistory));
+        loadLongtermHistory();
+
+        document.getElementById('emptyLongterm').style.display = 'none';
+        document.getElementById('longtermOverview').style.display = 'block';
+
+        // 显示加载状态
+        document.getElementById('longtermLoadingState').style.display = 'block';
+        document.getElementById('longtermContentWrapper').style.display = 'none';
+        // 移除之前的错误信息
+        const oldError = document.querySelector('.longterm-error-msg');
+        if (oldError) oldError.remove();
+
+        // 复用loadStockInfo获取数据（经过验证的稳定方式）
+        await loadStockInfo(code);
+        
+        if (!_currentStock) {
+            throw new Error('获取股票信息失败');
+        }
+
+        // 用已有的K线数据
+        if (!_lastKlines || _lastKlines.length < 30) {
+            throw new Error('K线数据不足, 当前:' + (_lastKlines ? _lastKlines.length : 0));
+        }
+
+        // 渲染长线分析结果
+        renderLongtermAnalysis(_currentStock, _lastKlines);
+
+        // 隐藏loading，显示内容
+        document.getElementById('longtermLoadingState').style.display = 'none';
+        document.getElementById('longtermContentWrapper').style.display = 'block';
+
+    } catch (e) {
+        console.error('长线分析错误详情:', {
+            message: e.message,
+            stack: e.stack,
+            stock: _currentStock,
+            klines: _lastKlines ? _lastKlines.length : 0,
+            strategyEngineExists: typeof strategyEngine !== 'undefined'
+        });
+        let debugInfo = 'stock:' + (_currentStock ? '有' : '无') + ' klines:' + (_lastKlines ? _lastKlines.length : 0) + ' strategyEngine:' + (typeof strategyEngine !== 'undefined' ? '有' : '无');
+        document.getElementById('longtermLoadingState').style.display = 'none';
+        document.getElementById('longtermContentWrapper').style.display = 'none';
+        const errorDiv = document.createElement('div');
+        errorDiv.className = 'empty-state';
+        errorDiv.innerHTML = '<div class="empty-state-icon">📊</div><div>长线分析加载失败</div><div style="font-size:11px;color:var(--text-muted);margin-top:8px;">' + (e.message || '未知错误') + '</div><div style="font-size:10px;color:var(--text-muted);margin-top:4px;">' + debugInfo + '</div>';
+        const overview = document.getElementById('longtermOverview');
+        const oldError2 = overview.querySelector('.longterm-error-msg');
+        if (oldError2) oldError2.remove();
+        errorDiv.classList.add('longterm-error-msg');
+        overview.appendChild(errorDiv);
+    }
+}
+
+function renderLongtermAnalysis(stockInfo, klines, summary) {
+    try {
+    const closes = klines.map(k => k.close);
+    const highs = klines.map(k => k.high);
+    const lows = klines.map(k => k.low);
+    const volumes = klines.map(k => k.volume);
+    const cp = closes[closes.length - 1];
+    const pc = stockInfo.prev_close || closes[closes.length - 2] || cp;
+
+    // 检查strategyEngine
+    if (typeof strategyEngine === 'undefined') {
+        throw new Error('strategyEngine未定义');
+    }
+
+    // 计算各周期均线
+    const ma5 = strategyEngine.sma(closes, 5);
+    const ma10 = strategyEngine.sma(closes, 10);
+    const ma20 = strategyEngine.sma(closes, 20);
+    const ma30 = strategyEngine.sma(closes, 30);
+    const ma60 = strategyEngine.sma(closes, 60);
+    const ma120 = strategyEngine.sma(closes, 120);
+    const ma250 = strategyEngine.sma(closes, 250);
+
+    // 计算RSI
+    const rsi14 = strategyEngine.calcRsi(closes, 14);
+    const rsi28 = strategyEngine.calcRsi(closes, 28);
+
+    // 计算MACD
+    const [dif, dea, bar] = strategyEngine.calcMacd(closes);
+
+    // 计算布林带
+    const [bollLower, bollMid, bollUpper] = strategyEngine.calcBollinger(closes);
+
+    // ATR
+    const atr = strategyEngine.calcAtr(highs, lows, closes, 14);
+
+    // 当前时间判断趋势
+    const now = new Date();
+    const marketHour = now.getHours();
+    const isAfterClose = marketHour >= 15;
+
+    // 趋势判断
+    let trend = '横盘';
+    let trendDesc = '';
+    if (ma5 && ma10 && ma20 && ma5 > ma10 && ma10 > ma20) {
+        trend = '上升';
+        trendDesc = '均线多头排列，短期强势';
+    } else if (ma5 && ma10 && ma20 && ma5 < ma10 && ma10 < ma20) {
+        trend = '下跌';
+        trendDesc = '均线空头排列，短期弱势';
+    } else if (ma20 && ma60 && ma20 > ma60) {
+        trend = '上升';
+        trendDesc = '中长期上升趋势';
+    } else if (ma20 && ma60 && ma20 < ma60) {
+        trend = '下跌';
+        trendDesc = '中长期下降趋势';
+    } else {
+        trendDesc = '均线纠缠，震荡整理';
+    }
+
+    // 估值分析（简化版PE分析）
+    const avgPrice = closes.slice(-250).reduce((a, b) => a + b, 0) / Math.min(250, closes.length);
+    const peRatio = avgPrice > 0 ? cp / (avgPrice / 10) : 0; // 简化PE计算
+    let valueLevel = '适中';
+    let valueDesc = '';
+    if (peRatio < 0.8) {
+        valueLevel = '低估';
+        valueDesc = '当前价格低于250日均价，存在估值优势';
+    } else if (peRatio > 1.2) {
+        valueLevel = '高估';
+        valueDesc = '当前价格高于250日均价较多，注意风险';
+    } else {
+        valueDesc = '当前价格处于历史均值附近';
+    }
+
+    // 长线价值中枢计算（基于MA250年线 + 历史均值）
+    const ma250Val = ma250 ? ma250[ma250.length - 1] : null;
+    const ma120Val = ma120 ? ma120[ma120.length - 1] : null;
+    const allAvgPrice = closes.length > 0 ? closes.reduce((a, b) => a + b, 0) / closes.length : cp;
+    const allTimeHigh = Math.max(...highs);
+    const allTimeLow = Math.min(...lows);
+
+    // 价值中枢：优先用MA250，其次MA120，最后历史均价
+    const valueCenter = ma250Val || ma120Val || allAvgPrice;
+
+    // 历史波动率（基于全部K线的高低点范围）
+    const totalRange = allTimeHigh - allTimeLow;
+    const rangeRatio = totalRange / allTimeLow; // 总波动幅度比
+
+    // 估值位置：当前价在历史区间的位置（0=最低，1=最高）
+    const pricePosition = (cp - allTimeLow) / (allTimeHigh - allTimeLow);
+
+    // 趋势方向判断（基于均线系统）
+    let trendLevel = 0; // -2极弱, -1弱, 0中性, +1强, +2极强
+    if (ma5 && ma10 && ma20) {
+        if (ma5 > ma10 && ma10 > ma20) trendLevel += 1;
+        else if (ma5 < ma10 && ma10 < ma20) trendLevel -= 1;
+    }
+    if (ma20 && ma60) {
+        if (ma20 > ma60) trendLevel += 1;
+        else if (ma20 < ma60) trendLevel -= 1;
+    }
+    if (ma60 && ma120Val) {
+        if (ma60 > ma120Val) trendLevel += 1;
+        else if (ma60 < ma120Val) trendLevel -= 1;
+    }
+    if (trendLevel > 2) trendLevel = 2;
+    if (trendLevel < -2) trendLevel = -2;
+
+    // 各周期分析
+    const periods = [
+        { name: '1个月', days: 20, factor: 0.1 },
+        { name: '3个月', days: 60, factor: 0.25 },
+        { name: '半年', days: 120, factor: 0.45 },
+        { name: '1年', days: 240, factor: 0.7 },
+        { name: '2年', days: 480, factor: 1.0 }
+    ];
+
+    let periodHtml = '<div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:10px;">';
+    for (const p of periods) {
+        if (closes.length < Math.min(p.days, 30)) continue;
+        const periodCloses = closes.slice(-Math.min(p.days, closes.length));
+        const periodHighs = highs.slice(-Math.min(p.days, closes.length));
+        const periodLows = lows.slice(-Math.min(p.days, closes.length));
+
+        const periodChange = periodCloses.length >= 2
+            ? (periodCloses[periodCloses.length - 1] - periodCloses[0]) / periodCloses[0] * 100
+            : 0;
+        const periodHigh = Math.max(...periodHighs);
+        const periodLow = Math.min(...periodLows);
+
+        // 长线价格预测（基于价值中枢 + 历史区间 + 趋势）
+        // 核心逻辑：价格围绕价值中枢波动，向历史合理区间靠拢
+        const factor = p.factor;
+
+        // 乐观价：价值中枢向上偏移（不超过历史高点的1.2倍）
+        let optimistic = valueCenter * (1 + rangeRatio * 0.6 * factor);
+        if (optimistic > allTimeHigh * 1.2) optimistic = allTimeHigh * 1.2;
+
+        // 中性价：价值中枢 + 趋势偏移
+        const trendBias = trendLevel * 0.05 * factor;
+        let neutral = valueCenter * (1 + trendBias);
+
+        // 悲观价：价值中枢向下偏移（不低于历史低点的0.8倍）
+        let pessimistic = valueCenter * (1 - rangeRatio * 0.4 * factor);
+        if (pessimistic < allTimeLow * 0.8) pessimistic = allTimeLow * 0.8;
+
+        // 价格不能为负，且不低于历史最低的50%
+        const minPrice = Math.max(allTimeLow * 0.5, 0.01);
+        pessimistic = Math.max(pessimistic, minPrice);
+        neutral = Math.max(neutral, minPrice);
+        optimistic = Math.max(optimistic, minPrice);
+
+        // 建议
+        let action = '观望';
+        let actionColor = 'var(--text-muted)';
+        let actionDesc = '等待明确信号';
+        if (trendLevel >= 1 && periodChange > 0) {
+            action = '持有/买入';
+            actionColor = 'var(--green)';
+            actionDesc = `上涨${periodChange.toFixed(1)}%，顺势而为`;
+        } else if (trendLevel <= -1 && periodChange < 0) {
+            action = '观望/减仓';
+            actionColor = 'var(--red)';
+            actionDesc = `下跌${Math.abs(periodChange).toFixed(1)}%，注意风险`;
+        }
+
+        const optPct = ((optimistic - cp) / cp * 100).toFixed(1);
+        const neuPct = ((neutral - cp) / cp * 100).toFixed(1);
+        const pesPct = ((pessimistic - cp) / cp * 100).toFixed(1);
+
+        periodHtml += `
+            <div style="background:linear-gradient(135deg, rgba(99,102,241,0.1), rgba(139,92,246,0.08)); border:1px solid rgba(99,102,241,0.2); border-radius:12px; padding:12px;">
+                <div style="font-size:13px; font-weight:700; color:var(--accent); margin-bottom:10px;">${p.name}</div>
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; margin-bottom:10px;">
+                    <div style="background:rgba(0,0,0,0.25); border-radius:8px; padding:6px 8px;">
+                        <div style="font-size:9px; color:var(--text-muted);">乐观</div>
+                        <div style="font-size:13px; font-weight:700; color:var(--red);">${optimistic.toFixed(2)}</div>
+                        <div style="font-size:9px; color:var(--red);">${optPct >= 0 ? '+' : ''}${optPct}%</div>
+                    </div>
+                    <div style="background:rgba(0,0,0,0.25); border-radius:8px; padding:6px 8px;">
+                        <div style="font-size:9px; color:var(--text-muted);">中性</div>
+                        <div style="font-size:13px; font-weight:700; color:${neutral >= cp ? 'var(--green)' : 'var(--red)'};">${neutral.toFixed(2)}</div>
+                        <div style="font-size:9px; color:${neutral >= cp ? 'var(--green)' : 'var(--red)'};">${neuPct >= 0 ? '+' : ''}${neuPct}%</div>
+                    </div>
+                    <div style="background:rgba(0,0,0,0.25); border-radius:8px; padding:6px 8px;">
+                        <div style="font-size:9px; color:var(--text-muted);">悲观</div>
+                        <div style="font-size:13px; font-weight:700; color:var(--green);">${pessimistic.toFixed(2)}</div>
+                        <div style="font-size:9px; color:var(--green);">${pesPct >= 0 ? '+' : ''}${pesPct}%</div>
+                    </div>
+                    <div style="background:rgba(0,0,0,0.25); border-radius:8px; padding:6px 8px;">
+                        <div style="font-size:9px; color:var(--text-muted);">现价</div>
+                        <div style="font-size:13px; font-weight:700;">${cp.toFixed(2)}</div>
+                        <div style="font-size:9px; color:var(--text-muted);">${periodChange >= 0 ? '+' : ''}${periodChange.toFixed(1)}%</div>
+                    </div>
+                </div>
+                <div style="font-size:12px; font-weight:600; color:${actionColor};">${action}</div>
+                <div style="font-size:10px; color:var(--text-muted);">${actionDesc}</div>
+            </div>
+        `;
+    }
+    periodHtml += '</div>';
+
+    // 趋势内容
+    const trendHtml = `
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+            <div style="background:rgba(52,211,153,0.08); border:1px solid rgba(52,211,153,0.15); border-radius:10px; padding:12px;">
+                <div style="font-size:11px; color:var(--text-muted); margin-bottom:4px;">当前趋势</div>
+                <div style="font-size:16px; font-weight:700; color:${trend === '上升' ? 'var(--green)' : trend === '下跌' ? 'var(--red)' : 'var(--yellow)'};">${trend}</div>
+                <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">${trendDesc}</div>
+            </div>
+            <div style="background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.15); border-radius:10px; padding:12px;">
+                <div style="font-size:11px; color:var(--text-muted); margin-bottom:4px;">估值水平</div>
+                <div style="font-size:16px; font-weight:700; color:${valueLevel === '低估' ? 'var(--green)' : valueLevel === '高估' ? 'var(--red)' : 'var(--yellow)'};">${valueLevel}</div>
+                <div style="font-size:11px; color:var(--text-muted); margin-top:4px;">${valueDesc}</div>
+            </div>
+        </div>
+        <div style="margin-top:12px; display:grid; grid-template-columns:repeat(4, 1fr); gap:8px;">
+            <div style="text-align:center; padding:8px; background:rgba(0,0,0,0.2); border-radius:8px;">
+                <div style="font-size:10px; color:var(--text-muted);">MA5</div>
+                <div style="font-size:12px; font-weight:600;">${ma5 ? ma5.toFixed(2) : '--'}</div>
+            </div>
+            <div style="text-align:center; padding:8px; background:rgba(0,0,0,0.2); border-radius:8px;">
+                <div style="font-size:10px; color:var(--text-muted);">MA20</div>
+                <div style="font-size:12px; font-weight:600;">${ma20 ? ma20.toFixed(2) : '--'}</div>
+            </div>
+            <div style="text-align:center; padding:8px; background:rgba(0,0,0,0.2); border-radius:8px;">
+                <div style="font-size:10px; color:var(--text-muted);">MA60</div>
+                <div style="font-size:12px; font-weight:600;">${ma60 ? ma60.toFixed(2) : '--'}</div>
+            </div>
+            <div style="text-align:center; padding:8px; background:rgba(0,0,0,0.2); border-radius:8px;">
+                <div style="font-size:10px; color:var(--text-muted);">MA250</div>
+                <div style="font-size:12px; font-weight:600;">${ma250 ? ma250.toFixed(2) : '--'}</div>
+            </div>
+        </div>
+    `;
+
+    // 估值内容
+    const valueHtml = `
+        <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; margin-bottom:12px;">
+            <div style="text-align:center; padding:10px; background:rgba(0,0,0,0.2); border-radius:8px;">
+                <div style="font-size:10px; color:var(--text-muted);">RSI(14)</div>
+                <div style="font-size:14px; font-weight:700; color:${rsi14 > 70 ? 'var(--red)' : rsi14 < 30 ? 'var(--green)' : 'var(--text)'};">${rsi14 ? rsi14.toFixed(1) : '--'}</div>
+            </div>
+            <div style="text-align:center; padding:10px; background:rgba(0,0,0,0.2); border-radius:8px;">
+                <div style="font-size:10px; color:var(--text-muted);">MACD</div>
+                <div style="font-size:14px; font-weight:700; color:${bar > 0 ? 'var(--green)' : 'var(--red)'};">${bar ? (bar > 0 ? '红柱' : '绿柱') : '--'}</div>
+            </div>
+            <div style="text-align:center; padding:10px; background:rgba(0,0,0,0.2); border-radius:8px;">
+                <div style="font-size:10px; color:var(--text-muted);">布林</div>
+                <div style="font-size:14px; font-weight:700;">${bollUpper && bollLower ? '收口' : '开口'}</div>
+            </div>
+        </div>
+        <div style="font-size:12px; color:var(--text-secondary); line-height:1.6;">
+            ${valueDesc}<br>
+            ${rsi14 > 70 ? '⚠️ RSI超买，可能面临回调风险' : rsi14 < 30 ? '✨ RSI超卖，可能存在反弹机会' : 'RSI处于正常区间'}
+        </div>
+    `;
+
+    // 关键价位
+    const supportHtml = `
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+            <div style="padding:10px; background:rgba(52,211,153,0.08); border:1px solid rgba(52,211,153,0.2); border-radius:8px;">
+                <div style="font-size:10px; color:var(--text-muted); margin-bottom:4px;">支撑位</div>
+                <div style="font-size:14px; font-weight:700; color:var(--green);">${bollLower ? bollLower.toFixed(2) : (cp * 0.95).toFixed(2)}</div>
+                <div style="font-size:10px; color:var(--text-muted);">布林下轨</div>
+            </div>
+            <div style="padding:10px; background:rgba(248,113,113,0.08); border:1px solid rgba(248,113,113,0.2); border-radius:8px;">
+                <div style="font-size:10px; color:var(--text-muted); margin-bottom:4px;">压力位</div>
+                <div style="font-size:14px; font-weight:700; color:var(--red);">${bollUpper ? bollUpper.toFixed(2) : (cp * 1.05).toFixed(2)}</div>
+                <div style="font-size:10px; color:var(--text-muted);">布林上轨</div>
+            </div>
+        </div>
+        <div style="margin-top:10px; display:grid; grid-template-columns:repeat(3, 1fr); gap:8px;">
+            <div style="text-align:center; padding:8px; background:rgba(0,0,0,0.2); border-radius:8px;">
+                <div style="font-size:10px; color:var(--text-muted);">现价</div>
+                <div style="font-size:13px; font-weight:700;">${cp.toFixed(2)}</div>
+            </div>
+            <div style="text-align:center; padding:8px; background:rgba(0,0,0,0.2); border-radius:8px;">
+                <div style="font-size:10px; color:var(--text-muted);">ATR</div>
+                <div style="font-size:13px; font-weight:700;">${atr ? atr.toFixed(2) : '--'}</div>
+            </div>
+            <div style="text-align:center; padding:8px; background:rgba(0,0,0,0.2); border-radius:8px;">
+                <div style="font-size:10px; color:var(--text-muted);">乖离</div>
+                <div style="font-size:13px; font-weight:700;">${ma20 ? ((cp - ma20) / ma20 * 100).toFixed(1) + '%' : '--'}</div>
+            </div>
+        </div>
+    `;
+
+    // 风险提示
+    const riskItems = [];
+    if (rsi14 > 80) riskItems.push({ level: 'high', text: 'RSI严重超买，回调风险大' });
+    if (rsi14 < 20) riskItems.push({ level: 'low', text: 'RSI严重超卖，可能存在反弹机会' });
+    if (peRatio > 1.5) riskItems.push({ level: 'high', text: '估值偏高，注意追高风险' });
+    if (peRatio < 0.6) riskItems.push({ level: 'low', text: '估值偏低，可能被低估' });
+    if (ma5 < ma10 && ma10 < ma20) riskItems.push({ level: 'high', text: '均线空头排列，中期趋势向下' });
+    if (bar < 0 && dif < 0) riskItems.push({ level: 'medium', text: 'MACD死叉，短线走弱' });
+
+    if (riskItems.length === 0) {
+        riskItems.push({ level: 'info', text: '暂无明显风险提示' });
+    }
+
+    const riskHtml = riskItems.map(r => `
+        <div style="padding:8px 10px; background:rgba(${r.level === 'high' ? '248,113,113' : r.level === 'low' ? '52,211,153' : '99,102,241'},0.08);
+            border-left:3px solid rgb(${r.level === 'high' ? '248,113,113' : r.level === 'low' ? '52,211,153' : '99,102,241'});
+            margin-bottom:6px; border-radius:0 6px 6px 0;">
+            <span style="font-size:12px;">${r.text}</span>
+        </div>
+    `).join('');
+
+    // 综合建议
+    let overallAction = '观望';
+    let overallColor = 'var(--text-muted)';
+    let overallDesc = '';
+
+    if (trend === '上升' && valueLevel !== '高估' && rsi14 < 70) {
+        overallAction = '建议关注';
+        overallColor = 'var(--green)';
+        overallDesc = '趋势向上，估值合理，可考虑逢低布局';
+    } else if (trend === '上升' && valueLevel === '高估') {
+        overallAction = '谨慎追高';
+        overallColor = 'var(--yellow)';
+        overallDesc = '趋势向上但估值偏高，等待回调再考虑';
+    } else if (trend === '下跌') {
+        overallAction = '注意风险';
+        overallColor = 'var(--red)';
+        overallDesc = '趋势向下，建议观望或轻仓';
+    } else {
+        overallDesc = '市场震荡，建议观望为主';
+    }
+
+    const summaryHtml = `
+        <div style="background:linear-gradient(135deg, rgba(99,102,241,0.15), rgba(139,92,246,0.1)); border:1px solid rgba(99,102,241,0.3); border-radius:12px; padding:16px;">
+            <div style="font-size:18px; font-weight:700; color:${overallColor}; margin-bottom:8px;">${overallAction}</div>
+            <div style="font-size:13px; color:var(--text-secondary); line-height:1.6;">${overallDesc}</div>
+        </div>
+        <div style="margin-top:12px; font-size:12px; color:var(--text-muted); line-height:1.6;">
+            <strong>长线投资建议：</strong><br>
+            1. ${trend === '上升' ? '中长期趋势向上，适合定投或分批买入' : trend === '下跌' ? '中长期趋势向下，建议耐心等待' : '中长期趋势不明，保持观望'}<br>
+            2. ${valueLevel === '低估' ? '当前估值偏低，是长线布局的好时机' : valueLevel === '高估' ? '当前估值偏高，注意长线买入成本' : '当前估值合理，可择机布局'}<br>
+            3. 建议仓位：${trend === '上升' && valueLevel !== '高估' ? '30%-50%' : trend === '下跌' ? '10%-20%' : '20%-30%'}
+        </div>
+    `;
+
+    // 渲染
+    document.getElementById('longtermPeriodGrid').innerHTML = periodHtml;
+    document.getElementById('longtermTrendContent').innerHTML = trendHtml;
+    document.getElementById('longtermValueContent').innerHTML = valueHtml;
+    document.getElementById('longtermSupportContent').innerHTML = supportHtml;
+    document.getElementById('longtermRiskContent').innerHTML = riskHtml;
+    document.getElementById('longtermSummaryContent').innerHTML = summaryHtml;
+    } catch (e) {
+        console.error('renderLongtermAnalysis内部错误:', e);
+        throw e;
+    }
+}
+
 document.addEventListener('DOMContentLoaded', init);
 
 // ==================== 监控股票管理 ====================
@@ -3458,7 +3946,7 @@ function changeTheme(themeName) {
 function loadSettings() {
     const saved = localStorage.getItem('appSettings');
     const defaults = {
-        autoRefreshInterval: 10,
+        autoRefreshInterval: 0,
         soundEnabled: false,
         showChangePercent: true,
         enableTrend: true,

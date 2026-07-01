@@ -241,16 +241,19 @@
 
         <!-- 策略页 -->
         <div id="tab-strategy" class="tab-content">
-            <!-- 策略/全景/舆情 顶部选项卡 -->
+            <!-- 策略/全景/舆情/长线 顶部选项卡 -->
             <div class="top-tabs">
                 <button class="top-tab active" data-subtab="strategy" onclick="switchStrategySubtab('strategy')">
-                    <span>🧠</span> 策略分析
+                    <span>🧠</span> 策略
                 </button>
                 <button class="top-tab" data-subtab="panorama" onclick="switchStrategySubtab('panorama')">
-                    <span>🌐</span> 全景分析
+                    <span>🌐</span> 全景
                 </button>
                 <button class="top-tab" data-subtab="news" onclick="switchStrategySubtab('news')">
-                    <span>📰</span> 舆情监控
+                    <span>📰</span> 舆情
+                </button>
+                <button class="top-tab" data-subtab="longterm" onclick="switchStrategySubtab('longterm')">
+                    <span>📈</span> 长线
                 </button>
             </div>
 
@@ -520,6 +523,70 @@
                 <div id="emptyNews" class="empty-state">
                     <div class="empty-state-icon">📰</div>
                     <div>输入股票代码查看舆情信息</div>
+                </div>
+            </div>
+
+            <!-- 长线分析子页 -->
+            <div id="subtab-longterm" class="strategy-subtab">
+                <div class="card">
+                    <div class="card-title"><span class="icon">📈</span> 长线投资分析</div>
+                    <div class="search-wrapper">
+                        <div class="search-input-wrap">
+                            <span class="search-icon">🔍</span>
+                            <input type="text" id="longtermInput" placeholder="输入股票代码或名称" autocomplete="off" oninput="onLongtermSearchInput()" onkeypress="if(event.key==='Enter')loadLongtermDetail()">
+                            <span id="longtermLoading" class="search-loading" style="display:none;">⏳</span>
+                            <button class="search-btn" onclick="loadLongtermDetail()">分析</button>
+                        </div>
+                        <div id="longtermSuggestions" class="search-suggestions"></div>
+                    </div>
+                    <div id="longtermHistory" style="display:none;">
+                        <div style="font-size:11px;color:var(--text-muted);margin-top:14px;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px;">最近搜索</div>
+                        <div class="history-tags" id="longtermHistoryList"></div>
+                    </div>
+                </div>
+
+                <div id="longtermOverview" style="display:none;">
+                    <div id="longtermLoadingState" class="loading-state" style="display:none;padding:40px 0;">
+                        <div class="loading-icon">📊</div>
+                        <div>正在分析长线数据...</div>
+                    </div>
+                    <div id="longtermContentWrapper">
+                    <div class="card">
+                        <div class="card-title"><span class="icon">📊</span> 长线持有分析</div>
+                        <div id="longtermPeriodGrid"></div>
+                    </div>
+
+                    <div class="card" id="longtermTrendCard">
+                        <div class="card-title"><span class="icon">📈</span> 趋势判断</div>
+                        <div id="longtermTrendContent"></div>
+                    </div>
+
+                    <div class="card" id="longtermValueCard">
+                        <div class="card-title"><span class="icon">💎</span> 估值分析</div>
+                        <div id="longtermValueContent"></div>
+                    </div>
+
+                    <div class="card" id="longtermSupportCard">
+                        <div class="card-title"><span class="icon">支撑位</span> 关键价位</div>
+                        <div id="longtermSupportContent"></div>
+                    </div>
+
+                    <div class="card" id="longtermRiskCard">
+                        <div class="card-title"><span class="icon">⚠️</span> 风险提示</div>
+                        <div id="longtermRiskContent"></div>
+                    </div>
+
+                    <div class="card" id="longtermSummaryCard">
+                        <div class="card-title"><span class="icon">📋</span> 综合建议</div>
+                        <div id="longtermSummaryContent"></div>
+                    </div>
+                    </div>
+                </div>
+
+                <div id="emptyLongterm" class="empty-state">
+                    <div class="empty-state-icon">📈</div>
+                    <div>输入股票代码进行长线分析</div>
+                    <div style="font-size:12px;color:var(--text-muted);margin-top:8px;">基于MA、趋势、估值等指标分析不同周期持有策略</div>
                 </div>
             </div>
         </div>

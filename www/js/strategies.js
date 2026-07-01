@@ -4292,6 +4292,12 @@ class StrategyEngine {
         }
 
         // ============ 今日价格预测 ============
+        // 逻辑：盘中（9:30-15:00）用昨收价固定预测，收盘后用今收价预测明天
+        const marketHour = now.getHours();
+        const isAfterClose = marketHour >= 15; // 下午3点后，用今收价预测明天
+        const isMarketTime = (marketHour >= 9 && marketHour < 15) || 
+                            (marketHour === 9 && now.getMinutes() >= 30);
+        
         if (hasKline && closes.length >= 5) {
             let amp5 = 0, amp10 = 0;
             const ampDays = Math.min(10, closes.length - 1);
@@ -4308,32 +4314,60 @@ class StrategyEngine {
             
             const avgAmplitude = (amp5 * 0.6 + amp10 * 0.4);
             const atrRange = atrVal > 0 ? atrVal : (pc * avgAmplitude / 100);
-            const trendBias = trend === '上升' ? 0.3 : (trend === '下跌' ? -0.3 : 0);
-            const basePrice = op > 0 ? op : pc;
+            
+            // 预测用趋势：盘中用均线排列（历史数据，全天固定），收盘后用当日趋势
+            let predictTrend = '横盘';
+            if (isAfterClose) {
+                predictTrend = trend;
+            } else if (hasKline && closes.length >= 20) {
+                // 基于均线排列判断趋势（5日、10日、20日均线）
+                const ma5 = this.sma(closes, 5);
+                const ma10 = this.sma(closes, 10);
+                const ma20 = this.sma(closes, 20);
+                if (ma5 && ma10 && ma20 && ma5 > ma10 && ma10 > ma20) {
+                    predictTrend = '上升';
+                } else if (ma5 && ma10 && ma20 && ma5 < ma10 && ma10 < ma20) {
+                    predictTrend = '下跌';
+                }
+            } else if (hasKline && closes.length >= 2) {
+                // 数据不足时，用昨日涨跌判断
+                const prevChg = (closes[closes.length - 1] - closes[closes.length - 2]) / closes[closes.length - 2] * 100;
+                predictTrend = prevChg > 0.5 ? '上升' : (prevChg < -0.5 ? '下跌' : '横盘');
+            }
+            const trendBias = predictTrend === '上升' ? 0.3 : (predictTrend === '下跌' ? -0.3 : 0);
+            
+            // 基准价：盘中用昨收价固定预测，收盘后用今收价预测明天
+            const basePrice = isAfterClose ? cp : pc;
             
             const halfRange = basePrice * avgAmplitude / 100 / 2;
             let predictedHigh = basePrice + halfRange * (1 + trendBias * 0.3);
             let predictedLow = basePrice - halfRange * (1 - trendBias * 0.3);
             
-            if (hp > predictedHigh) predictedHigh = hp + atrRange * 0.2;
-            if (lp < predictedLow) predictedLow = lp - atrRange * 0.2;
+            // 盘中不修正预测值，只在收盘后更新
+            if (isAfterClose) {
+                // 收盘后，允许根据当日实际高点微调（仅用于明日预测参考）
+                if (hp > predictedHigh) predictedHigh = hp + atrRange * 0.2;
+                if (lp < predictedLow) predictedLow = lp - atrRange * 0.2;
+            }
             
+            // 支撑压力位修正（仅在有足够历史数据时）—— 基于历史K线，盘中固定
             if (hasKline && closes.length >= 20) {
                 const [sR, rR] = this.findSupportResistance(highs, lows, closes);
                 if (rR && rR.length > 0) {
                     const nearestResistance = rR[rR.length - 1];
-                    if (nearestResistance > cp && nearestResistance < predictedHigh * 1.05) {
+                    if (nearestResistance > basePrice && nearestResistance < predictedHigh * 1.05) {
                         predictedHigh = Math.max(predictedHigh, nearestResistance);
                     }
                 }
                 if (sR && sR.length > 0) {
                     const nearestSupport = sR[sR.length - 1];
-                    if (nearestSupport < cp && nearestSupport > predictedLow * 0.95) {
+                    if (nearestSupport < basePrice && nearestSupport > predictedLow * 0.95) {
                         predictedLow = Math.min(predictedLow, nearestSupport);
                     }
                 }
             }
             
+            // 当前位置：相对于固定预测区间的位置
             const pricePosition = predictedHigh > predictedLow 
                 ? ((cp - predictedLow) / (predictedHigh - predictedLow) * 100) 
                 : 50;
@@ -4349,8 +4383,67 @@ class StrategyEngine {
                 avg_amplitude: Math.round(avgAmplitude * 100) / 100,
                 price_position: Math.round(pricePosition * 10) / 10,
                 confidence: confidence,
-                trend: trend,
+                trend: predictTrend,
                 atr: Math.round(atrVal * 100) / 100,
+                prediction_time: isAfterClose ? '收盘后预测' : '盘中预测',
+                predict_for: isAfterClose ? '明日' : '今日'
+            };
+            
+            // ============ 固定预测（基于昨日数据，全天不变）============
+            // 纯粹基于昨日收盘价 + 历史振幅 + ATR，不受今日实时数据影响
+            const yesterdayClose = closes.length >= 2 ? closes[closes.length - 2] : pc;
+            const fixedBase = yesterdayClose > 0 ? yesterdayClose : pc;
+            const fixedHalfRange = fixedBase * avgAmplitude / 100 / 2;
+            
+            // 固定预测趋势：基于前日均线排列（完全历史数据）
+            let fixedTrend = '横盘';
+            if (closes.length >= 22) {
+                const histCloses = closes.slice(0, -1); // 排除今日
+                const fma5 = this.sma(histCloses, 5);
+                const fma10 = this.sma(histCloses, 10);
+                const fma20 = this.sma(histCloses, 20);
+                if (fma5 && fma10 && fma20 && fma5 > fma10 && fma10 > fma20) {
+                    fixedTrend = '上升';
+                } else if (fma5 && fma10 && fma20 && fma5 < fma10 && fma10 < fma20) {
+                    fixedTrend = '下跌';
+                }
+            }
+            const fixedTrendBias = fixedTrend === '上升' ? 0.3 : (fixedTrend === '下跌' ? -0.3 : 0);
+            
+            let fixedHigh = fixedBase + fixedHalfRange * (1 + fixedTrendBias * 0.3);
+            let fixedLow = fixedBase - fixedHalfRange * (1 - fixedTrendBias * 0.3);
+            
+            // ATR 修正
+            const fixedAtr = atrVal > 0 ? atrVal : (fixedBase * avgAmplitude / 100);
+            fixedHigh = Math.max(fixedHigh, fixedBase + fixedAtr * 0.5);
+            fixedLow = Math.min(fixedLow, fixedBase - fixedAtr * 0.5);
+            
+            // 支撑压力位修正
+            if (hasKline && closes.length >= 20) {
+                const [sR, rR] = this.findSupportResistance(highs, lows, closes);
+                if (rR && rR.length > 0) {
+                    const nearestResistance = rR[rR.length - 1];
+                    if (nearestResistance > fixedBase && nearestResistance < fixedHigh * 1.05) {
+                        fixedHigh = Math.max(fixedHigh, nearestResistance);
+                    }
+                }
+                if (sR && sR.length > 0) {
+                    const nearestSupport = sR[sR.length - 1];
+                    if (nearestSupport < fixedBase && nearestSupport > fixedLow * 0.95) {
+                        fixedLow = Math.min(fixedLow, nearestSupport);
+                    }
+                }
+            }
+            
+            summary.fixed_prediction = {
+                predicted_high: Math.round(fixedHigh * 100) / 100,
+                predicted_low: Math.round(fixedLow * 100) / 100,
+                base_price: Math.round(fixedBase * 100) / 100,
+                trend: fixedTrend,
+                avg_amplitude: Math.round(avgAmplitude * 100) / 100,
+                atr: Math.round(fixedAtr * 100) / 100,
+                confidence: confidence,
+                predict_for: '今日'
             };
         }
 
@@ -5214,6 +5307,8 @@ class StrategyEngine {
             summary.best_t = {
                 name: bestT.name,
                 entry_price: cp,
+                buy_price: bestT.buy_price || cp,
+                sell_price: bestT.sell_price || cp,
                 action: bestT.action,
             };
         }

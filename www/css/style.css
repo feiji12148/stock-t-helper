@@ -27,6 +27,20 @@
     --shadow: 0 4px 24px rgba(0,0,0,0.3);
     --glass-blur: blur(20px);
     --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    /* 内层表面色 - 用于卡片内的小区块、输入框等 */
+    --surface-1: rgba(255, 255, 255, 0.02);
+    --surface-2: rgba(255, 255, 255, 0.04);
+    --surface-3: rgba(255, 255, 255, 0.06);
+    --surface-hover: rgba(255, 255, 255, 0.08);
+    --surface-active: rgba(255, 255, 255, 0.1);
+    /* 内嵌色块 - 用于signal-prices等深色嵌入区 */
+    --bg-inset: rgba(0, 0, 0, 0.2);
+    /* 浮层背景 - 用于搜索建议、Toast等 */
+    --bg-overlay: rgba(17, 24, 39, 0.95);
+    /* 模态遮罩 */
+    --bg-modal-mask: rgba(0, 0, 0, 0.6);
+    --border-soft: rgba(255, 255, 255, 0.1);
+    --border-active: rgba(255, 255, 255, 0.15);
 }
 
 /* 皮肤: 暗夜紫 (默认) */
@@ -80,13 +94,30 @@ body.theme-light {
     --bg-secondary: #ffffff;
     --bg-card: rgba(255, 255, 255, 0.9);
     --bg-glass: rgba(0, 0, 0, 0.02);
-    --border-glass: rgba(0, 0, 0, 0.06);
+    --border-glass: rgba(0, 0, 0, 0.08);
     --text-primary: #1e293b;
-    --text-secondary: #64748b;
+    --text-secondary: #475569;
     --text-muted: #94a3b8;
     --accent: #6366f1;
     --accent-glow: rgba(99, 102, 241, 0.1);
-    --shadow: 0 4px 24px rgba(0,0,0,0.06);
+    --green: #16a34a;
+    --green-glow: rgba(22, 163, 74, 0.12);
+    --red: #dc2626;
+    --red-glow: rgba(220, 38, 38, 0.1);
+    --yellow: #d97706;
+    --yellow-glow: rgba(217, 119, 6, 0.1);
+    --orange: #ea580c;
+    --shadow: 0 2px 12px rgba(0,0,0,0.06);
+    --surface-1: rgba(0, 0, 0, 0.02);
+    --surface-2: rgba(0, 0, 0, 0.035);
+    --surface-3: rgba(0, 0, 0, 0.05);
+    --surface-hover: rgba(0, 0, 0, 0.06);
+    --surface-active: rgba(0, 0, 0, 0.08);
+    --bg-inset: rgba(99, 102, 241, 0.04);
+    --bg-overlay: rgba(255, 255, 255, 0.98);
+    --bg-modal-mask: rgba(15, 23, 42, 0.35);
+    --border-soft: rgba(0, 0, 0, 0.08);
+    --border-active: rgba(0, 0, 0, 0.12);
 }
 
 /* 皮肤: 同花顺风格 */
@@ -179,7 +210,7 @@ body::before {
 }
 
 .header-btn {
-    background: rgba(255,255,255,0.05);
+    background: var(--surface-3);
     border: 1px solid var(--border-glass);
     color: var(--text-secondary);
     padding: 6px 12px;
@@ -190,7 +221,7 @@ body::before {
 }
 
 .header-btn:hover {
-    background: rgba(255,255,255,0.1);
+    background: var(--surface-active);
     color: var(--text-primary);
 }
 
@@ -206,6 +237,21 @@ body::before {
     border-top: 1px solid var(--border-glass);
     padding: 6px 0;
     padding-bottom: max(6px, env(safe-area-inset-bottom));
+}
+
+/* 底部说明条 */
+.footer-note {
+    position: fixed;
+    bottom: calc(54px + env(safe-area-inset-bottom));
+    left: 0; right: 0;
+    text-align: center;
+    font-size: 10px;
+    color: var(--text-muted);
+    opacity: 0.6;
+    padding: 4px 0;
+    pointer-events: none;
+    z-index: 999;
+    background: linear-gradient(to bottom, transparent, var(--bg-primary) 50%);
 }
 
 .tab-btn {
@@ -269,6 +315,11 @@ body::before {
 
 .tab-content { display: none; }
 .tab-content.active { display: block; }
+
+/* 所有页面统一底部留白，防止被底部导航和说明条裁切 */
+.tab-content {
+    padding-bottom: calc(90px + env(safe-area-inset-bottom));
+}
 
 /* 页面切换动画 - 滑动效果 */
 .page-enter {
@@ -365,7 +416,7 @@ body::before {
     display: flex;
     gap: 8px;
     margin-bottom: 16px;
-    background: rgba(0,0,0,0.2);
+    background: var(--bg-inset);
     border-radius: 12px;
     padding: 6px;
     position: sticky;
@@ -417,7 +468,7 @@ body::before {
 }
 
 .card:hover {
-    border-color: rgba(255, 255, 255, 0.1);
+    border-color: var(--surface-active);
 }
 
 .card-title {
@@ -449,7 +500,7 @@ body::before {
 .search-input-wrap input {
     flex: 1;
     padding: 12px 16px 12px 40px;
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--surface-2);
     border: 1px solid var(--border-glass);
     border-radius: var(--radius-sm);
     color: var(--text-primary);
@@ -465,7 +516,7 @@ body::before {
 .search-input-wrap input:focus {
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-glow);
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--surface-3);
 }
 
 .search-input-wrap .search-icon {
@@ -536,7 +587,7 @@ body::before {
 
 .profit-item {
     padding: 12px 8px;
-    background: rgba(255, 255, 255, 0.02);
+    background: var(--surface-1);
     border-radius: var(--radius-sm);
     border: 1px solid var(--border-glass);
 }
@@ -568,7 +619,7 @@ body::before {
 
 .stat-item {
     padding: 12px;
-    background: rgba(255, 255, 255, 0.02);
+    background: var(--surface-1);
     border-radius: var(--radius-sm);
     border: 1px solid var(--border-glass);
     text-align: center;
@@ -683,7 +734,7 @@ body::before {
     justify-content: space-around;
     margin-top: 14px;
     padding: 12px;
-    background: rgba(0, 0, 0, 0.2);
+    background: var(--bg-inset);
     border-radius: var(--radius-sm);
 }
 
@@ -743,7 +794,7 @@ body::before {
 .market-detail-item {
     text-align: center;
     padding: 10px 4px;
-    background: rgba(255, 255, 255, 0.02);
+    background: var(--surface-1);
     border-radius: var(--radius-sm);
     border: 1px solid var(--border-glass);
 }
@@ -785,7 +836,7 @@ body::before {
     font-size: 12px;
     font-weight: 600;
     border: 1px solid var(--border-glass);
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--surface-2);
     color: var(--text-secondary);
     cursor: pointer;
     transition: var(--transition);
@@ -798,7 +849,7 @@ body::before {
     color: var(--accent);
 }
 
-.cat-tab:hover { background: rgba(255, 255, 255, 0.06); }
+.cat-tab:hover { background: var(--surface-3); }
 
 .cat-tab .cat-count {
     display: inline-block;
@@ -807,7 +858,7 @@ body::before {
     line-height: 16px;
     text-align: center;
     border-radius: 8px;
-    background: rgba(255, 255, 255, 0.1);
+    background: var(--surface-active);
     font-size: 10px;
     margin-left: 4px;
     padding: 0 4px;
@@ -953,13 +1004,13 @@ body::before {
 }
 
 .btn-ghost {
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--surface-2);
     border: 1px solid var(--border-glass);
     color: var(--text-secondary);
 }
 
 .btn-ghost:hover {
-    background: rgba(255, 255, 255, 0.08);
+    background: var(--surface-hover);
 }
 
 .btn-sm {
@@ -987,7 +1038,7 @@ body::before {
 .form-input, .form-select {
     width: 100%;
     padding: 12px 14px;
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--surface-2);
     border: 1px solid var(--border-glass);
     border-radius: var(--radius-sm);
     color: var(--text-primary);
@@ -1002,7 +1053,7 @@ body::before {
 .form-input:focus, .form-select:focus {
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-glow);
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--surface-3);
 }
 
 .form-select {
@@ -1029,7 +1080,7 @@ body::before {
     flex: 1;
     min-width: 100px;
     padding: 10px 12px;
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--surface-2);
     border: 1px solid var(--border-glass);
     border-radius: var(--radius-sm);
     color: var(--text-primary);
@@ -1117,7 +1168,7 @@ body::before {
     bottom: 90px;
     left: 50%;
     transform: translateX(-50%);
-    background: rgba(17, 24, 39, 0.95);
+    background: var(--bg-overlay);
     backdrop-filter: var(--glass-blur);
     -webkit-backdrop-filter: var(--glass-blur);
     border: 1px solid var(--border-glass);
@@ -1182,7 +1233,7 @@ body::before {
     font-size: 11px;
     font-weight: 700;
     border: 1px solid var(--border-glass);
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--surface-2);
     color: var(--text-secondary);
     display: flex;
     align-items: center;
@@ -1191,7 +1242,7 @@ body::before {
     transition: var(--transition);
 }
 
-.summary-chip:hover { background: rgba(255, 255, 255, 0.06); }
+.summary-chip:hover { background: var(--surface-3); }
 
 .summary-chip .dot {
     width: 6px; height: 6px;
@@ -1209,7 +1260,7 @@ body::before {
     position: fixed;
     top: 0; left: 0;
     width: 100%; height: 100%;
-    background: rgba(0,0,0,0.6);
+    background: var(--bg-modal-mask);
     backdrop-filter: blur(8px);
     display: flex;
     align-items: center;
@@ -1274,7 +1325,7 @@ body::before {
     position: absolute;
     top: calc(100% + 6px);
     left: 0; right: 0;
-    background: rgba(17, 24, 39, 0.95);
+    background: var(--bg-overlay);
     backdrop-filter: var(--glass-blur);
     -webkit-backdrop-filter: var(--glass-blur);
     border: 1px solid var(--border-glass);
@@ -1337,7 +1388,7 @@ body::before {
 
 .profit-item {
     padding: 12px 8px;
-    background: rgba(255, 255, 255, 0.02);
+    background: var(--surface-1);
     border-radius: var(--radius-sm);
     border: 1px solid var(--border-glass);
 }
@@ -1369,7 +1420,7 @@ body::before {
 
 .stat-item {
     padding: 12px;
-    background: rgba(255, 255, 255, 0.02);
+    background: var(--surface-1);
     border-radius: var(--radius-sm);
     border: 1px solid var(--border-glass);
     text-align: center;
@@ -1505,7 +1556,7 @@ body::before {
     justify-content: space-around;
     margin-top: 14px;
     padding: 12px;
-    background: rgba(0, 0, 0, 0.2);
+    background: var(--bg-inset);
     border-radius: var(--radius-sm);
 }
 
@@ -1609,7 +1660,7 @@ body::before {
 
 .setting-select {
     padding: 8px 12px;
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--surface-3);
     border: 1px solid var(--border-glass);
     border-radius: var(--radius-sm);
     color: var(--text-primary);
@@ -1620,7 +1671,7 @@ body::before {
 .setting-input {
     width: 70px;
     padding: 8px 10px;
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--surface-3);
     border: 1px solid var(--border-glass);
     border-radius: var(--radius-sm);
     color: var(--text-primary);
@@ -1647,7 +1698,7 @@ body::before {
     cursor: pointer;
     top: 0; left: 0;
     right: 0; bottom: 0;
-    background-color: rgba(255, 255, 255, 0.1);
+    background-color: var(--surface-active);
     transition: 0.3s;
     border-radius: 26px;
 }
@@ -1749,7 +1800,7 @@ body::before {
     padding: 7px 14px;
     border: 1px solid var(--border-glass);
     border-radius: 20px;
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--surface-2);
     color: var(--text-secondary);
     font-size: 13px;
     font-weight: 500;
@@ -1793,7 +1844,7 @@ body::before {
 
 .learn-card:active {
     transform: scale(0.97);
-    border-color: rgba(255, 255, 255, 0.1);
+    border-color: var(--surface-active);
 }
 
 .learn-card-icon {
@@ -2058,3 +2109,316 @@ body::before {
         gap: 8px;
     }
 }
+
+/* =====================================================
+   浅色主题全面覆盖 - 确保所有元素清晰可读
+   深色主题完全不受影响
+   ===================================================== */
+
+/* 背景渐变 - 浅色更柔和 */
+body.theme-light::before {
+    background:
+        radial-gradient(ellipse at 20% 0%, rgba(99, 102, 241, 0.04) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 100%, rgba(22, 163, 74, 0.03) 0%, transparent 50%);
+}
+
+
+    /* 顶部导航 - 浅色需要更不透明 */
+body.theme-light .header {
+        background: rgba(241, 245, 249, 0.92);
+        border-bottom-color: rgba(0, 0, 0, 0.06);
+}
+
+body.theme-light .header-btn {
+        background: rgba(0, 0, 0, 0.03);
+        border-color: rgba(0, 0, 0, 0.08);
+}
+
+body.theme-light .header-btn:hover {
+        background: rgba(0, 0, 0, 0.06);
+}
+
+    /* 底部导航 */
+body.theme-light .tab-nav {
+        background: rgba(248, 250, 252, 0.95);
+        border-top-color: rgba(0, 0, 0, 0.06);
+}
+
+body.theme-light .footer-note {
+        background: linear-gradient(to bottom, transparent, var(--bg-primary) 50%);
+}
+
+    /* 策略页顶部选项卡 - 浅色背景 */
+body.theme-light .top-tabs {
+        background: rgba(0, 0, 0, 0.04);
+}
+
+    /* 卡片悬停边框 */
+body.theme-light .card:hover {
+        border-color: rgba(99, 102, 241, 0.2);
+}
+
+    /* 搜索建议浮层 - 浅色背景 */
+body.theme-light .search-suggestions {
+        background: rgba(255, 255, 255, 0.98);
+        border-color: rgba(0, 0, 0, 0.08);
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+}
+
+    body.theme-light .suggestion-item:hover,
+body.theme-light .suggestion-item:active {
+        background: rgba(99, 102, 241, 0.06);
+}
+
+    /* Toast - 浅色下用深色背景保持可读 */
+body.theme-light .toast {
+        background: rgba(30, 41, 59, 0.95);
+        color: #f1f5f9;
+        border-color: rgba(255, 255, 255, 0.1);
+}
+
+    /* 模态框 */
+body.theme-light .modal {
+        background: rgba(15, 23, 42, 0.35);
+}
+
+body.theme-light .modal-content {
+        background: #ffffff;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
+}
+
+    /* 信号面板渐变 - 浅色下更柔和 */
+    body.theme-light .signal-panel,
+body.theme-light .core-advice-panel {
+        background: linear-gradient(135deg, rgba(99, 102, 241, 0.06) 0%, rgba(139, 92, 246, 0.04) 100%);
+        border-color: rgba(99, 102, 241, 0.12);
+}
+
+    body.theme-light .signal-panel::before,
+body.theme-light .core-advice-panel::before {
+        background: radial-gradient(circle, rgba(99, 102, 241, 0.04) 0%, transparent 70%);
+}
+
+body.theme-light .signal-panel-mini {
+        background: linear-gradient(135deg, rgba(99, 102, 241, 0.04) 0%, rgba(139, 92, 246, 0.03) 100%);
+        border-color: rgba(99, 102, 241, 0.1);
+}
+
+    /* 信号价格区域 - 浅色下用淡蓝灰 */
+    body.theme-light .signal-prices,
+body.theme-light .core-advice-prices {
+        background: rgba(99, 102, 241, 0.04);
+}
+
+    /* 全景评分总分面板 */
+body.theme-light .panorama-total-score {
+        background: linear-gradient(135deg, rgba(22, 163, 74, 0.06), rgba(99, 102, 241, 0.06));
+        border-color: rgba(22, 163, 74, 0.12);
+}
+
+    /* 评分卡片悬停 */
+body.theme-light .score-card.clickable:hover {
+        background: rgba(99, 102, 241, 0.04);
+        border-color: var(--accent);
+}
+
+    /* 评分条背景 */
+body.theme-light .score-bar {
+        background: rgba(0, 0, 0, 0.06);
+}
+
+    /* 可行性标签 - 浅色下加深背景 */
+    body.theme-light .feasibility-high,
+body.theme-light .feasibility-极高 {
+        background: rgba(22, 163, 74, 0.1);
+}
+
+    body.theme-light .feasibility-medium,
+body.theme-light .feasibility-中 {
+        background: rgba(217, 119, 6, 0.1);
+}
+
+    body.theme-light .feasibility-low,
+body.theme-light .feasibility-低 {
+        background: rgba(220, 38, 38, 0.08);
+}
+
+    /* 交易类型标签 */
+body.theme-light .trade-type.buy {
+        background: rgba(220, 38, 38, 0.08);
+}
+
+body.theme-light .trade-type.sell {
+        background: rgba(22, 163, 74, 0.08);
+}
+
+    /* 自动刷新指示器 */
+body.theme-light .auto-refresh-indicator {
+        background: rgba(22, 163, 74, 0.08);
+        border-color: rgba(22, 163, 74, 0.15);
+}
+
+    /* 总操作标签 */
+body.theme-light .total-action.buy {
+        background: rgba(22, 163, 74, 0.1);
+}
+
+body.theme-light .total-action.sell {
+        background: rgba(220, 38, 38, 0.08);
+}
+
+body.theme-light .total-action.watch {
+        background: rgba(217, 119, 6, 0.1);
+}
+
+    /* 策略卡片左边条 - priority发光效果 */
+body.theme-light .strategy-card.priority::before {
+        box-shadow: 0 0 8px rgba(220, 38, 38, 0.2);
+}
+
+body.theme-light .strategy-card.novel::before {
+        box-shadow: 0 0 8px rgba(217, 119, 6, 0.2);
+}
+
+    /* 高徽章和新颖徽章 */
+body.theme-light .strategy-name .high-badge {
+        background: rgba(220, 38, 38, 0.08);
+}
+
+body.theme-light .strategy-name .novel-badge {
+        background: rgba(217, 119, 6, 0.08);
+}
+
+    /* 监控标签 */
+body.theme-light .watch-tag {
+        background: rgba(99, 102, 241, 0.08);
+        border-color: rgba(99, 102, 241, 0.2);
+}
+
+body.theme-light .watch-tag:hover {
+        background: rgba(99, 102, 241, 0.12);
+        border-color: rgba(99, 102, 241, 0.3);
+}
+
+    /* 学习卡片标签 */
+body.theme-light .learn-card-tag {
+        background: rgba(99, 102, 241, 0.08);
+}
+
+    /* 学习标签激活态 */
+body.theme-light .learn-tab.active {
+        box-shadow: 0 2px 8px rgba(99, 102, 241, 0.2);
+}
+
+    /* 历史标签 */
+body.theme-light .history-tag {
+        background: rgba(99, 102, 241, 0.06);
+        border-color: rgba(99, 102, 241, 0.12);
+}
+
+body.theme-light .history-tag:hover {
+        background: rgba(99, 102, 241, 0.1);
+}
+
+    /* 开关未选中态 */
+body.theme-light .toggle-slider {
+        background-color: rgba(0, 0, 0, 0.12);
+}
+
+    /* 危险按钮 */
+body.theme-light .btn-danger {
+        background: rgba(220, 38, 38, 0.08);
+        border-color: rgba(220, 38, 38, 0.2);
+}
+
+body.theme-light .btn-danger:hover {
+        background: rgba(220, 38, 38, 0.12);
+}
+
+    /* 搜索按钮和主按钮 - 浅色下渐变 */
+body.theme-light .btn-primary {
+        box-shadow: 0 2px 12px rgba(99, 102, 241, 0.2);
+}
+
+body.theme-light .btn-primary:hover {
+        box-shadow: 0 4px 16px rgba(99, 102, 241, 0.3);
+}
+
+    /* select option */
+body.theme-light .form-select option {
+        background: #ffffff;
+        color: var(--text-primary);
+}
+
+    /* 搜索框下拉箭头颜色 */
+body.theme-light .form-select {
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%2364748b' viewBox='0 0 16 16'%3E%3Cpath d='M8 11L3 6h10z'/%3E%3C/svg%3E");
+}
+
+    /* 分类标签计数 */
+body.theme-light .cat-tab .cat-count {
+        background: rgba(0, 0, 0, 0.06);
+}
+
+body.theme-light .cat-tab.active .cat-count {
+        background: rgba(99, 102, 241, 0.15);
+}
+
+    /* 概览芯片 */
+body.theme-light .summary-chip {
+        background: rgba(0, 0, 0, 0.02);
+}
+
+    /* 策略卡片 */
+body.theme-light .strategy-card {
+        background: rgba(255, 255, 255, 0.8);
+}
+
+    /* 交易记录卡片 */
+body.theme-light .trade-item {
+        background: rgba(255, 255, 255, 0.8);
+}
+
+    /* 评分卡片 */
+body.theme-light .score-card {
+        background: rgba(255, 255, 255, 0.8);
+        border-color: rgba(0, 0, 0, 0.06);
+}
+
+    /* 学习卡片 */
+body.theme-light .learn-card {
+        background: rgba(255, 255, 255, 0.8);
+}
+
+body.theme-light .learn-card:active {
+        border-color: rgba(99, 102, 241, 0.2);
+}
+
+    /* 设置选择器 */
+    body.theme-light .setting-select,
+body.theme-light .setting-input {
+        background: rgba(0, 0, 0, 0.03);
+}
+
+    /* 交易表单 */
+    body.theme-light .trade-form input,
+body.theme-light .trade-form select {
+        background: rgba(0, 0, 0, 0.03);
+}
+
+body.theme-light .trade-form button {
+        background: var(--green);
+        color: white;
+}
+
+    /* Loading 圆圈 */
+body.theme-light .loading::after {
+        border-color: rgba(0, 0, 0, 0.08);
+        border-top-color: var(--accent);
+}
+
+    /* 主题选择器悬停 */
+body.theme-light .theme-option:hover {
+        background: rgba(99, 102, 241, 0.04);
+}
+
