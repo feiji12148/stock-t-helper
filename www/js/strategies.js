@@ -4241,6 +4241,22 @@ class StrategyEngine {
         const sellSignals = results.filter(s => SELL_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
         const tSignals = results.filter(s => T_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
 
+        // 综合趋势方向：基于买卖信号的优先级权重加权计算
+        let _buyWeight = 0, _sellWeight = 0;
+        for (const s of buySignals) {
+            _buyWeight += s.priority === 0 ? 3 : s.priority === 1 ? 2 : 1;
+        }
+        for (const s of sellSignals) {
+            _sellWeight += s.priority === 0 ? 3 : s.priority === 1 ? 2 : 1;
+        }
+        const _totalWeight = _buyWeight + _sellWeight;
+        const _bias = _totalWeight > 0 ? (_buyWeight - _sellWeight) / _totalWeight : 0;
+        let _direction = 'HOLD';
+        if (_bias >= 0.4) _direction = 'STRONG_BUY';
+        else if (_bias >= 0.15) _direction = 'BUY';
+        else if (_bias <= -0.4) _direction = 'STRONG_SELL';
+        else if (_bias <= -0.15) _direction = 'SELL';
+
         const summary = {
             current_price: cp,
             atr: Math.round(atrVal * 100) / 100,
@@ -4249,6 +4265,10 @@ class StrategyEngine {
             buy_signals: results.filter(s => BUY_ACTIONS.has(s.action)).length,
             sell_signals: results.filter(s => SELL_ACTIONS.has(s.action)).length,
             t_signals: results.filter(s => T_ACTIONS.has(s.action)).length,
+            direction: _direction,
+            trend_bias: Math.round(_bias * 100) / 100,
+            buy_weight: _buyWeight,
+            sell_weight: _sellWeight,
         };
 
         if (buySignals.length > 0) {
@@ -5260,6 +5280,22 @@ class StrategyEngine {
         const sellSignals = results.filter(s => SELL_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
         const tSignals = results.filter(s => T_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
 
+        // 综合趋势方向：基于买卖信号的优先级权重加权计算
+        let _buyWeight = 0, _sellWeight = 0;
+        for (const s of buySignals) {
+            _buyWeight += s.priority === 0 ? 3 : s.priority === 1 ? 2 : 1;
+        }
+        for (const s of sellSignals) {
+            _sellWeight += s.priority === 0 ? 3 : s.priority === 1 ? 2 : 1;
+        }
+        const _totalWeight = _buyWeight + _sellWeight;
+        const _bias = _totalWeight > 0 ? (_buyWeight - _sellWeight) / _totalWeight : 0;
+        let _direction = 'HOLD';
+        if (_bias >= 0.4) _direction = 'STRONG_BUY';
+        else if (_bias >= 0.15) _direction = 'BUY';
+        else if (_bias <= -0.4) _direction = 'STRONG_SELL';
+        else if (_bias <= -0.15) _direction = 'SELL';
+
         const summary = {
             current_price: cp,
             atr: Math.round(atrVal * 100) / 100,
@@ -5268,6 +5304,10 @@ class StrategyEngine {
             buy_signals: results.filter(s => BUY_ACTIONS.has(s.action)).length,
             sell_signals: results.filter(s => SELL_ACTIONS.has(s.action)).length,
             t_signals: results.filter(s => T_ACTIONS.has(s.action)).length,
+            direction: _direction,
+            trend_bias: Math.round(_bias * 100) / 100,
+            buy_weight: _buyWeight,
+            sell_weight: _sellWeight,
         };
 
         if (buySignals.length > 0) {

@@ -1,6 +1,8 @@
 let _currentStock = null;
 let _watchList = [];
 let _trades = [];
+let _feeDetail = { commissionFee: 0, stampTax: 0, transferFee: 0, totalFees: 0 };
+let _profitDetail = { totalProfit: 0, realizedProfit: 0, unrealizedProfit: 0, tProfit: 0, tTradeCount: 0, stockProfits: [], totalBuy: 0, totalSell: 0, remaining: 0, tradeCount: 0, totalBuyAmount: 0, totalSellAmount: 0, commissionFee: 0, stampTax: 0, transferFee: 0, totalFees: 0 };
 let _lastStrategies = [];
 let _lastSummary = {};
 let _lastKlines = [];
@@ -204,6 +206,10 @@ function init() {
     }, 300);
     
     setTimeout(() => {
+        loadDefaultStock();
+    }, 1500);
+    
+    setTimeout(() => {
         if (typeof strategyEngine === 'undefined') {
             console.error('StrategyEngine not loaded');
         }
@@ -339,7 +345,6 @@ function initPullRefresh() {
                     indicator.classList.remove('refreshing');
                     indicator.style.transform = 'translateY(-50px)';
                     indicator.querySelector('.refresh-text').textContent = '下拉刷新';
-                    showToast('数据已刷新');
                 }, 500);
             };
             doRefresh();
@@ -472,22 +477,35 @@ function switchStrategySubtab(subtabName) {
 function switchTab(tabName) {
     const prevTab = document.querySelector('.tab-content.active');
     const nextTab = document.getElementById('tab-' + tabName);
-    
+
     // 移除所有激活状态
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
     document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
-    
+
     // 添加动画效果
     if (nextTab) {
         nextTab.classList.add('active');
         nextTab.classList.add('page-enter');
         setTimeout(() => nextTab.classList.remove('page-enter'), 300);
     }
-    
+
     const btns = document.querySelectorAll('.tab-btn');
     const tabMap = { home: 0, trade: 1, strategy: 2, learn: 3, settings: 4 };
     if (btns[tabMap[tabName]]) btns[tabMap[tabName]].classList.add('active');
-    
+
+    // 顶部行情栏只在首页和策略页显示（非fixed，随页面滚动）
+    const header = document.querySelector('.header');
+    const content = document.querySelector('.content');
+    if (header && content) {
+        if (tabName === 'home' || tabName === 'strategy') {
+            header.style.display = '';
+            content.style.marginTop = '0px';
+        } else {
+            header.style.display = 'none';
+            content.style.marginTop = 'env(safe-area-inset-top)';
+        }
+    }
+
     if (tabName === 'home') {
         refreshProfit();
         renderWatchList();
@@ -1217,32 +1235,63 @@ function renderStockInfo() {
     if (!_currentStock) return;
     
     const emptyHome = document.getElementById('emptyHome');
-    const marketSection = document.getElementById('marketSection');
     if (emptyHome) emptyHome.style.display = 'none';
-    if (marketSection) marketSection.style.display = 'block';
     
-    const setText = (id, text) => {
-        const el = document.getElementById(id);
-        if (el) el.innerText = text;
-    };
+    // 更新顶部header行情
+    updateHeaderQuote();
+}
+
+function updateHeaderQuote(tOpportunity) {
+    if (!_currentStock) return;
     
-    setText('marketName', _currentStock.name);
-    setText('marketCode', _currentStock.code);
-    setText('marketPrice', _currentStock.current_price.toFixed(2));
+    const nameEl = document.getElementById('headerStockName');
+    const codeEl = document.getElementById('headerStockCode');
+    const priceEl = document.getElementById('headerStockPrice');
+    const changeEl = document.getElementById('headerStockChange');
+    const scrollEl = document.getElementById('headerQuoteScroll');
     
-    const changeEl = document.getElementById('marketChange');
-    const changeVal = _currentStock.change_percent;
+    if (nameEl) nameEl.innerText = _currentStock.name;
+    if (codeEl) codeEl.innerText = _currentStock.code;
+    
+    const chg = _currentStock.change_percent || 0;
+    const chgColor = chg >= 0 ? 'var(--red)' : 'var(--green)';
+    const chgSign = chg >= 0 ? '+' : '';
+    
+    if (priceEl) {
+        priceEl.innerText = '￥' + _currentStock.current_price.toFixed(2);
+        priceEl.style.color = chgColor;
+    }
     if (changeEl) {
-        changeEl.innerText = (changeVal >= 0 ? '+' : '') + changeVal.toFixed(2) + '%';
-        changeEl.className = 'market-hero-change ' + (changeVal >= 0 ? 'up' : 'down');
+        changeEl.innerText = chgSign + chg.toFixed(2) + '%';
+        changeEl.style.color = chgColor;
     }
     
-    setText('marketOpen', _currentStock.open_price.toFixed(2));
-    setText('marketHigh', _currentStock.high_price.toFixed(2));
-    setText('marketLow', _currentStock.low_price.toFixed(2));
-    setText('marketPreClose', _currentStock.prev_close.toFixed(2));
-    setText('marketVolume', formatVolume(_currentStock.volume));
-    setText('marketTurnover', _currentStock.turnover.toFixed(2) + '%');
+    if (scrollEl) {
+        const openPrice = _currentStock.open_price ? _currentStock.open_price.toFixed(2) : '--';
+        const highPrice = _currentStock.high_price ? _currentStock.high_price.toFixed(2) : '--';
+        const lowPrice = _currentStock.low_price ? _currentStock.low_price.toFixed(2) : '--';
+        const prevClose = _currentStock.prev_close ? _currentStock.prev_close.toFixed(2) : '--';
+        const vol = _currentStock.volume ? formatVolume(_currentStock.volume) : '--';
+        const turnover = _currentStock.turnover != null ? _currentStock.turnover.toFixed(2) + '%' : '--';
+        const tText = tOpportunity != null ? tOpportunity : '分析中';
+        
+        const row = '<span style="font-size:11px; color:var(--text-muted);">今开 <span style="color:var(--text-primary);">' + openPrice + '</span></span>' +
+            '<span style="width:12px; display:inline-block;"></span>' +
+            '<span style="font-size:11px; color:var(--text-muted);">最高 <span style="color:var(--red);">' + highPrice + '</span></span>' +
+            '<span style="width:12px; display:inline-block;"></span>' +
+            '<span style="font-size:11px; color:var(--text-muted);">最低 <span style="color:var(--green);">' + lowPrice + '</span></span>' +
+            '<span style="width:12px; display:inline-block;"></span>' +
+            '<span style="font-size:11px; color:var(--text-muted);">昨收 <span style="color:var(--text-primary);">' + prevClose + '</span></span>' +
+            '<span style="width:12px; display:inline-block;"></span>' +
+            '<span style="font-size:11px; color:var(--text-muted);">成交量 <span style="color:var(--text-primary);">' + vol + '</span></span>' +
+            '<span style="width:12px; display:inline-block;"></span>' +
+            '<span style="font-size:11px; color:var(--text-muted);">换手率 <span style="color:var(--text-primary);">' + turnover + '</span></span>' +
+            '<span style="width:12px; display:inline-block;"></span>' +
+            '<span style="font-size:11px; color:var(--text-muted);">做T机会 <span style="color:var(--yellow);">' + tText + '</span></span>' +
+            '<span style="width:40px; display:inline-block;"></span>';
+        
+        scrollEl.innerHTML = row + row;
+    }
 }
 
 function formatVolume(vol) {
@@ -1403,8 +1452,13 @@ function renderBestPlan(summary) {
     setText('planTotal', summary.total_signals || '--');
     setText('planBuySell', `买${summary.buy_signals || 0} / 卖${summary.sell_signals || 0}`);
     
+    if (summary.best_buy || summary.best_sell) {
+        setDisplay('planBuySellSection', 'block');
+    } else {
+        setDisplay('planBuySellSection', 'none');
+    }
+    
     if (summary.best_buy) {
-        setDisplay('planBuySection', 'block');
         setText('planBuyName', summary.best_buy.name);
         setText('planBuyEntry', '￥' + (summary.best_buy.entry_price || summary.current_price || 0).toFixed(2));
         setText('planBuyTarget', '￥' + (summary.best_buy.target_price || 0).toFixed(2));
@@ -1412,12 +1466,11 @@ function renderBestPlan(summary) {
         setText('planBuyProfit', summary.best_buy.profit_potential ? '+' + summary.best_buy.profit_potential.toFixed(2) + '%' : '--');
         setText('planBuyRisk', summary.best_buy.loss_risk ? summary.best_buy.loss_risk.toFixed(2) + '%' : '--');
         setText('planBuyRatio', summary.best_buy.risk_reward ? summary.best_buy.risk_reward.toFixed(2) : '--');
-    } else {
-        setDisplay('planBuySection', 'none');
+        const buyRate = calcStrategySuccessRate(summary.best_buy, summary, 'buy');
+        setText('planBuySuccessRate', '成功率 ' + buyRate + '%');
     }
     
     if (summary.best_sell) {
-        setDisplay('planSellSection', 'block');
         setText('planSellName', summary.best_sell.name);
         setText('planSellEntry', '￥' + (summary.best_sell.entry_price || summary.current_price || 0).toFixed(2));
         setText('planSellTarget', '￥' + (summary.best_sell.target_price || 0).toFixed(2));
@@ -1425,8 +1478,8 @@ function renderBestPlan(summary) {
         setText('planSellProfit', summary.best_sell.profit_potential ? '+' + summary.best_sell.profit_potential.toFixed(2) + '%' : '--');
         setText('planSellRisk', summary.best_sell.loss_risk ? summary.best_sell.loss_risk.toFixed(2) + '%' : '--');
         setText('planSellRatio', summary.best_sell.risk_reward ? summary.best_sell.risk_reward.toFixed(2) : '--');
-    } else {
-        setDisplay('planSellSection', 'none');
+        const sellRate = calcStrategySuccessRate(summary.best_sell, summary, 'sell');
+        setText('planSellSuccessRate', '成功率 ' + sellRate + '%');
     }
     
     if (summary.best_t) {
@@ -1484,11 +1537,27 @@ function renderBestPlan(summary) {
         const homePred = document.getElementById('homePricePrediction');
         if (homePred) {
             homePred.style.display = 'block';
+            // 股票名称和现价
+            const stockNameEl = document.getElementById('homePredStockName');
+            if (stockNameEl) stockNameEl.innerText = (summary.stock_name || '') + ' ' + (summary.stock_code || '');
+            const curPriceEl = document.getElementById('homePredCurrentPrice');
+            if (curPriceEl) {
+                curPriceEl.innerText = '￥' + (summary.current_price || 0).toFixed(2);
+                const change = summary.change_percent || 0;
+                curPriceEl.style.color = change >= 0 ? 'var(--red)' : 'var(--green)';
+            }
             document.getElementById('homePredictedHigh').innerText = '￥' + p.predicted_high.toFixed(2);
             document.getElementById('homePredictedLow').innerText = '￥' + p.predicted_low.toFixed(2);
             const pos = Math.max(0, Math.min(100, p.price_position));
             document.getElementById('homePriceDot').style.left = pos + '%';
             document.getElementById('homePricePosLabel').innerText = '位置: ' + pos.toFixed(1) + '%';
+            
+            // 动态预测时间
+            const dynTimeEl = document.getElementById('homeDynamicTime');
+            if (dynTimeEl && summary.update_time) {
+                const d = new Date(summary.update_time);
+                dynTimeEl.innerText = '预测: ' + (d.getMonth()+1) + '/' + d.getDate() + ' ' + d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0') + ':' + d.getSeconds().toString().padStart(2,'0');
+            }
             
             // 固定预测（基于昨日收盘，全天不变）
             const fp = summary.fixed_prediction;
@@ -1496,20 +1565,370 @@ function renderBestPlan(summary) {
                 const elFixedHigh = document.getElementById('homeFixedHigh');
                 const elFixedLow = document.getElementById('homeFixedLow');
                 const elFixedBase = document.getElementById('homeFixedBase');
+                const elFixedTime = document.getElementById('homeFixedTime');
                 if (elFixedHigh) elFixedHigh.innerText = '￥' + fp.predicted_high.toFixed(2);
                 if (elFixedLow) elFixedLow.innerText = '￥' + fp.predicted_low.toFixed(2);
                 if (elFixedBase) elFixedBase.innerText = '基准价: ￥' + fp.base_price.toFixed(2) + ' · 振幅: ' + fp.avg_amplitude + '% · 趋势: ' + fp.trend;
+                if (elFixedTime) {
+                    const yesterday = new Date();
+                    yesterday.setDate(yesterday.getDate() - 1);
+                    elFixedTime.innerText = '预测: ' + (yesterday.getMonth()+1) + '/' + yesterday.getDate() + ' 15:00';
+                }
             }
         }
+    }
+    
+    // 更新顶部header的做T机会
+    let tText = '一般';
+    if (summary.best_t) {
+        const action = summary.best_t.action;
+        if (action === 'BUY_THEN_SELL') tText = '正T';
+        else if (action === 'SELL_THEN_BUY') tText = '反T';
+        else if (action === 'BOX_TRADING') tText = '箱体';
+        else tText = '有机会';
+    } else {
+        tText = '一般';
+    }
+    if (typeof updateHeaderQuote === 'function') {
+        updateHeaderQuote(tText);
+    }
+}
+
+function calcStrategySuccessRate(strategy, summary, type) {
+    if (!strategy) return 0;
+    let rate = 50;
+    const trendBias = summary.trend_bias != null ? summary.trend_bias : 0;
+    
+    // 1. 趋势方向（权重最大，±22分）
+    if (type === 'buy') {
+        rate += Math.round(trendBias * 22);
+    } else if (type === 'sell') {
+        rate -= Math.round(trendBias * 22);
+    }
+    
+    // 2. 信号数量对比（±20分）
+    const buyCount = summary.buy_signals || 0;
+    const sellCount = summary.sell_signals || 0;
+    const total = Math.max(1, summary.total_signals || 1);
+    if (type === 'buy') {
+        rate += Math.round((buyCount / total) * 20) - 10;
+    } else if (type === 'sell') {
+        rate += Math.round((sellCount / total) * 20) - 10;
+    }
+    
+    // 3. 买卖权重对比（优先级加权，±15分）
+    const buyWeight = summary.buy_weight || 0;
+    const sellWeight = summary.sell_weight || 0;
+    const weightTotal = buyWeight + sellWeight;
+    if (weightTotal > 0) {
+        if (type === 'buy') {
+            rate += Math.round((buyWeight / weightTotal) * 15) - 7.5;
+        } else if (type === 'sell') {
+            rate += Math.round((sellWeight / weightTotal) * 15) - 7.5;
+        }
+    }
+    
+    // 4. 盈亏比
+    if (strategy.risk_reward) {
+        const rr = parseFloat(strategy.risk_reward);
+        if (rr >= 3) rate += 10;
+        else if (rr >= 2) rate += 5;
+        else if (rr >= 1) rate += 0;
+        else rate -= 8;
+    }
+    
+    // 5. 利润空间与风险空间
+    if (strategy.profit_potential != null && strategy.loss_risk != null) {
+        const profit = Math.abs(strategy.profit_potential);
+        const risk = Math.abs(strategy.loss_risk);
+        if (profit > 0 && risk >= 0) {
+            if (profit > risk * 2) rate += 6;
+            else if (profit > risk * 1.5) rate += 3;
+            else if (profit < risk) rate -= 6;
+        }
+    }
+    
+    // 6. ATR波动率
+    const atrPct = summary.atr_pct || 2;
+    if (atrPct > 5) rate -= 4;
+    else if (atrPct < 1.5) rate += 4;
+    
+    // 7. 做T信号支持
+    const tCount = summary.t_signals || 0;
+    if (tCount > 0) rate += 2;
+    
+    return Math.max(15, Math.min(92, Math.round(rate)));
+}
+
+function switchPlanTab(tab) {
+    const tabBuy = document.getElementById('planTabBuy');
+    const tabSell = document.getElementById('planTabSell');
+    const cardBuy = document.getElementById('planBuyCard');
+    const cardSell = document.getElementById('planSellCard');
+    if (tab === 'buy') {
+        tabBuy.className = 'plan-tab active';
+        tabBuy.style.color = '';
+        tabSell.className = 'plan-tab';
+        tabSell.style.color = 'var(--text-secondary)';
+        cardBuy.style.display = 'block';
+        cardSell.style.display = 'none';
+    } else {
+        tabSell.className = 'plan-tab active';
+        tabSell.style.color = '';
+        tabBuy.className = 'plan-tab';
+        tabBuy.style.color = 'var(--text-secondary)';
+        cardSell.style.display = 'block';
+        cardBuy.style.display = 'none';
+    }
+}
+
+function switchHoldingTab(tab) {
+    const tabStat = document.getElementById('holdingTabStat');
+    const tabDetail = document.getElementById('holdingTabDetail');
+    const statContent = document.getElementById('holdingStatContent');
+    const detailContent = document.getElementById('holdingDetailContent');
+    if (tab === 'stat') {
+        tabStat.className = 'plan-tab active';
+        tabStat.style.color = '';
+        tabDetail.className = 'plan-tab';
+        tabDetail.style.color = 'var(--text-secondary)';
+        statContent.style.display = 'block';
+        detailContent.style.display = 'none';
+    } else {
+        tabDetail.className = 'plan-tab active';
+        tabDetail.style.color = '';
+        tabStat.className = 'plan-tab';
+        tabStat.style.color = 'var(--text-secondary)';
+        detailContent.style.display = 'block';
+        statContent.style.display = 'none';
+    }
+}
+
+function showFeeDetailModal() {
+    const d = _feeDetail || {};
+    const modalHtml = '<div id="feeDetailModal" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999;">' +
+        '<div style="background:var(--bg-overlay);border-radius:16px;padding:20px;max-width:360px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.4);">' +
+        '<div style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:16px;text-align:center;">💰 手续费明细</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px;margin-bottom:12px;">' +
+        '<div style="padding:12px;background:var(--bg-inset);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">佣金（双向）</div><div style="font-weight:700;margin-top:4px;color:var(--red);">¥' + (d.commissionFee||0).toFixed(2) + '</div></div>' +
+        '<div style="padding:12px;background:var(--bg-inset);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">印花税（卖出）</div><div style="font-weight:700;margin-top:4px;color:var(--red);">¥' + (d.stampTax||0).toFixed(2) + '</div></div>' +
+        '<div style="padding:12px;background:var(--bg-inset);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">过户费（双向）</div><div style="font-weight:700;margin-top:4px;color:var(--red);">¥' + (d.transferFee||0).toFixed(2) + '</div></div>' +
+        '<div style="padding:12px;background:rgba(248,113,113,0.08);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">总费用</div><div style="font-weight:700;margin-top:4px;color:var(--red);font-size:16px;">¥' + (d.totalFees||0).toFixed(2) + '</div></div>' +
+        '</div>' +
+        '<div style="padding:10px;background:rgba(250,204,21,0.08);border-radius:8px;font-size:11px;color:var(--text-muted);margin-bottom:12px;">' +
+        '💡 佣金：万分之三，最低5元<br>' +
+        '💡 印花税：千分之一，仅卖出收取<br>' +
+        '💡 过户费：十万分之一，双向收取' +
+        '</div>' +
+        '<button onclick="closeFeeDetailModal()" style="width:100%;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;">关闭</button>' +
+        '</div></div>';
+    const oldModal = document.getElementById('feeDetailModal');
+    if (oldModal) oldModal.remove();
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+}
+
+function closeFeeDetailModal() {
+    const modal = document.getElementById('feeDetailModal');
+    if (modal) modal.remove();
+}
+
+function showProfitDetail(type) {
+    const d = _profitDetail || {};
+    const stocks = d.stockProfits || [];
+    let title = '', content = '';
+    const fmtMoney = (v) => (v >= 0 ? '+' : '') + '¥' + (v || 0).toFixed(2);
+    const colorCls = (v) => v > 0 ? 'color:var(--red);' : v < 0 ? 'color:var(--green);' : 'color:var(--text-primary);';
+
+    if (type === 'total') {
+        title = '交易明细';
+        content = '<div style="text-align:center;margin-bottom:12px;"><div style="font-size:22px;font-weight:800;' + colorCls(d.totalProfit) + '">' + fmtMoney(d.totalProfit) + '</div><div style="font-size:11px;color:var(--text-muted);margin-top:4px;">总收益（已实现 + 未实现）</div></div>';
+        // 交易记录列表
+        const allTrades = [..._trades].sort((a, b) => (b.time || 0) - (a.time || 0));
+        let listHtml = '';
+        if (allTrades.length > 0) {
+            listHtml = allTrades.map(t => {
+                const ttype = t.trade_type || t.type;
+                const isBuy = ttype === 'BUY';
+                const date = t.time ? new Date(t.time).toLocaleDateString() : '';
+                const timeStr = t.time ? new Date(t.time).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
+                const amount = (t.price || 0) * (t.quantity || 0);
+                return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-soft);">'
+                    + '<div>'
+                    + '<div style="font-size:13px;font-weight:600;">' + (t.name || t.code) + ' <span style="font-size:10px;color:var(--text-muted);">' + t.code + '</span></div>'
+                    + '<div style="font-size:10px;color:var(--text-muted);margin-top:2px;">' + date + ' ' + timeStr + '</div>'
+                    + '</div>'
+                    + '<div style="text-align:right;">'
+                    + '<div style="font-size:13px;font-weight:700;color:' + (isBuy ? 'var(--green)' : 'var(--red)') + '">' + (isBuy ? '买入' : '卖出') + ' ¥' + (t.price || 0).toFixed(2) + '</div>'
+                    + '<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">' + (t.quantity || 0) + '股 · 金额¥' + amount.toFixed(2) + '</div>'
+                    + '</div>'
+                    + '</div>';
+            }).join('');
+        } else {
+            listHtml = '<div class="empty-state" style="padding:20px 0;"><div class="empty-state-icon">📊</div><div>暂无交易记录</div></div>';
+        }
+        content += '<div style="max-height:320px;overflow-y:auto;">' + listHtml + '</div>';
+    } else if (type === 'realized') {
+        title = '已实现盈亏明细';
+        const sellByStock = {};
+        const holdings = {};
+        _trades.forEach(t => {
+            const ttype = t.trade_type || t.type;
+            const code = t.code;
+            if (ttype === 'BUY') {
+                if (!holdings[code]) holdings[code] = { qty: 0, cost: 0, name: t.name || code };
+                holdings[code].qty += t.quantity;
+                const amount = t.price * t.quantity;
+                const comm = Math.max(amount * 0.0003, 5);
+                const trans = amount * 0.00001;
+                holdings[code].cost += amount + comm + trans;
+            } else {
+                if (holdings[code] && holdings[code].qty > 0) {
+                    const avgCost = holdings[code].cost / holdings[code].qty;
+                    const sellQty = Math.min(t.quantity, holdings[code].qty);
+                    const sellCost = avgCost * sellQty;
+                    const amount = t.price * sellQty;
+                    const comm = Math.max(amount * 0.0003, 5);
+                    const stamp = amount * 0.001;
+                    const trans = amount * 0.00001;
+                    const net = amount - comm - stamp - trans - sellCost;
+                    if (!sellByStock[code]) sellByStock[code] = { name: t.name || code, profit: 0, qty: 0 };
+                    sellByStock[code].profit += net;
+                    sellByStock[code].qty += sellQty;
+                    holdings[code].qty -= sellQty;
+                    holdings[code].cost -= sellCost;
+                }
+            }
+        });
+        const list = Object.entries(sellByStock).map(([code, v]) => ({ code, ...v })).sort((a, b) => b.profit - a.profit);
+        let listHtml = '';
+        if (list.length > 0) {
+            listHtml = list.map(s => '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-soft);"><div><div style="font-size:13px;font-weight:600;">' + s.name + '</div><div style="font-size:10px;color:var(--text-muted);">' + s.code + ' · 已卖' + s.qty + '股</div></div><div style="font-size:14px;font-weight:700;' + colorCls(s.profit) + '">' + fmtMoney(s.profit) + '</div></div>').join('');
+        } else {
+            listHtml = '<div class="empty-state" style="padding:20px 0;"><div class="empty-state-icon">📊</div><div>暂无已实现收益</div></div>';
+        }
+        content = '<div style="text-align:center;margin-bottom:16px;"><div style="font-size:24px;font-weight:800;' + colorCls(d.realizedProfit) + '">' + fmtMoney(d.realizedProfit) + '</div><div style="font-size:11px;color:var(--text-muted);margin-top:4px;">按股票汇总</div></div>';
+        content += '<div style="max-height:300px;overflow-y:auto;">' + listHtml + '</div>';
+    } else if (type === 'unrealized') {
+        title = '未实现盈亏明细';
+        let listHtml = '';
+        if (stocks.length > 0) {
+            listHtml = stocks.map(s => '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-soft);"><div><div style="font-size:13px;font-weight:600;">' + s.name + '</div><div style="font-size:10px;color:var(--text-muted);">' + s.code + ' · ' + s.quantity + '股 · 成本¥' + s.avg_cost.toFixed(2) + '</div></div><div style="text-align:right;"><div style="font-size:14px;font-weight:700;' + colorCls(s.profit) + '">' + fmtMoney(s.profit) + '</div><div style="font-size:10px;color:var(--text-muted);">现价¥' + s.current_price.toFixed(2) + '</div></div></div>').join('');
+        } else {
+            listHtml = '<div class="empty-state" style="padding:20px 0;"><div class="empty-state-icon">📊</div><div>暂无持仓</div></div>';
+        }
+        content = '<div style="text-align:center;margin-bottom:16px;"><div style="font-size:24px;font-weight:800;' + colorCls(d.unrealizedProfit) + '">' + fmtMoney(d.unrealizedProfit) + '</div><div style="font-size:11px;color:var(--text-muted);margin-top:4px;">' + stocks.length + '只持仓 · 浮动盈亏</div></div>';
+        content += '<div style="max-height:300px;overflow-y:auto;">' + listHtml + '</div>';
+    } else if (type === 't') {
+        title = '做T收益明细';
+        const tTrades = _trades.filter(t => t.pair_profit !== undefined && (t.pair_quantity || 0) > 0);
+        const sorted = [...tTrades].sort((a, b) => (b.pair_time || 0) - (a.pair_time || 0));
+        let listHtml = '';
+        if (sorted.length > 0) {
+            listHtml = sorted.map(tt => {
+                const profit = tt.pair_profit || 0;
+                const date = tt.pair_time ? new Date(tt.pair_time).toLocaleDateString() : (tt.time ? new Date(tt.time).toLocaleDateString() : '');
+                return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-soft);"><div><div style="font-size:13px;font-weight:600;">' + (tt.name || tt.code) + '</div><div style="font-size:10px;color:var(--text-muted);">' + date + ' · ' + (tt.pair_quantity || 0) + '股</div></div><div style="font-size:14px;font-weight:700;' + colorCls(profit) + '">' + fmtMoney(profit) + '</div></div>';
+            }).join('');
+        } else {
+            listHtml = '<div class="empty-state" style="padding:20px 0;"><div class="empty-state-icon">⚡</div><div>暂无做T记录</div></div>';
+        }
+        content = '<div style="text-align:center;margin-bottom:16px;"><div style="font-size:24px;font-weight:800;' + colorCls(d.tProfit) + '">' + fmtMoney(d.tProfit) + '</div><div style="font-size:11px;color:var(--text-muted);margin-top:4px;">累计做T ' + (d.tTradeCount || 0) + ' 次 · 已扣除手续费</div></div>';
+        content += '<div style="max-height:300px;overflow-y:auto;">' + listHtml + '</div>';
+    } else if (type === 'tcount') {
+        title = '做T次数统计';
+        const tTrades = _trades.filter(t => t.pair_profit !== undefined && (t.pair_quantity || 0) > 0);
+        const winCount = tTrades.filter(t => (t.pair_profit || 0) > 0).length;
+        const lossCount = tTrades.filter(t => (t.pair_profit || 0) < 0).length;
+        const winRate = tTrades.length > 0 ? (winCount / tTrades.length * 100).toFixed(1) : '0';
+        const avgProfit = tTrades.length > 0 ? (d.tProfit || 0) / tTrades.length : 0;
+        content = '<div style="text-align:center;margin-bottom:16px;"><div style="font-size:24px;font-weight:800;color:var(--accent);">' + (d.tTradeCount || 0) + '次</div><div style="font-size:11px;color:var(--text-muted);margin-top:4px;">累计做T次数</div></div>';
+        content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px;">';
+        content += '<div style="padding:12px;background:rgba(52,211,153,0.08);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">盈利次数</div><div style="font-weight:700;margin-top:4px;color:var(--green);">' + winCount + '次</div></div>';
+        content += '<div style="padding:12px;background:rgba(248,113,113,0.08);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">亏损次数</div><div style="font-weight:700;margin-top:4px;color:var(--red);">' + lossCount + '次</div></div>';
+        content += '<div style="padding:12px;background:rgba(250,204,21,0.08);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">胜率</div><div style="font-weight:700;margin-top:4px;color:var(--yellow);">' + winRate + '%</div></div>';
+        content += '<div style="padding:12px;background:rgba(99,102,241,0.08);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">平均每笔</div><div style="font-weight:700;margin-top:4px;' + colorCls(avgProfit) + '">' + fmtMoney(avgProfit) + '</div></div>';
+        content += '</div>';
+        content += '<div style="margin-top:12px;padding:10px;background:var(--bg-inset);border-radius:8px;font-size:11px;color:var(--text-muted);">💡 总做T收益：<span style="' + colorCls(d.tProfit) + 'font-weight:700;">' + fmtMoney(d.tProfit) + '</span><br>💡 数据来自已配对的做T交易记录</div>';
+    }
+
+    const modalHtml = '<div id="profitDetailModal" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999;">';
+    modalHtml += '<div style="background:var(--bg-overlay);border-radius:16px;padding:20px;max-width:360px;width:90%;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.4);">';
+    modalHtml += '<div style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:16px;text-align:center;">💰 ' + title + '</div>';
+    modalHtml += '<div style="flex:1;overflow-y:auto;min-height:0;">' + content + '</div>';
+    modalHtml += '<div style="margin-top:16px;"><button onclick="closeProfitDetailModal()" style="width:100%;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;">关闭</button></div>';
+    modalHtml += '</div></div>';
+    const oldModal = document.getElementById('profitDetailModal');
+    if (oldModal) oldModal.remove();
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+}
+
+function closeProfitDetailModal() {
+    const modal = document.getElementById('profitDetailModal');
+    if (modal) modal.remove();
+}
+
+function showStockDetailModal() {
+    if (!_currentStock) return;
+    
+    const s = _currentStock;
+    const chg = s.change_percent || 0;
+    const chgColor = chg >= 0 ? 'var(--red)' : 'var(--green)';
+    const chgSign = chg >= 0 ? '+' : '';
+    
+    const modalHtml = '<div id="stockDetailModal" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999;">' +
+        '<div style="background:var(--bg-overlay);border-radius:16px;padding:20px;max-width:360px;width:90%;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.4);">' +
+        '<div style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:16px;text-align:center;">📈 ' + s.name + ' ' + s.code + '</div>' +
+        '<div style="flex:1;overflow-y:auto;">' +
+        '<div style="text-align:center;margin-bottom:16px;padding:16px;background:var(--bg-inset);border-radius:12px;">' +
+        '<div style="font-size:32px;font-weight:800;color:' + chgColor + ';">￥' + s.current_price.toFixed(2) + '</div>' +
+        '<div style="font-size:14px;color:' + chgColor + ';margin-top:4px;">' + chgSign + chg.toFixed(2) + '%</div>' +
+        '</div>' +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px;">' +
+        '<div style="padding:12px;background:var(--bg-inset);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">今开</div><div style="font-weight:700;margin-top:4px;">￥' + s.open_price.toFixed(2) + '</div></div>' +
+        '<div style="padding:12px;background:var(--bg-inset);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">昨收</div><div style="font-weight:700;margin-top:4px;">￥' + s.prev_close.toFixed(2) + '</div></div>' +
+        '<div style="padding:12px;background:rgba(248,113,113,0.08);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">最高</div><div style="font-weight:700;margin-top:4px;color:var(--red);">￥' + s.high_price.toFixed(2) + '</div></div>' +
+        '<div style="padding:12px;background:rgba(52,211,153,0.08);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">最低</div><div style="font-weight:700;margin-top:4px;color:var(--green);">￥' + s.low_price.toFixed(2) + '</div></div>' +
+        '<div style="padding:12px;background:var(--bg-inset);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">成交量</div><div style="font-weight:700;margin-top:4px;">' + formatVolume(s.volume) + '</div></div>' +
+        '<div style="padding:12px;background:var(--bg-inset);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">换手率</div><div style="font-weight:700;margin-top:4px;">' + s.turnover.toFixed(2) + '%</div></div>' +
+        '</div>' +
+        '</div>' +
+        '<div style="margin-top:16px;display:flex;gap:10px;">' +
+        '<button onclick="refreshAll();closeStockDetailModal();" style="flex:1;padding:12px;background:var(--accent);color:#fff;border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;">🔄 刷新</button>' +
+        '<button onclick="closeStockDetailModal()" style="flex:1;padding:12px;background:var(--surface-2);color:var(--text-primary);border:none;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;">关闭</button>' +
+        '</div>' +
+        '</div></div>';
+    
+    const oldModal = document.getElementById('stockDetailModal');
+    if (oldModal) oldModal.remove();
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+}
+
+function closeStockDetailModal() {
+    const modal = document.getElementById('stockDetailModal');
+    if (modal) modal.remove();
+}
+
+function loadDefaultStock() {
+    if (_currentStock) return;
+    let code = null;
+    // 优先从做T信号列表取第一个
+    if (_watchList.length > 0) {
+        code = _watchList[0];
+    }
+    // 如果做T信号为空，取最近搜索历史最新的
+    if (!code && _searchHistory.length > 0) {
+        code = _searchHistory[0].code;
+    }
+    if (code) {
+        loadStockInfo(code).catch(() => {});
     }
 }
 
 function refreshAll() {
     if (_currentStock) {
         loadStockInfo(_currentStock.code);
-        showToast('数据已刷新');
     } else {
-        showToast('请先搜索股票');
+        loadDefaultStock();
     }
 }
 
@@ -4313,20 +4732,32 @@ function refreshProfit() {
         }
     }
     
-    return {
+    // 存储收益明细和费用明细供弹窗使用
+    _profitDetail = {
         totalProfit,
         realizedProfit,
         unrealizedProfit,
+        tProfit,
+        tTradeCount,
+        stockProfits,
         totalBuy,
         totalSell,
         remaining,
         tradeCount: _trades.length,
+        totalBuyAmount,
+        totalSellAmount,
         commissionFee,
         stampTax,
         transferFee,
-        totalFees,
-        stockProfits
+        totalFees
     };
+    _feeDetail = { commissionFee, stampTax, transferFee, totalFees };
+    
+    // 扣除手续费显示
+    const totalFeesEl = document.getElementById('totalFees');
+    if (totalFeesEl) totalFeesEl.textContent = '¥' + totalFees.toFixed(2);
+    
+    return _profitDetail;
 }
 
 function autoAddTradedStocks() {

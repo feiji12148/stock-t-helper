@@ -10,15 +10,45 @@
 </head>
 <body>
     <!-- 顶部导航 -->
-    <header class="header">
-        <div class="header-logo">
-            <span>📈</span>
-            <div class="header-title">股票做T助手</div>
-            <span class="header-badge">v3.0</span>
-        </div>
-        <div class="header-actions">
-            <span id="autoRefreshIndicator" class="auto-refresh-indicator" style="display:none;"><span class="dot"></span>10秒</span>
-            <button class="header-btn" onclick="refreshAll()" id="refreshBtn">🔄 刷新</button>
+    <header class="header" onclick="showStockDetailModal()">
+        <div id="headerStockInfo" class="header-stock-info" style="flex:1; overflow:hidden;">
+            <div class="stock-quote-line">
+                <span id="headerStockName" style="font-weight:700; font-size:15px;">📈 做T助手</span>
+                <span id="headerStockCode" style="font-size:11px; color:var(--text-muted); margin-left:6px;"></span>
+                <span id="headerStockPrice" style="font-weight:700; font-size:16px; margin-left:10px;"></span>
+                <span id="headerStockChange" style="font-size:12px; margin-left:8px;"></span>
+            </div>
+            <div class="stock-quote-line stock-quote-scroll" style="margin-top:3px;">
+                <div id="headerQuoteScroll" style="white-space:nowrap; display:inline-block; animation:marquee 30s linear infinite;">
+                    <span style="font-size:11px; color:var(--text-muted);">今开 <span style="color:var(--text-primary);">--</span></span>
+                    <span style="width:12px; display:inline-block;"></span>
+                    <span style="font-size:11px; color:var(--text-muted);">最高 <span style="color:var(--red);">--</span></span>
+                    <span style="width:12px; display:inline-block;"></span>
+                    <span style="font-size:11px; color:var(--text-muted);">最低 <span style="color:var(--green);">--</span></span>
+                    <span style="width:12px; display:inline-block;"></span>
+                    <span style="font-size:11px; color:var(--text-muted);">昨收 <span style="color:var(--text-primary);">--</span></span>
+                    <span style="width:12px; display:inline-block;"></span>
+                    <span style="font-size:11px; color:var(--text-muted);">成交量 <span style="color:var(--text-primary);">--</span></span>
+                    <span style="width:12px; display:inline-block;"></span>
+                    <span style="font-size:11px; color:var(--text-muted);">换手率 <span style="color:var(--text-primary);">--</span></span>
+                    <span style="width:12px; display:inline-block;"></span>
+                    <span style="font-size:11px; color:var(--text-muted);">做T机会 <span style="color:var(--yellow);">--</span></span>
+                    <span style="width:40px; display:inline-block;"></span>
+                    <span style="font-size:11px; color:var(--text-muted);">今开 <span style="color:var(--text-primary);">--</span></span>
+                    <span style="width:12px; display:inline-block;"></span>
+                    <span style="font-size:11px; color:var(--text-muted);">最高 <span style="color:var(--red);">--</span></span>
+                    <span style="width:12px; display:inline-block;"></span>
+                    <span style="font-size:11px; color:var(--text-muted);">最低 <span style="color:var(--green);">--</span></span>
+                    <span style="width:12px; display:inline-block;"></span>
+                    <span style="font-size:11px; color:var(--text-muted);">昨收 <span style="color:var(--text-primary);">--</span></span>
+                    <span style="width:12px; display:inline-block;"></span>
+                    <span style="font-size:11px; color:var(--text-muted);">成交量 <span style="color:var(--text-primary);">--</span></span>
+                    <span style="width:12px; display:inline-block;"></span>
+                    <span style="font-size:11px; color:var(--text-muted);">换手率 <span style="color:var(--text-primary);">--</span></span>
+                    <span style="width:12px; display:inline-block;"></span>
+                    <span style="font-size:11px; color:var(--text-muted);">做T机会 <span style="color:var(--yellow);">--</span></span>
+                </div>
+            </div>
         </div>
     </header>
 
@@ -94,42 +124,67 @@
                         <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">预计收益 </span><span style="color:var(--green); font-weight:700;" id="planTProfit">--</span></div>
                     </div>
                 </div>
-                <div id="planBuySection" style="background:rgba(52,211,153,0.08); border:1px solid rgba(52,211,153,0.15); border-radius:10px; padding:12px; margin-bottom:10px; display:none;">
-                    <div style="font-size:13px; font-weight:700; color:var(--green); margin-bottom:8px;">🟢 最优买入方案</div>
-                    <div style="font-size:12px; color:var(--text-secondary); margin-bottom:8px;" id="planBuyName">--</div>
-                    <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px;">
-                        <div style="text-align:center;"><div style="font-size:10px; color:var(--text-muted);">入场价</div><div style="font-size:15px; font-weight:700;" id="planBuyEntry">--</div></div>
-                        <div style="text-align:center;"><div style="font-size:10px; color:var(--text-muted);">目标价</div><div style="font-size:15px; font-weight:700; color:var(--green);" id="planBuyTarget">--</div></div>
-                        <div style="text-align:center;"><div style="font-size:10px; color:var(--text-muted);">止损价</div><div style="font-size:15px; font-weight:700; color:var(--red);" id="planBuyStop">--</div></div>
+                <!-- 最优买卖方案切换卡片 -->
+                <div id="planBuySellSection" style="display:none; margin-bottom:10px;">
+                    <div style="display:flex; background:var(--bg-inset); border-radius:10px; padding:4px; margin-bottom:10px;">
+                        <div id="planTabBuy" class="plan-tab active" onclick="switchPlanTab('buy')" style="flex:1; text-align:center; padding:8px; border-radius:8px; cursor:pointer; font-size:13px; font-weight:600; transition:all 0.2s;">
+                            🟢 最优买入
+                        </div>
+                        <div id="planTabSell" class="plan-tab" onclick="switchPlanTab('sell')" style="flex:1; text-align:center; padding:8px; border-radius:8px; cursor:pointer; font-size:13px; font-weight:600; color:var(--text-secondary); transition:all 0.2s;">
+                            🔴 最优卖出
+                        </div>
                     </div>
-                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:8px; padding-top:8px; border-top:1px solid var(--border-glass);">
-                        <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">获利 </span><span style="color:var(--green); font-weight:700;" id="planBuyProfit">--</span></div>
-                        <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">风险 </span><span style="color:var(--red); font-weight:700;" id="planBuyRisk">--</span></div>
-                        <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">盈亏比 </span><span style="color:var(--accent); font-weight:700;" id="planBuyRatio">--</span></div>
+                    <div id="planBuyCard" style="background:rgba(52,211,153,0.08); border:1px solid rgba(52,211,153,0.15); border-radius:10px; padding:12px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                            <div style="font-size:13px; font-weight:700; color:var(--green);" id="planBuyName">--</div>
+                            <div style="font-size:11px; padding:3px 8px; background:rgba(52,211,153,0.15); border-radius:10px; color:var(--green);" id="planBuySuccessRate">成功率 --</div>
+                        </div>
+                        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px;">
+                            <div style="text-align:center;"><div style="font-size:10px; color:var(--text-muted);">入场价</div><div style="font-size:15px; font-weight:700;" id="planBuyEntry">--</div></div>
+                            <div style="text-align:center;"><div style="font-size:10px; color:var(--text-muted);">目标价</div><div style="font-size:15px; font-weight:700; color:var(--green);" id="planBuyTarget">--</div></div>
+                            <div style="text-align:center;"><div style="font-size:10px; color:var(--text-muted);">止损价</div><div style="font-size:15px; font-weight:700; color:var(--red);" id="planBuyStop">--</div></div>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:8px; padding-top:8px; border-top:1px solid var(--border-glass);">
+                            <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">获利 </span><span style="color:var(--green); font-weight:700;" id="planBuyProfit">--</span></div>
+                            <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">风险 </span><span style="color:var(--red); font-weight:700;" id="planBuyRisk">--</span></div>
+                            <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">盈亏比 </span><span style="color:var(--accent); font-weight:700;" id="planBuyRatio">--</span></div>
+                        </div>
                     </div>
-                </div>
-                <div id="planSellSection" style="background:rgba(248,113,113,0.08); border:1px solid rgba(248,113,113,0.15); border-radius:10px; padding:12px; display:none;">
-                    <div style="font-size:13px; font-weight:700; color:var(--red); margin-bottom:8px;">🔴 最优卖出方案</div>
-                    <div style="font-size:12px; color:var(--text-secondary); margin-bottom:8px;" id="planSellName">--</div>
-                    <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px;">
-                        <div style="text-align:center;"><div style="font-size:10px; color:var(--text-muted);">入场价</div><div style="font-size:15px; font-weight:700;" id="planSellEntry">--</div></div>
-                        <div style="text-align:center;"><div style="font-size:10px; color:var(--text-muted);">目标价</div><div style="font-size:15px; font-weight:700; color:var(--green);" id="planSellTarget">--</div></div>
-                        <div style="text-align:center;"><div style="font-size:10px; color:var(--text-muted);">止损价</div><div style="font-size:15px; font-weight:700; color:var(--red);" id="planSellStop">--</div></div>
-                    </div>
-                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:8px; padding-top:8px; border-top:1px solid var(--border-glass);">
-                        <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">获利 </span><span style="color:var(--green); font-weight:700;" id="planSellProfit">--</span></div>
-                        <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">风险 </span><span style="color:var(--red); font-weight:700;" id="planSellRisk">--</span></div>
-                        <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">盈亏比 </span><span style="color:var(--accent); font-weight:700;" id="planSellRatio">--</span></div>
+                    <div id="planSellCard" style="display:none; background:rgba(248,113,113,0.08); border:1px solid rgba(248,113,113,0.15); border-radius:10px; padding:12px;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                            <div style="font-size:13px; font-weight:700; color:var(--red);" id="planSellName">--</div>
+                            <div style="font-size:11px; padding:3px 8px; background:rgba(248,113,113,0.15); border-radius:10px; color:var(--red);" id="planSellSuccessRate">成功率 --</div>
+                        </div>
+                        <div style="display:grid; grid-template-columns:repeat(3,1fr); gap:8px;">
+                            <div style="text-align:center;"><div style="font-size:10px; color:var(--text-muted);">入场价</div><div style="font-size:15px; font-weight:700;" id="planSellEntry">--</div></div>
+                            <div style="text-align:center;"><div style="font-size:10px; color:var(--text-muted);">目标价</div><div style="font-size:15px; font-weight:700; color:var(--green);" id="planSellTarget">--</div></div>
+                            <div style="text-align:center;"><div style="font-size:10px; color:var(--text-muted);">止损价</div><div style="font-size:15px; font-weight:700; color:var(--red);" id="planSellStop">--</div></div>
+                        </div>
+                        <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:8px; padding-top:8px; border-top:1px solid var(--border-glass);">
+                            <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">获利 </span><span style="color:var(--green); font-weight:700;" id="planSellProfit">--</span></div>
+                            <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">风险 </span><span style="color:var(--red); font-weight:700;" id="planSellRisk">--</span></div>
+                            <div style="text-align:center; font-size:12px;"><span style="color:var(--text-muted);">盈亏比 </span><span style="color:var(--accent); font-weight:700;" id="planSellRatio">--</span></div>
+                        </div>
                     </div>
                 </div>
                 
                 <!-- 首页今日价格预测 -->
                 <div id="homePricePrediction" style="display:none; margin-top:10px; background:linear-gradient(135deg, rgba(99,102,241,0.1), rgba(139,92,246,0.08)); border:1px solid rgba(99,102,241,0.2); border-radius:10px; padding:12px;">
-                    <div style="font-size:13px; font-weight:700; color:var(--accent); margin-bottom:8px;">🔮 今日价格预测</div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                        <div style="font-size:13px; font-weight:700; color:var(--accent);">🔮 今日价格预测</div>
+                        <div style="font-size:10px; color:var(--text-muted);" id="homePredStockName">--</div>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; background:var(--bg-inset); border-radius:8px; padding:6px 10px; margin-bottom:10px;">
+                        <div style="font-size:10px; color:var(--text-muted);">现价</div>
+                        <div style="font-size:15px; font-weight:700;" id="homePredCurrentPrice">--</div>
+                    </div>
                     
                     <!-- 固定预测（基于昨日收盘，全天不变）-->
                     <div style="background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.12); border-radius:8px; padding:8px; margin-bottom:8px;">
-                        <div style="font-size:10px; color:var(--text-muted); margin-bottom:4px;">📌 昨日预测（基于前日收盘，固定不变）</div>
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                            <div style="font-size:10px; color:var(--text-muted);">📌 固定预测（前日收盘）</div>
+                            <div style="font-size:9px; color:var(--text-muted);" id="homeFixedTime">预测时间: --</div>
+                        </div>
                         <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
                             <div style="text-align:center; padding:4px; background:rgba(248,113,113,0.1); border-radius:6px;">
                                 <div style="font-size:9px; color:var(--text-muted);">预测最高</div>
@@ -145,7 +200,10 @@
                     
                     <!-- 动态预测（实时计算）-->
                     <div style="background:var(--bg-inset); border-radius:8px; padding:8px;">
-                        <div style="font-size:10px; color:var(--text-muted); margin-bottom:4px;">📊 动态预测（实时计算，随行情变化）</div>
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                            <div style="font-size:10px; color:var(--text-muted);">📊 动态预测（实时更新）</div>
+                            <div style="font-size:9px; color:var(--text-muted);" id="homeDynamicTime">更新时间: --</div>
+                        </div>
                         <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:8px;">
                             <div style="text-align:center; padding:4px; background:rgba(248,113,113,0.1); border-radius:6px;">
                                 <div style="font-size:9px; color:var(--text-muted);">预测最高</div>
@@ -172,46 +230,58 @@
             <div class="card">
                 <div class="card-title"><span class="icon">💰</span> 收益概览</div>
                 <div class="profit-grid">
-                    <div class="profit-item">
+                    <div class="profit-item" style="cursor:pointer;" onclick="showProfitDetail('total')">
                         <div class="profit-item-label">总收益</div>
                         <div class="profit-value" id="totalProfit">¥0.00</div>
                     </div>
-                    <div class="profit-item">
+                    <div class="profit-item" style="cursor:pointer;" onclick="showProfitDetail('realized')">
                         <div class="profit-item-label">已实现</div>
                         <div class="profit-value" id="realizedProfit">¥0.00</div>
                     </div>
-                    <div class="profit-item">
+                    <div class="profit-item" style="cursor:pointer;" onclick="showProfitDetail('unrealized')">
                         <div class="profit-item-label">未实现</div>
                         <div class="profit-value" id="unrealizedProfit">¥0.00</div>
                     </div>
-                    <div class="profit-item">
+                    <div class="profit-item" style="cursor:pointer;" onclick="showProfitDetail('t')">
                         <div class="profit-item-label">做T收益</div>
                         <div class="profit-value" id="tProfit">¥0.00</div>
                     </div>
-                    <div class="profit-item">
+                    <div class="profit-item" style="cursor:pointer;" onclick="showProfitDetail('tcount')">
                         <div class="profit-item-label">做T次数</div>
                         <div class="profit-value" id="tTradeCount" style="color:var(--accent);">0次</div>
+                    </div>
+                    <div class="profit-item" style="cursor:pointer;" onclick="showFeeDetailModal()">
+                        <div class="profit-item-label">扣除手续费</div>
+                        <div class="profit-value" id="totalFees" style="color:var(--red);">¥0.00</div>
                     </div>
                 </div>
             </div>
 
-            <!-- 持仓统计 -->
+            <!-- 持仓统计与明细（切换卡片） -->
             <div class="card">
-                <div class="card-title"><span class="icon">📊</span> 持仓统计</div>
-                <div class="stat-grid">
-                    <div class="stat-item"><div class="stat-label">总买入</div><div class="stat-value" id="totalBuy">0股</div></div>
-                    <div class="stat-item"><div class="stat-label">总卖出</div><div class="stat-value" id="totalSell">0股</div></div>
-                    <div class="stat-item"><div class="stat-label">剩余持仓</div><div class="stat-value" id="remaining">0股</div></div>
-                    <div class="stat-item"><div class="stat-label">交易次数</div><div class="stat-value" id="tradeCount">0次</div></div>
+                <div class="card-title"><span class="icon">📊</span> 持仓概览</div>
+                <div style="display:flex; background:var(--bg-inset); border-radius:10px; padding:4px; margin-bottom:10px;">
+                    <div id="holdingTabStat" class="plan-tab active" onclick="switchHoldingTab('stat')" style="flex:1; text-align:center; padding:8px; border-radius:8px; cursor:pointer; font-size:13px; font-weight:600; transition:all 0.2s;">
+                        📊 持仓统计
+                    </div>
+                    <div id="holdingTabDetail" class="plan-tab" onclick="switchHoldingTab('detail')" style="flex:1; text-align:center; padding:8px; border-radius:8px; cursor:pointer; font-size:13px; font-weight:600; color:var(--text-secondary); transition:all 0.2s;">
+                        📋 持仓明细
+                    </div>
                 </div>
-                <div id="feeDisplay"></div>
-            </div>
-
-            <!-- 持仓明细 -->
-            <div class="card">
-                <div class="card-title"><span class="icon">📋</span> 持仓明细</div>
-                <div id="stockProfits">
-                    <div class="empty-state"><div class="empty-state-icon">📊</div><div>暂无持仓</div></div>
+                <!-- 持仓统计内容 -->
+                <div id="holdingStatContent">
+                    <div class="stat-grid">
+                        <div class="stat-item"><div class="stat-label">总买入</div><div class="stat-value" id="totalBuy">0股</div></div>
+                        <div class="stat-item"><div class="stat-label">总卖出</div><div class="stat-value" id="totalSell">0股</div></div>
+                        <div class="stat-item"><div class="stat-label">剩余持仓</div><div class="stat-value" id="remaining">0股</div></div>
+                        <div class="stat-item"><div class="stat-label">交易次数</div><div class="stat-value" id="tradeCount">0次</div></div>
+                    </div>
+                </div>
+                <!-- 持仓明细内容 -->
+                <div id="holdingDetailContent" style="display:none;">
+                    <div id="stockProfits">
+                        <div class="empty-state"><div class="empty-state-icon">📊</div><div>暂无持仓</div></div>
+                    </div>
                 </div>
             </div>
 
@@ -383,7 +453,10 @@
                         <div style="background:linear-gradient(135deg, rgba(99,102,241,0.1), rgba(139,92,246,0.08)); border:1px solid rgba(99,102,241,0.2); border-radius:10px; padding:12px;">
                             <!-- 固定预测（基于昨日收盘，全天不变）-->
                             <div style="background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.12); border-radius:8px; padding:8px; margin-bottom:10px;">
-                                <div style="font-size:11px; color:var(--accent); margin-bottom:6px;">📌 昨日预测（基于前日收盘，全天固定不变）</div>
+                                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                                    <div style="font-size:11px; color:var(--accent);">📌 固定预测（前日收盘）</div>
+                                    <div style="font-size:10px; color:var(--text-muted);" id="strategyFixedTime">预测时间: --</div>
+                                </div>
                                 <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
                                     <div style="text-align:center; padding:6px; background:rgba(248,113,113,0.1); border-radius:6px;">
                                         <div style="font-size:9px; color:var(--text-muted);">预测最高</div>
@@ -398,7 +471,10 @@
                             </div>
                             
                             <!-- 动态预测（实时计算）-->
-                            <div style="font-size:11px; color:var(--text-muted); margin-bottom:6px;">📊 动态预测（实时计算，随行情变化）</div>
+                            <div style="display:flex; justify-content:space-between; align-items:center; font-size:11px; color:var(--text-muted); margin-bottom:6px;">
+                                <span>📊 动态预测（实时更新）</span>
+                                <span id="strategyDynamicTime" style="font-size:10px;">更新时间: --</span>
+                            </div>
                             <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
                                 <div style="text-align:center; padding:8px; background:rgba(248,113,113,0.1); border-radius:8px;">
                                     <div style="font-size:10px; color:var(--text-muted);">预测最高价</div>
