@@ -2,15 +2,20 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>股票做T助手</title>
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
+    <a href="#main-content" style="position:absolute;left:-9999px;top:auto;width:1px;height:1px;overflow:hidden;" 
+       onfocus="this.style.left='10px';this.style.top='10px';" 
+       onblur="this.style.left='-9999px';this.style.top='auto';">
+       跳到主要内容
+    </a>
     <!-- 顶部导航 -->
-    <header class="header" onclick="showStockDetailModal()">
+    <header class="header" tabindex="0" role="button" onclick="showStockDetailModal()" onkeypress="if(event.key==='Enter')showStockDetailModal()">
         <div id="headerStockInfo" class="header-stock-info" style="flex:1; overflow:hidden;">
             <div class="stock-quote-line">
                 <span id="headerStockName" style="font-weight:700; font-size:15px;">📈 做T助手</span>
@@ -53,7 +58,7 @@
     </header>
 
     <!-- 内容区域 -->
-    <div class="content">
+    <div class="content" id="main-content">
         <!-- 首页：信号监控 -->
         <div id="tab-home" class="tab-content active">
             <!-- 搜索框 -->
@@ -215,7 +220,7 @@
                             </div>
                         </div>
                         <div style="position:relative; height:10px; background:linear-gradient(to right, rgba(52,211,153,0.3), rgba(250,204,21,0.3), rgba(248,113,113,0.3)); border-radius:5px; overflow:hidden;">
-                            <div id="homePriceDot" style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); width:10px; height:10px; background:white; border:2px solid var(--accent); border-radius:50%;"></div>
+                            <div id="homePriceDot" style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); width:10px; height:10px; background:var(--bg-secondary); border:2px solid var(--accent); border-radius:50%;"></div>
                         </div>
                         <div style="display:flex; justify-content:space-between; font-size:9px; color:var(--text-muted); margin-top:3px;">
                             <span>最低</span>
@@ -230,27 +235,27 @@
             <div class="card">
                 <div class="card-title"><span class="icon">💰</span> 收益概览</div>
                 <div class="profit-grid">
-                    <div class="profit-item" style="cursor:pointer;" onclick="showProfitDetail('total')">
+                    <div class="profit-item" style="cursor:pointer;" tabindex="0" role="button" onclick="showProfitDetail('total')" onkeypress="if(event.key==='Enter')showProfitDetail('total')">
                         <div class="profit-item-label">总收益</div>
                         <div class="profit-value" id="totalProfit">¥0.00</div>
                     </div>
-                    <div class="profit-item" style="cursor:pointer;" onclick="showProfitDetail('realized')">
+                    <div class="profit-item" style="cursor:pointer;" tabindex="0" role="button" onclick="showProfitDetail('realized')" onkeypress="if(event.key==='Enter')showProfitDetail('realized')">
                         <div class="profit-item-label">已实现</div>
                         <div class="profit-value" id="realizedProfit">¥0.00</div>
                     </div>
-                    <div class="profit-item" style="cursor:pointer;" onclick="showProfitDetail('unrealized')">
+                    <div class="profit-item" style="cursor:pointer;" tabindex="0" role="button" onclick="showProfitDetail('unrealized')" onkeypress="if(event.key==='Enter')showProfitDetail('unrealized')">
                         <div class="profit-item-label">未实现</div>
                         <div class="profit-value" id="unrealizedProfit">¥0.00</div>
                     </div>
-                    <div class="profit-item" style="cursor:pointer;" onclick="showProfitDetail('t')">
+                    <div class="profit-item" style="cursor:pointer;" tabindex="0" role="button" onclick="showProfitDetail('t')" onkeypress="if(event.key==='Enter')showProfitDetail('t')">
                         <div class="profit-item-label">做T收益</div>
                         <div class="profit-value" id="tProfit">¥0.00</div>
                     </div>
-                    <div class="profit-item" style="cursor:pointer;" onclick="showProfitDetail('tcount')">
+                    <div class="profit-item" style="cursor:pointer;" tabindex="0" role="button" onclick="showProfitDetail('tcount')" onkeypress="if(event.key==='Enter')showProfitDetail('tcount')">
                         <div class="profit-item-label">做T次数</div>
                         <div class="profit-value" id="tTradeCount" style="color:var(--accent);">0次</div>
                     </div>
-                    <div class="profit-item" style="cursor:pointer;" onclick="showFeeDetailModal()">
+                    <div class="profit-item" style="cursor:pointer;" tabindex="0" role="button" onclick="showFeeDetailModal()" onkeypress="if(event.key==='Enter')showFeeDetailModal()">
                         <div class="profit-item-label">扣除手续费</div>
                         <div class="profit-value" id="totalFees" style="color:var(--red);">¥0.00</div>
                     </div>
@@ -500,7 +505,7 @@
                                     <span>最高</span>
                                 </div>
                                 <div style="position:relative; height:16px; background:linear-gradient(to right, rgba(52,211,153,0.3), rgba(250,204,21,0.3), rgba(248,113,113,0.3)); border-radius:8px; overflow:hidden;">
-                                    <div id="pricePositionDot" style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); width:12px; height:12px; background:white; border:2px solid var(--accent); border-radius:50%; box-shadow:0 2px 8px rgba(0,0,0,0.3); transition:left 0.3s ease;"></div>
+                                    <div id="pricePositionDot" style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); width:12px; height:12px; background:var(--bg-secondary); border:2px solid var(--accent); border-radius:50%; box-shadow:0 2px 8px rgba(0,0,0,0.3); transition:left 0.3s ease;"></div>
                                 </div>
                             </div>
                             <div style="display:grid; grid-template-columns:1fr 1fr 1fr 1fr; gap:6px; padding-top:8px; border-top:1px solid var(--border-glass);">
@@ -624,6 +629,7 @@
                             <div class="total-label">综合评分</div>
                             <div class="total-value" id="totalPanoramaScore">--</div>
                             <div class="total-action" id="totalPanoramaAction">--</div>
+                            <div class="success-rate-hint" id="panoramaSuccessRate"></div>
                         </div>
                     </div>
 
@@ -767,21 +773,21 @@
             <div class="card">
                 <div class="card-title"><span class="icon">✏️</span> 添加交易</div>
                 <div class="form-group">
-                    <label class="form-label">股票代码</label>
+                    <label class="form-label" for="stockCode">股票代码</label>
                     <div class="search-wrapper">
                         <input type="text" class="form-input" id="stockCode" placeholder="输入代码搜索" autocomplete="off" oninput="onTradeCodeInput()">
                         <div class="search-suggestions" id="codeSuggestions"></div>
                     </div>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">股票名称</label>
+                    <label class="form-label" for="stockName">股票名称</label>
                     <div class="search-wrapper">
                         <input type="text" class="form-input" id="stockName" placeholder="输入名称搜索" autocomplete="off" oninput="onTradeNameInput()">
                         <div class="search-suggestions" id="nameSuggestions"></div>
                     </div>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">交易类型</label>
+                    <label class="form-label" for="tradeType">交易类型</label>
                     <select class="form-select" id="tradeType" onchange="onTradeTypeChange()">
                         <option value="BUY">买入</option>
                         <option value="SELL">卖出</option>
@@ -801,16 +807,16 @@
                 
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
                     <div class="form-group">
-                        <label class="form-label">价格</label>
+                        <label class="form-label" for="price">价格</label>
                         <input type="number" class="form-input" id="price" placeholder="0.00" step="0.01" min="0" oninput="updatePairProfitPreview()">
                     </div>
                     <div class="form-group">
-                        <label class="form-label">数量</label>
+                        <label class="form-label" for="quantity">数量</label>
                         <input type="number" class="form-input" id="quantity" placeholder="100" step="100" min="1" oninput="updatePairProfitPreview()">
                     </div>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">备注（可选）</label>
+                    <label class="form-label" for="note">备注（可选）</label>
                     <input type="text" class="form-input" id="note" placeholder="备注信息">
                 </div>
                 
@@ -857,36 +863,6 @@
                 </div>
             </div>
         </div>
-    </div>
-
-    <!-- 底部说明条 -->
-    <div class="footer-note">
-        个人学习使用工具 · 仅供参考 · 不构成投资建议
-    </div>
-
-    <!-- 底部导航 -->
-    <nav class="tab-nav">
-        <button class="tab-btn active" onclick="switchTab('home')">
-            <span class="tab-icon">🏠</span>
-            <span class="tab-label">首页</span>
-        </button>
-        <button class="tab-btn" onclick="switchTab('trade')">
-            <span class="tab-icon">✏️</span>
-            <span class="tab-label">交易</span>
-        </button>
-        <button class="tab-btn" onclick="switchTab('strategy')">
-            <span class="tab-icon">🧠</span>
-            <span class="tab-label">策略</span>
-        </button>
-        <button class="tab-btn" onclick="switchTab('learn')">
-            <span class="tab-icon">📚</span>
-            <span class="tab-label">学习</span>
-        </button>
-        <button class="tab-btn" onclick="switchTab('settings')">
-            <span class="tab-icon">⚙️</span>
-            <span class="tab-label">设置</span>
-        </button>
-    </nav>
 
     <!-- 设置页面 -->
     <div id="tab-settings" class="tab-content">
@@ -896,7 +872,7 @@
             <div class="theme-grid">
                 <div class="theme-option active" data-theme="dark-purple" onclick="changeTheme('dark-purple')">
                     <div class="theme-preview" style="background:linear-gradient(135deg, #0b0e17, #111827);">
-                        <div style="position:absolute;top:8px;left:8px;width:20px;height:4px;background:var(--accent);border-radius:2px;"></div>
+                        <div style="position:absolute;top:8px;left:8px;width:20px;height:4px;background:#818cf8;border-radius:2px;"></div>
                         <div style="position:absolute;top:18px;left:8px;right:8px;height:10px;background:rgba(129,140,248,0.2);border-radius:2px;"></div>
                     </div>
                     <span>暗夜紫</span>
@@ -986,6 +962,19 @@
                     <input type="checkbox" id="showChangePercent" checked onchange="saveSettings()">
                     <span class="toggle-slider"></span>
                 </label>
+            </div>
+
+            <!-- 固定预测生成时间 -->
+            <div class="setting-item">
+                <div class="setting-label">
+                    <div class="setting-title">固定预测生成</div>
+                    <div class="setting-desc">基于哪个时间点的数据生成固定预测</div>
+                </div>
+                <select id="fixedPredictionTime" class="setting-select" onchange="saveSettings(); refreshAll();">
+                    <option value="15">昨日收盘（15:00）</option>
+                    <option value="0">凌晨零点（0:00）</option>
+                    <option value="9">早盘九点（9:00）</option>
+                </select>
             </div>
         </div>
 
@@ -1119,13 +1108,43 @@
         <div id="learnList" class="learn-list">
         </div>
     </div>
+    </div>
+
+    <!-- 底部说明条 -->
+    <div class="footer-note">
+        个人学习使用工具 · 仅供参考 · 不构成投资建议
+    </div>
+
+    <!-- 底部导航 -->
+    <nav class="tab-nav">
+        <button class="tab-btn active" onclick="switchTab('home')">
+            <span class="tab-icon">🏠</span>
+            <span class="tab-label">首页</span>
+        </button>
+        <button class="tab-btn" onclick="switchTab('trade')">
+            <span class="tab-icon">✏️</span>
+            <span class="tab-label">交易</span>
+        </button>
+        <button class="tab-btn" onclick="switchTab('strategy')">
+            <span class="tab-icon">🧠</span>
+            <span class="tab-label">策略</span>
+        </button>
+        <button class="tab-btn" onclick="switchTab('learn')">
+            <span class="tab-icon">📚</span>
+            <span class="tab-label">学习</span>
+        </button>
+        <button class="tab-btn" onclick="switchTab('settings')">
+            <span class="tab-icon">⚙️</span>
+            <span class="tab-label">设置</span>
+        </button>
+    </nav>
 
     <!-- 学习详情弹窗 -->
-    <div id="learnModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:var(--bg-modal-mask); z-index:1000; align-items:center; justify-content:center;">
+    <div id="learnModal" role="dialog" aria-modal="true" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:var(--bg-modal-mask); z-index:2000; align-items:center; justify-content:center;" onclick="if(event.target===this)closeLearnModal()">
         <div style="background:var(--bg-card); border-radius:16px; width:92%; max-width:440px; max-height:85vh; margin:auto; backdrop-filter: blur(20px); display:flex; flex-direction:column;">
             <div style="display:flex; justify-content:space-between; align-items:center; padding:18px 20px; border-bottom:1px solid var(--border-glass);">
                 <h3 id="learnModalTitle" style="margin:0; font-size:17px;"></h3>
-                <button onclick="closeLearnModal()" style="background:none; border:none; color:var(--text-muted); font-size:22px; cursor:pointer; line-height:1;">×</button>
+                <button onclick="closeLearnModal()" aria-label="关闭" style="background:none; border:none; color:var(--text-muted); font-size:22px; cursor:pointer; line-height:1;">×</button>
             </div>
             <div id="learnModalBody" style="padding:18px 20px; overflow-y:auto; flex:1; font-size:14px; line-height:1.7; color:var(--text-primary);">
             </div>
@@ -1133,11 +1152,11 @@
     </div>
 
     <!-- 添加监控股票模态框 -->
-    <div id="watchModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:var(--bg-modal-mask); z-index:1000; align-items:center; justify-content:center;">
-        <div style="background:var(--bg-card); border-radius:16px; padding:24px; width:90%; max-width:400px; margin:auto; backdrop-filter: blur(20px);">
+    <div id="watchModal" role="dialog" aria-modal="true" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:var(--bg-modal-mask); z-index:2000; align-items:center; justify-content:center;" onclick="if(event.target===this)closeWatchModal()">
+        <div style="background:var(--bg-card); border-radius:16px; padding:24px; width:90%; max-width:400px; margin:auto; max-height:85vh; overflow-y:auto; backdrop-filter: blur(20px);">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
                 <h3 style="margin:0; font-size:18px;">📌 添加监控股票</h3>
-                <button onclick="closeWatchModal()" style="background:none; border:none; color:var(--text-muted); font-size:20px; cursor:pointer;">×</button>
+                <button onclick="closeWatchModal()" aria-label="关闭" style="background:none; border:none; color:var(--text-muted); font-size:20px; cursor:pointer;">×</button>
             </div>
             
             <div class="search-wrapper">
@@ -1157,29 +1176,29 @@
     </div>
 
     <!-- 策略详情弹窗 -->
-    <div id="strategyModal" class="modal" style="display:none;" onclick="if(event.target===this)closeModal()">
+    <div id="strategyModal" class="modal" role="dialog" aria-modal="true" style="display:none;" onclick="if(event.target===this)closeModal()">
         <div class="modal-content">
             <div class="modal-header">
                 <div class="modal-title" id="modalTitle">策略详情</div>
-                <button class="modal-close" onclick="closeModal()">×</button>
+                <button class="modal-close" onclick="closeModal()" aria-label="关闭">×</button>
             </div>
             <div class="modal-body" id="modalBody"></div>
         </div>
     </div>
 
     <!-- 维度详情弹窗 -->
-    <div id="dimensionModal" class="modal" style="display:none;" onclick="if(event.target===this)closeDimensionModal()">
+    <div id="dimensionModal" class="modal" role="dialog" aria-modal="true" style="display:none;" onclick="if(event.target===this)closeDimensionModal()">
         <div class="modal-content">
             <div class="modal-header">
                 <div class="modal-title" id="dimModalTitle">📊 维度详情</div>
-                <button class="modal-close" onclick="closeDimensionModal()">×</button>
+                <button class="modal-close" onclick="closeDimensionModal()" aria-label="关闭">×</button>
             </div>
             <div class="modal-body" id="dimModalBody"></div>
         </div>
     </div>
 
     <!-- Toast -->
-    <div id="toast" class="toast"></div>
+    <div id="toast" class="toast" role="alert" aria-live="polite"></div>
 
     <script src="capacitor.js"></script>
     <script src="js/strategies.js"></script>

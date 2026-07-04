@@ -1,4 +1,73 @@
+function escapeHtml(str) {
+    if (str == null) return '';
+    return String(str).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+}
+
+function isBuyAction(action) {
+    return action === 'BUY' || action === 'STRONG_BUY';
+}
+
+function isSellAction(action) {
+    return action === 'SELL' || action === 'STRONG_SELL';
+}
+
+function isTAction(action) {
+    return action === 'BUY_THEN_SELL' || action === 'SELL_THEN_BUY' ||
+           action === 'TRADING_OPPORTUNITY' || action === 'BOX_TRADING';
+}
+
+function countStrategyActions(strategies) {
+    let buy = 0, sell = 0, t = 0, watch = 0;
+    if (!strategies || !strategies.length) return { buy, sell, t, watch };
+    strategies.forEach(s => {
+        if (isBuyAction(s.action)) buy++;
+        else if (isSellAction(s.action)) sell++;
+        else if (isTAction(s.action)) t++;
+        else if (s.action === 'WATCH' || s.action === 'HOLD' || s.action === 'OBSERVE') watch++;
+    });
+    return { buy, sell, t, watch };
+}
+
+function getLocalDateStr(d = new Date()) {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function getNextTradingDay(dateStr) {
+    const d = new Date(dateStr);
+    d.setDate(d.getDate() + 1);
+    while (d.getDay() === 0 || d.getDay() === 6) {
+        d.setDate(d.getDate() + 1);
+    }
+    return getLocalDateStr(d);
+}
+
+function round(num, decimals = 2) {
+    if (isNaN(num) || !isFinite(num)) return '0.00';
+    const factor = Math.pow(10, decimals);
+    return (Math.round(num * factor) / factor).toFixed(decimals);
+}
+
+function calcTradeFees(amount, type) {
+    const commissionRate = 0.0003;
+    const minCommission = 5;
+    const stampTaxRate = 0.001;
+    const transferFeeRate = 0.00001;
+    
+    const commission = Math.max(amount * commissionRate, minCommission);
+    const stamp = type === 'SELL' ? amount * stampTaxRate : 0;
+    const transfer = amount * transferFeeRate;
+    const total = commission + stamp + transfer;
+    
+    return { commission, stamp, transfer, total };
+}
+
 let _currentStock = null;
+let _lastSearchedStock = null; // 最后一次查询的股票，优先作为默认加载
 let _watchList = [];
 let _trades = [];
 let _feeDetail = { commissionFee: 0, stampTax: 0, transferFee: 0, totalFees: 0 };
@@ -8,17 +77,177 @@ let _lastSummary = {};
 let _lastKlines = [];
 let _lastPanoramaStrategies = [];
 let _lastPanoramaSummary = null;
-let _panoramaHistory = JSON.parse(localStorage.getItem('panoramaHistory') || '[]');
+let _stockRequestId = 0;
+let _panoramaHistory;
+try { _panoramaHistory = JSON.parse(localStorage.getItem('panoramaHistory') || '[]'); } catch(e) { _panoramaHistory = []; }
 let _searchHistory = [];
 let _stockNames = {};
-let _searchTimer = null;
+const _searchTimers = {};
+const _searchTimerStart = {};
+let _searchTimerCleanupInterval = null;
+
+function setSearchTimer(key, fn, delay = 250) {
+    if (_searchTimers[key]) {
+        clearTimeout(_searchTimers[key]);
+        delete _searchTimers[key];
+        delete _searchTimerStart[key];
+    }
+    const timerId = setTimeout(() => {
+        delete _searchTimers[key];
+        delete _searchTimerStart[key];
+        fn();
+    }, delay);
+    _searchTimers[key] = timerId;
+    _searchTimerStart[key] = Date.now();
+    scheduleSearchTimerCleanup();
+}
+
+function scheduleSearchTimerCleanup() {
+    if (_searchTimerCleanupInterval) return;
+    _searchTimerCleanupInterval = setInterval(() => {
+        const keys = Object.keys(_searchTimers);
+        if (keys.length === 0) {
+            clearInterval(_searchTimerCleanupInterval);
+            _searchTimerCleanupInterval = null;
+            return;
+        }
+        const now = Date.now();
+        for (const key of keys) {
+            const startTime = _searchTimerStart[key];
+            if (startTime && now - startTime > 30000) {
+                clearTimeout(_searchTimers[key]);
+                delete _searchTimers[key];
+                delete _searchTimerStart[key];
+            }
+        }
+    }, 10000);
+}
 let _activeCategory = '全部';
 let _settings = {};
 let _autoRefreshTimer = null;
 let _refreshCountdown = 0;
+let _isRefreshing = false; // 防止双定时器刷新重叠的全局标志
+let _profitListRendered = false; // 持仓列表是否已渲染
+let _lastHoldingCodes = []; // 上一次的持仓代码，用于判断是否需要重建列表
+let _switchTabTimer = null; // switchTab 动画定时器
+let _switchSubtabTimer = null; // switchStrategySubtab 动画定时器
+let _tSignalRequestId = 0; // 做T信号请求竞态保护
+const _tSignalReqMap = {}; // 每个股票的最新请求ID
 
-// 预测记录存储
-let _predictionRecords = JSON.parse(localStorage.getItem('predictionRecords') || '{}');
+// 预测记录存储（按月分块）
+let _predictionRecords = null; // 懒加载，按月分块
+
+// localStorage.setItem 的安全封装，防止 quota 超限抛出
+function safeSetItem(key, val) {
+    try { localStorage.setItem(key, val); return true; } catch (e) { console.warn('存储失败:', key, e); return false; }
+}
+
+function loadStockNames() {
+    try {
+        const saved = localStorage.getItem('stockNames');
+        const parsed = saved ? JSON.parse(saved) : {};
+        _stockNames = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+    } catch (e) { _stockNames = {}; }
+}
+
+let _saveStockNamesTimer = null;
+function saveStockNames() {
+    if (_saveStockNamesTimer) clearTimeout(_saveStockNamesTimer);
+    _saveStockNamesTimer = setTimeout(() => {
+        safeSetItem('stockNames', JSON.stringify(_stockNames));
+    }, 2000);
+}
+
+// 获取指定月份的预测记录
+function getPredictionMonthRecords(monthKey) {
+    try {
+        const data = localStorage.getItem('pred_' + monthKey);
+        return data ? JSON.parse(data) : {};
+    } catch (e) {
+        return {};
+    }
+}
+
+// 保存指定月份的预测记录
+function savePredictionMonthRecords(monthKey, records) {
+    try {
+        safeSetItem('pred_' + monthKey, JSON.stringify(records));
+    } catch (e) {
+        console.warn('预测记录保存失败:', e);
+    }
+}
+
+// 获取所有月分块键
+function getPredictionMonthKeys() {
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('pred_')) keys.push(k);
+    }
+    return keys.sort().reverse(); // 最新的在前
+}
+
+// 获取指定股票的所有历史预测记录（跨月合并）
+function getPredictionHistory(code) {
+    const records = [];
+    const monthKeys = getPredictionMonthKeys();
+    for (const mk of monthKeys) {
+        const monthData = getPredictionMonthRecords(mk.replace('pred_', ''));
+        for (const key in monthData) {
+            if (key.startsWith(code + '_')) {
+                records.push(monthData[key]);
+            }
+        }
+    }
+    return records.sort((a, b) => new Date(b.date) - new Date(a.date));
+}
+
+// 迁移旧格式数据（一次性）
+function migrateOldPredictionRecords() {
+    const old = localStorage.getItem('predictionRecords');
+    if (!old) return;
+    try {
+        const oldData = JSON.parse(old);
+        const months = {};
+        for (const key in oldData) {
+            const r = oldData[key];
+            if (!r.date) continue;
+            const monthKey = r.date.substring(0, 7); // "2026-07"
+            if (!months[monthKey]) months[monthKey] = {};
+            months[monthKey][key] = r;
+        }
+        let savedCount = 0;
+        let totalCount = Object.keys(oldData).length;
+        for (const mk in months) {
+            try {
+                savePredictionMonthRecords(mk, months[mk]);
+                savedCount += Object.keys(months[mk]).length;
+            } catch (e) {
+                console.warn('月分块写入失败:', mk, e);
+            }
+        }
+        // 已迁移的记录从旧数据中移除，避免下次重复
+        if (savedCount > 0) {
+            const remaining = {};
+            for (const key in oldData) {
+                const r = oldData[key];
+                const mk = r.date ? r.date.substring(0, 7) : '';
+                if (!months[mk] || !months[mk][key]) {
+                    remaining[key] = r;
+                }
+            }
+            if (Object.keys(remaining).length === 0) {
+                localStorage.removeItem('predictionRecords');
+                console.log('预测记录迁移完成，共', totalCount, '条');
+            } else {
+                localStorage.setItem('predictionRecords', JSON.stringify(remaining));
+                console.log('预测记录部分迁移，已完成', savedCount, '条，剩余', Object.keys(remaining).length, '条');
+            }
+        }
+    } catch (e) {
+        console.warn('迁移旧预测记录失败:', e);
+    }
+}
 
 function getCapacitorHttp() {
     if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.CapacitorHttp) {
@@ -36,9 +265,11 @@ function getCapacitorHttp() {
     return null;
 }
 
+let _jsonpCounter = 0;
+
 function fetchJsonp(url, timeout = 5000) {
     return new Promise((resolve, reject) => {
-        const callbackName = `jsonp_callback_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const callbackName = `jsonp_callback_${Date.now()}_${(++_jsonpCounter).toString(36)}`;
         const script = document.createElement('script');
         const timeoutId = setTimeout(() => {
             cleanup();
@@ -71,7 +302,7 @@ function fetchJsonp(url, timeout = 5000) {
 
 function fetchJsonpText(url, timeout = 5000) {
     return new Promise((resolve, reject) => {
-        const callbackName = `jsonp_text_callback_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        const callbackName = `jsonp_text_callback_${Date.now()}_${(++_jsonpCounter).toString(36)}`;
         const script = document.createElement('script');
         const timeoutId = setTimeout(() => {
             cleanup();
@@ -112,68 +343,111 @@ function getCapacitorLocalNotifications() {
     return null;
 }
 
-async function httpGet(url) {
+async function httpGet(url, options = {}) {
+    const { timeout = 10000, retry = 1 } = options;
+    let lastError;
+    
     const Http = getCapacitorHttp();
     if (Http) {
-        try {
-            const response = await Http.get({ url });
-            if (typeof response.data === 'string') {
-                return JSON.parse(response.data);
+        for (let attempt = 0; attempt <= retry; attempt++) {
+            try {
+                const response = await Http.get({ url });
+                if (typeof response.data === 'string') {
+                    return JSON.parse(response.data);
+                }
+                return response.data;
+            } catch (e) {
+                lastError = e;
+                if (attempt < retry) {
+                    await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+                }
             }
-            return response.data;
-        } catch (e) {
-            console.log('Capacitor HTTP 请求失败，尝试 fetch:', e);
         }
+        console.warn('Capacitor HTTP请求最终失败:', url, lastError);
     }
     
-    try {
-        const response = await fetch(url, { mode: 'cors' });
-        return await response.json();
-    } catch (e) {
-        console.error('HTTP请求失败:', url, e);
-        throw e;
+    for (let attempt = 0; attempt <= retry; attempt++) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeout);
+        try {
+            const response = await fetch(url, { mode: 'cors', signal: controller.signal });
+            clearTimeout(timeoutId);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            return await response.json();
+        } catch (e) {
+            clearTimeout(timeoutId);
+            lastError = e;
+            if (attempt < retry && e.name !== 'AbortError') {
+                console.log(`HTTP请求失败，重试中 (${attempt + 1}/${retry + 1}):`, url, e);
+                await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+            }
+        }
     }
+    console.error('HTTP请求最终失败:', url, lastError);
+    throw lastError;
 }
 
 function getTencentPrefix(code) {
-    if (code.startsWith('6') || code.startsWith('9')) return 'sh';
+    if (code.startsWith('688') || code.startsWith('6') || code.startsWith('9')) return 'sh';
     if (code.startsWith('0') || code.startsWith('3') || code.startsWith('2')) return 'sz';
+    if (code.startsWith('8') || code.startsWith('4')) return 'bj';
     return 'sh';
+}
+
+function parseTencentQtData(qt) {
+    if (!qt || !Array.isArray(qt) || qt.length < 38) {
+        return null;
+    }
+    return {
+        code: qt[2] || '',
+        name: qt[1] || '',
+        current_price: parseFloat(qt[3]) || 0,
+        prev_close: parseFloat(qt[4]) || 0,
+        open_price: parseFloat(qt[5]) || 0,
+        volume: parseFloat(qt[36]) * 100 || 0,
+        amount: parseFloat(qt[37]) * 10000 || 0,
+        change_amount: parseFloat(qt[31]) || 0,
+        change_percent: parseFloat(qt[32]) || 0,
+        high_price: parseFloat(qt[33]) || 0,
+        low_price: parseFloat(qt[34]) || 0,
+        turnover: parseFloat(qt[38]) || 0
+    };
 }
 
 // 获取当前股票价格（从缓存获取）
 const _priceCache = {};
+const _priceCacheKeys = [];
+const _priceCacheMax = 50;
 async function getCurrentPrice(code) {
-    if (_priceCache[code] && _priceCache[code].time > Date.now() - 60000) {
+    if (_priceCache[code] && _priceCache[code].time > Date.now() - 20000) {
         return _priceCache[code].price;
     }
     try {
         const prefix = getTencentPrefix(code);
         const url = `https://qt.gtimg.cn/q=${prefix}${code}`;
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000);
+        
         let text;
-        const Http = getCapacitorHttp();
-        if (Http) {
-            const response = await Http.get({ url });
-            text = response.data;
-        } else {
-            const response = await fetch(url);
+        try {
+            const response = await fetch(url, { signal: controller.signal });
             text = await response.text();
+        } finally {
+            clearTimeout(timeoutId);
         }
+        
         const match = text.match(/="([^"]+)"/);
         if (match) {
-            const qt = match[1].split('~');
-            const price = parseFloat(qt[3]) || 0;
-            if (price > 0) {
-                _priceCache[code] = { price: price, time: Date.now() };
-                return price;
-            }
-        }
-        const parts = text.split('~');
-        if (parts.length > 3) {
-            const price = parseFloat(parts[3]) || 0;
-            if (price > 0) {
-                _priceCache[code] = { price: price, time: Date.now() };
-                return price;
+            const parts = match[1].split('~');
+            if (parts.length > 3) {
+                const price = parseFloat(parts[3]) || 0;
+                if (price > 0) {
+                    setPriceCache(code, price);
+                    return price;
+                }
             }
         }
     } catch (e) {
@@ -182,18 +456,64 @@ async function getCurrentPrice(code) {
     return 0;
 }
 
+function setPriceCache(code, price) {
+    if (!_priceCache[code]) {
+        _priceCacheKeys.push(code);
+        if (_priceCacheKeys.length > _priceCacheMax) {
+            const oldest = _priceCacheKeys.shift();
+            delete _priceCache[oldest];
+        }
+    }
+    _priceCache[code] = { price: price, time: Date.now() };
+}
+
+function cleanExpiredPriceCache() {
+    const now = Date.now();
+    const expired = [];
+    for (const code of _priceCacheKeys) {
+        if (_priceCache[code] && now - _priceCache[code].time > 60000) {
+            expired.push(code);
+        }
+    }
+    for (const code of expired) {
+        const idx = _priceCacheKeys.indexOf(code);
+        if (idx > -1) _priceCacheKeys.splice(idx, 1);
+        delete _priceCache[code];
+    }
+}
+
+let _priceCacheCleanupTimer = setInterval(cleanExpiredPriceCache, 30000);
+
 function init() {
     loadSettings();
+    loadStockNames();
     loadWatchList();
     loadTrades();
     loadSearchHistory();
     loadPanoramaHistory();
+    loadAlertedSignals();
+
+    // 迁移旧格式预测记录到按月分块存储
+    migrateOldPredictionRecords();
+
+    // 恢复最后一次查询的股票
+    try {
+        const savedLast = localStorage.getItem('lastSearchedStock');
+        if (savedLast) {
+            const parsed = JSON.parse(savedLast);
+            if (parsed && parsed.code && typeof parsed.code === 'string') {
+                _lastSearchedStock = { code: parsed.code, name: parsed.name || parsed.code };
+            }
+        }
+    } catch (e) {
+        console.warn('Failed to load lastSearchedStock:', e);
+    }
     renderWatchList(false);
     
     // 首屏优先渲染，不阻塞
     requestAnimationFrame(() => {
         loadHoldingsSignals();
-        renderTrades();
+        renderTrades().catch(e => console.warn('renderTrades初始化失败:', e));
         renderSearchHistory();
         refreshProfit();
         updateAutoRefresh();
@@ -215,14 +535,196 @@ function init() {
         }
     }, 500);
     
-    document.addEventListener('click', function (e) {
-        if (!e.target.closest('.search-wrapper') && !e.target.closest('.search-box')) {
-            document.querySelectorAll('.search-suggestions').forEach(el => el.style.display = 'none');
-        }
-    });
-    
+    if (!window._clickListenerAdded) {
+        window._clickListenerAdded = true;
+        window._searchClickHandler = function (e) {
+            if (!e.target.closest('.search-wrapper') && !e.target.closest('.search-box')) {
+                document.querySelectorAll('.search-suggestions').forEach(el => {
+                    el.style.display = 'none';
+                    el.innerHTML = '';
+                });
+            }
+        };
+        document.addEventListener('click', window._searchClickHandler);
+    }
+
+    if (!window._focusinListenerAdded) {
+        window._focusinListenerAdded = true;
+        window._inputFocusHandler = (e) => {
+            if (e.target.tagName === 'INPUT' && (e.target.type === 'text' || e.target.type === 'number')) {
+                setTimeout(() => {
+                    e.target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }, 300);
+            }
+            if (e.target.tagName === 'INPUT' && e.target.type === 'text' && !e.target.value.trim()) {
+                const inputId = e.target.id;
+                const suggestionMap = {
+                    'searchInput': 'homeSearchSuggestions',
+                    'strategyInput': 'strategySuggestions',
+                    'newsInput': 'newsSuggestions',
+                    'panoramaInput': 'panoramaSuggestions',
+                    'longtermInput': 'longtermSuggestions'
+                };
+                const sugId = suggestionMap[inputId];
+                if (sugId) {
+                    showSearchHistoryInSuggestions(sugId, inputId);
+                }
+            }
+        };
+        document.addEventListener('focusin', window._inputFocusHandler);
+    }
+
+    if (!window._settingItemClickListenerAdded) {
+        window._settingItemClickListenerAdded = true;
+        window._settingClickHandler = (e) => {
+            const item = e.target.closest('.setting-item');
+            if (!item) return;
+            if (e.target.closest('.toggle') || e.target.closest('.setting-select') || e.target.closest('.setting-input')) return;
+
+            const toggleInput = item.querySelector('.toggle input[type="checkbox"]');
+            if (toggleInput) {
+                toggleInput.checked = !toggleInput.checked;
+                toggleInput.dispatchEvent(new Event('change'));
+                return;
+            }
+            
+            const select = item.querySelector('.setting-select');
+            if (select) {
+                select.focus();
+                select.click();
+            }
+        };
+        document.addEventListener('click', window._settingClickHandler);
+    }
+
     initSwipeTabs();
     initPullRefresh();
+    initBackButton();
+    initKeyboardResizeFix();
+
+    window.addEventListener('beforeunload', cleanupAllResources);
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            pauseAutoRefreshOnHide();
+        } else {
+            resumeAutoRefreshOnShow();
+        }
+    });
+}
+
+let _autoRefreshPaused = false;
+let _watchRefreshPaused = false;
+let _pausedRefreshInterval = 0;
+
+function pauseAutoRefreshOnHide() {
+    if (_autoRefreshTimer) {
+        clearTimeout(_autoRefreshTimer);
+        _autoRefreshTimer = null;
+        _autoRefreshPaused = true;
+    }
+    if (_watchRefreshTimer) {
+        clearTimeout(_watchRefreshTimer);
+        _watchRefreshTimer = null;
+        _watchRefreshPaused = true;
+    }
+    _pausedRefreshInterval = _settings.autoRefreshInterval || 0;
+}
+
+function resumeAutoRefreshOnShow() {
+    if (!_autoRefreshPaused && !_watchRefreshPaused) return;
+    _autoRefreshPaused = false;
+    _watchRefreshPaused = false;
+    if (_pausedRefreshInterval > 0) {
+        updateAutoRefresh();
+    }
+}
+
+function cleanupAllResources() {
+    if (_saveStockNamesTimer) {
+        clearTimeout(_saveStockNamesTimer);
+        _saveStockNamesTimer = null;
+        safeSetItem('stockNames', JSON.stringify(_stockNames));
+    }
+    if (_autoRefreshTimer) {
+        clearTimeout(_autoRefreshTimer);
+        _autoRefreshTimer = null;
+    }
+    if (_watchRefreshTimer) {
+        clearTimeout(_watchRefreshTimer);
+        _watchRefreshTimer = null;
+    }
+    if (_tSignalBatchTimer) {
+        clearTimeout(_tSignalBatchTimer);
+        _tSignalBatchTimer = null;
+    }
+    if (_toastTimer) {
+        clearTimeout(_toastTimer);
+        _toastTimer = null;
+    }
+    if (_switchTabTimer) {
+        clearTimeout(_switchTabTimer);
+        _switchTabTimer = null;
+    }
+    if (_switchSubtabTimer) {
+        clearTimeout(_switchSubtabTimer);
+        _switchSubtabTimer = null;
+    }
+    for (const key in _searchTimers) {
+        clearTimeout(_searchTimers[key]);
+        delete _searchTimers[key];
+        delete _searchTimerStart[key];
+    }
+    if (_searchTimerCleanupInterval) {
+        clearInterval(_searchTimerCleanupInterval);
+        _searchTimerCleanupInterval = null;
+    }
+    if (_priceCacheCleanupTimer) {
+        clearInterval(_priceCacheCleanupTimer);
+        _priceCacheCleanupTimer = null;
+    }
+
+    if (window._searchClickHandler) {
+        document.removeEventListener('click', window._searchClickHandler);
+        window._searchClickHandler = null;
+    }
+    if (window._inputFocusHandler) {
+        document.removeEventListener('focusin', window._inputFocusHandler);
+        window._inputFocusHandler = null;
+    }
+    if (window._settingClickHandler) {
+        document.removeEventListener('click', window._settingClickHandler);
+        window._settingClickHandler = null;
+    }
+}
+
+function initBackButton() {
+    if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.App) {
+        const { App } = window.Capacitor.Plugins;
+        let lastBack = 0;
+        App.addListener('backButton', () => {
+            const now = Date.now();
+            if (now - lastBack < 2000) {
+                App.exitApp();
+            } else {
+                lastBack = now;
+                showToast('再按一次退出');
+            }
+        });
+    }
+}
+
+function initKeyboardResizeFix() {
+    if (!window._keyboardFixAdded) {
+        window._keyboardFixAdded = true;
+        document.addEventListener('focusout', (e) => {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+                setTimeout(() => {
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                }, 100);
+            }
+        });
+    }
 }
 
 function initSwipeTabs() {
@@ -278,37 +780,66 @@ function initSwipeTabs() {
 function initPullRefresh() {
     const contentArea = document.querySelector('.content');
     if (!contentArea) return;
-    
+
     let touchStartY = 0;
     let touchMoveY = 0;
+    let touchStartX = 0;
+    let touchMoveX = 0;
     let isPulling = false;
     let isRefreshing = false;
-    const threshold = 80;
-    
+    const threshold = 120;
+
     // 创建下拉刷新指示器
     const indicator = document.createElement('div');
     indicator.className = 'pull-refresh-indicator';
     indicator.innerHTML = '<span class="refresh-icon">🔄</span><span class="refresh-text">下拉刷新</span>';
     indicator.style.transform = 'translateY(-50px)';
     contentArea.insertBefore(indicator, contentArea.firstChild);
-    
-    contentArea.addEventListener('touchstart', function(e) {
-        if (contentArea.scrollTop === 0 && !isRefreshing) {
-            touchStartY = e.touches[0].clientY;
-            isPulling = true;
+
+    // 设置过渡效果的工具函数
+    function setTransition(enabled) {
+        indicator.style.transition = enabled ? 'transform 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94)' : 'none';
+        const icon = indicator.querySelector('.refresh-icon');
+        if (icon) {
+            icon.style.transition = enabled ? 'transform 0.3s ease' : 'none';
         }
+    }
+
+    contentArea.addEventListener('touchstart', function(e) {
+        isPulling = false; // 无条件重置，避免上次状态残留
+        // 起始位置容差50，避免顶部过于敏感
+        if (contentArea.scrollTop > 50 || isRefreshing) return;
+        // 跳过交互元素，避免影响按钮点击
+        if (e.target.closest('button, a, input, .strategy-card, .trade-item, .watch-tag, .plan-tab, .cat-tab, .score-card, .profit-item, .holding-row, .t-signal-card, .news-item, .longterm-card')) return;
+        touchStartY = e.touches[0].clientY;
+        touchStartX = e.touches[0].clientX;
+        touchMoveY = touchStartY;
+        touchMoveX = touchStartX;
+        isPulling = true;
+        // 拖动时移除过渡，保证跟手
+        setTransition(false);
     }, { passive: true });
-    
+
     contentArea.addEventListener('touchmove', function(e) {
         if (!isPulling || isRefreshing) return;
-        
+
         touchMoveY = e.touches[0].clientY;
+        touchMoveX = e.touches[0].clientX;
         const distance = touchMoveY - touchStartY;
-        
-        if (distance > 0 && contentArea.scrollTop === 0) {
+
+        // 横向移动检查：横向偏移较大时不视为下拉
+        const dx = Math.abs(touchMoveX - touchStartX);
+        const dy = Math.abs(touchMoveY - touchStartY);
+        if (dx > 40 && dx > dy * 0.6) {
+            isPulling = false;
+            return;
+        }
+
+        if (distance > 0 && contentArea.scrollTop <= 50) {
+            e.preventDefault();
             const pullDistance = Math.min(distance * 0.5, threshold + 20);
             indicator.style.transform = `translateY(${pullDistance}px)`;
-            
+
             if (distance >= threshold) {
                 indicator.querySelector('.refresh-text').textContent = '释放刷新';
                 indicator.querySelector('.refresh-icon').style.transform = 'rotate(180deg)';
@@ -317,41 +848,63 @@ function initPullRefresh() {
                 indicator.querySelector('.refresh-icon').style.transform = 'rotate(0deg)';
             }
         }
-    }, { passive: true });
-    
+    }, { passive: false });
+
     contentArea.addEventListener('touchend', function(e) {
         if (!isPulling || isRefreshing) return;
-        
+
         isPulling = false;
         const distance = touchMoveY - touchStartY;
-        
+
+        // 松手时添加过渡，实现平滑动画
+        setTransition(true);
+
         if (distance >= threshold) {
             // 触发刷新
             isRefreshing = true;
             indicator.classList.add('refreshing');
             indicator.style.transform = 'translateY(50px)';
-            indicator.querySelector('.refresh-text').textContent = '刷新中...';
+            indicator.querySelector('.refresh-text').textContent = '正在刷新...';
             indicator.querySelector('.refresh-icon').style.transform = '';
-            
+
             // 执行刷新
             const doRefresh = async () => {
-                if (_currentStock) {
-                    await loadStockInfo(_currentStock.code);
+                if (navigator.vibrate) navigator.vibrate(30);
+                try {
+                    if (_currentStock) {
+                        await loadStockInfo(_currentStock.code);
+                    }
+                    // refreshAllTSignals 不是 async 函数，直接调用不 await
+                    refreshAllTSignals();
+                } catch (err) {
+                    console.warn('刷新失败:', err);
                 }
-                await refreshAllTSignals();
-                
+                // 刷新完成后延迟收起，保证用户看到完成状态
                 setTimeout(() => {
                     isRefreshing = false;
                     indicator.classList.remove('refreshing');
                     indicator.style.transform = 'translateY(-50px)';
-                    indicator.querySelector('.refresh-text').textContent = '下拉刷新';
-                }, 500);
+                    // 动画结束后重置文本
+                    setTimeout(() => {
+                        if (!isRefreshing) {
+                            indicator.querySelector('.refresh-text').textContent = '下拉刷新';
+                        }
+                    }, 300);
+                }, 800);
             };
             doRefresh();
         } else {
-            // 未达到阈值，回弹
+            // 未达到阈值，平滑回弹
             indicator.style.transform = 'translateY(-50px)';
+            indicator.querySelector('.refresh-icon').style.transform = 'rotate(0deg)';
         }
+    }, { passive: true });
+
+    contentArea.addEventListener('touchcancel', function() {
+        isPulling = false;
+        setTransition(true);
+        indicator.style.transform = 'translateY(-50px)';
+        indicator.querySelector('.refresh-icon').style.transform = 'rotate(0deg)';
     }, { passive: true });
 }
 
@@ -359,11 +912,15 @@ function initPullRefresh() {
 function loadHoldingsSignals() {
     const holdings = {};
     _trades.forEach(t => {
-        if (!holdings[t.code]) holdings[t.code] = { qty: 0, name: t.name || t.code };
+        if (!holdings[t.code]) {
+            holdings[t.code] = { qty: 0, name: t.name || t.code };
+        } else if (t.name && t.name !== t.code) {
+            holdings[t.code].name = t.name;
+        }
         if ((t.trade_type || t.type) === 'BUY') {
             holdings[t.code].qty += t.quantity;
         } else {
-            holdings[t.code].qty -= t.quantity;
+            holdings[t.code].qty = Math.max(0, holdings[t.code].qty - t.quantity);
         }
     });
     
@@ -395,21 +952,57 @@ function viewTSignalDetail(code) {
     }, 100);
 }
 
+let _toastTimer = null;
 function showToast(msg, duration = 2000) {
     const toast = document.getElementById('toast');
+    if (!toast) return;
     toast.innerText = msg;
     toast.classList.add('show');
-    setTimeout(() => toast.classList.remove('show'), duration);
+    if (_toastTimer) clearTimeout(_toastTimer);
+    _toastTimer = setTimeout(() => toast.classList.remove('show'), duration);
+}
+
+function closeAllModals() {
+    const modals = ['strategyModal', 'dimensionModal', 'watchModal', 'learnModal'];
+    modals.forEach(id => {
+        const modal = document.getElementById(id);
+        if (modal) {
+            modal.classList.remove('show');
+            modal.style.display = 'none';
+        }
+    });
+    document.body.style.overflow = '';
 }
 
 function openModal(title, content) {
-    document.getElementById('modalTitle').innerText = title;
-    document.getElementById('modalBody').innerHTML = content;
-    document.getElementById('strategyModal').style.display = 'flex';
+    closeAllModals();
+    const modalTitle = document.getElementById('modalTitle');
+    const modalBody = document.getElementById('modalBody');
+    const strategyModal = document.getElementById('strategyModal');
+    if (modalTitle) modalTitle.innerText = title;
+    if (modalBody) modalBody.innerHTML = content;
+    if (strategyModal) {
+        strategyModal.style.display = 'flex';
+        requestAnimationFrame(() => {
+            strategyModal.classList.add('show');
+        });
+        setTimeout(() => {
+            const closeBtn = strategyModal.querySelector('.modal-close');
+            if (closeBtn) closeBtn.focus();
+        }, 50);
+    }
+    document.body.style.overflow = 'hidden';
 }
 
 function closeModal() {
-    document.getElementById('strategyModal').style.display = 'none';
+    const strategyModal = document.getElementById('strategyModal');
+    if (strategyModal) {
+        strategyModal.classList.remove('show');
+        setTimeout(() => {
+            strategyModal.style.display = 'none';
+        }, 250);
+    }
+    document.body.style.overflow = '';
 }
 
 let _currentStrategySubtab = 'strategy';
@@ -426,15 +1019,23 @@ function switchStrategySubtab(subtabName) {
     const subtab = document.getElementById('subtab-' + subtabName);
     if (subtab) {
         subtab.classList.add('active');
+        // 清理之前的动画定时器
+        if (_switchSubtabTimer) {
+            clearTimeout(_switchSubtabTimer);
+            _switchSubtabTimer = null;
+        }
         // 添加动画类
         subtab.classList.add('subtab-enter');
-        setTimeout(() => subtab.classList.remove('subtab-enter'), 300);
+        _switchSubtabTimer = setTimeout(() => {
+            subtab.classList.remove('subtab-enter');
+            _switchSubtabTimer = null;
+        }, 300);
     }
     
     if (subtabName === 'strategy') {
         loadSearchHistory();
         const input = document.getElementById('strategyInput');
-        if (_currentStock && !input.value.trim()) {
+        if (input && _currentStock && !input.value.trim()) {
             input.value = _currentStock.code;
             _stockNames[_currentStock.code] = _currentStock.name;
             loadStrategyDetail();
@@ -444,7 +1045,7 @@ function switchStrategySubtab(subtabName) {
     } else if (subtabName === 'panorama') {
         loadPanoramaHistory();
         const input = document.getElementById('panoramaInput');
-        if (_currentStock && !input.value.trim()) {
+        if (input && _currentStock && !input.value.trim()) {
             input.value = _currentStock.code;
             _stockNames[_currentStock.code] = _currentStock.name;
             loadPanoramaDetail();
@@ -454,7 +1055,7 @@ function switchStrategySubtab(subtabName) {
     } else if (subtabName === 'news') {
         loadSearchHistory();
         const input = document.getElementById('newsInput');
-        if (_currentStock && !input.value.trim()) {
+        if (input && _currentStock && !input.value.trim()) {
             input.value = _currentStock.code;
             _stockNames[_currentStock.code] = _currentStock.name;
             loadNews();
@@ -464,7 +1065,7 @@ function switchStrategySubtab(subtabName) {
     } else if (subtabName === 'longterm') {
         loadLongtermHistory();
         const input = document.getElementById('longtermInput');
-        if (_currentStock && !input.value.trim()) {
+        if (input && _currentStock && !input.value.trim()) {
             input.value = _currentStock.code;
             _stockNames[_currentStock.code] = _currentStock.name;
             loadLongtermDetail();
@@ -482,11 +1083,20 @@ function switchTab(tabName) {
     document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
     document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
 
+    // 清理之前的动画定时器
+    if (_switchTabTimer) {
+        clearTimeout(_switchTabTimer);
+        _switchTabTimer = null;
+    }
+
     // 添加动画效果
     if (nextTab) {
         nextTab.classList.add('active');
         nextTab.classList.add('page-enter');
-        setTimeout(() => nextTab.classList.remove('page-enter'), 300);
+        _switchTabTimer = setTimeout(() => {
+            nextTab.classList.remove('page-enter');
+            _switchTabTimer = null;
+        }, 300);
     }
 
     const btns = document.querySelectorAll('.tab-btn');
@@ -512,8 +1122,7 @@ function switchTab(tabName) {
     }
     else if (tabName === 'trade') {
         loadTrades();
-        renderTrades();
-        refreshTradeStats();
+        (async () => { await renderTrades(); refreshTradeStats(); })();
     }
     else if (tabName === 'strategy') {
         switchStrategySubtab(_currentStrategySubtab);
@@ -531,23 +1140,26 @@ function onSearchInput() {
 }
 
 // ==================== 搜索建议 ====================
-function setupSearchSuggestions(inputId, suggestionsId, onSelect) {
+function setupSearchSuggestions(inputId, suggestionsId, onSelect, key) {
     const input = document.getElementById(inputId);
     const sug = document.getElementById(suggestionsId);
     if (!input || !sug) return;
-    
+
+    // 去重：避免对同一input重复绑定监听器
+    if (input._suggestionBound) return;
+    input._suggestionBound = true;
+
     input.addEventListener('input', function () {
-        clearTimeout(_searchTimer);
         const kw = this.value.trim();
-        if (!kw) { sug.style.display = 'none'; return; }
-        _searchTimer = setTimeout(async () => {
+        if (!kw) { sug.style.display = 'none'; sug.innerHTML = ''; return; }
+        setSearchTimer(key || inputId, async () => {
             try {
                 const results = await searchStockByName(kw);
                 if (results.length > 0) {
                     sug.innerHTML = results.map(item => `
-                        <div class="suggestion-item" data-code="${item.code}" data-name="${item.name}">
-                            <span class="suggestion-code">${item.code}</span>
-                            <span class="suggestion-name">${item.name}</span>
+                        <div class="suggestion-item" data-code="${escapeHtml(item.code)}" data-name="${escapeHtml(item.name)}">
+                            <span class="suggestion-code">${escapeHtml(item.code)}</span>
+                            <span class="suggestion-name">${escapeHtml(item.name)}</span>
                         </div>
                     `).join('');
                     sug.style.display = 'block';
@@ -571,13 +1183,13 @@ function onHomeSearchInput() {
     const kw = document.getElementById('searchInput').value.trim();
     if (!kw) {
         renderSearchHistory();
-        document.getElementById('homeSearchSuggestions').style.display = 'none';
+        const sug = document.getElementById('homeSearchSuggestions');
+        if (sug) { sug.style.display = 'none'; sug.innerHTML = ''; }
         document.getElementById('searchLoading').style.display = 'none';
         return;
     }
     
-    clearTimeout(_searchTimer);
-    _searchTimer = setTimeout(async () => {
+    setSearchTimer('home', async () => {
         const loadingEl = document.getElementById('searchLoading');
         if (loadingEl) loadingEl.style.display = 'inline';
         
@@ -586,9 +1198,9 @@ function onHomeSearchInput() {
             const sug = document.getElementById('homeSearchSuggestions');
             if (results.length > 0) {
                 sug.innerHTML = results.map(item => `
-                    <div class="suggestion-item" data-code="${item.code}" data-name="${item.name}">
-                        <span class="suggestion-code">${item.code}</span>
-                        <span class="suggestion-name">${item.name}</span>
+                    <div class="suggestion-item" data-code="${escapeHtml(item.code)}" data-name="${escapeHtml(item.name)}">
+                        <span class="suggestion-code">${escapeHtml(item.code)}</span>
+                        <span class="suggestion-name">${escapeHtml(item.name)}</span>
                     </div>
                 `).join('');
                 sug.style.display = 'block';
@@ -620,7 +1232,11 @@ function goToStockDetail(code, name) {
 // 交易页搜索
 function onTradeCodeInput() {
     const kw = document.getElementById('stockCode').value.trim();
-    if (!kw) { document.getElementById('codeSuggestions').style.display = 'none'; return; }
+    if (!kw) {
+        const sug = document.getElementById('codeSuggestions');
+        if (sug) { sug.style.display = 'none'; sug.innerHTML = ''; }
+        return;
+    }
     
     if (/^\d{6}$/.test(kw)) {
         const type = document.getElementById('tradeType').value;
@@ -632,16 +1248,15 @@ function onTradeCodeInput() {
         updatePairProfitPreview();
     }
     
-    clearTimeout(_searchTimer);
-    _searchTimer = setTimeout(async () => {
+    setSearchTimer('trade_code', async () => {
         try {
             const results = await searchStockByName(kw);
             const sug = document.getElementById('codeSuggestions');
             if (results.length > 0) {
                 sug.innerHTML = results.map(item => `
-                    <div class="suggestion-item" data-code="${item.code}" data-name="${item.name}">
-                        <span class="suggestion-code">${item.code}</span>
-                        <span class="suggestion-name">${item.name}</span>
+                    <div class="suggestion-item" data-code="${escapeHtml(item.code)}" data-name="${escapeHtml(item.name)}">
+                        <span class="suggestion-code">${escapeHtml(item.code)}</span>
+                        <span class="suggestion-name">${escapeHtml(item.name)}</span>
                     </div>
                 `).join('');
                 sug.style.display = 'block';
@@ -660,18 +1275,21 @@ function onTradeCodeInput() {
 
 function onTradeNameInput() {
     const kw = document.getElementById('stockName').value.trim();
-    if (!kw) { document.getElementById('nameSuggestions').style.display = 'none'; return; }
+    if (!kw) {
+        const sug = document.getElementById('nameSuggestions');
+        if (sug) { sug.style.display = 'none'; sug.innerHTML = ''; }
+        return;
+    }
     
-    clearTimeout(_searchTimer);
-    _searchTimer = setTimeout(async () => {
+    setSearchTimer('trade_name', async () => {
         try {
             const results = await searchStockByName(kw);
             const sug = document.getElementById('nameSuggestions');
             if (results.length > 0) {
                 sug.innerHTML = results.map(item => `
-                    <div class="suggestion-item" data-code="${item.code}" data-name="${item.name}">
-                        <span class="suggestion-code">${item.code}</span>
-                        <span class="suggestion-name">${item.name}</span>
+                    <div class="suggestion-item" data-code="${escapeHtml(item.code)}" data-name="${escapeHtml(item.name)}">
+                        <span class="suggestion-code">${escapeHtml(item.code)}</span>
+                        <span class="suggestion-name">${escapeHtml(item.name)}</span>
                     </div>
                 `).join('');
                 sug.style.display = 'block';
@@ -692,7 +1310,10 @@ function selectStock(code, name) {
     document.getElementById('stockCode').value = code;
     document.getElementById('stockName').value = name;
     _stockNames[code] = name;
-    document.querySelectorAll('.search-suggestions').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('.search-suggestions').forEach(el => {
+        el.style.display = 'none';
+        el.innerHTML = '';
+    });
     
     const type = document.getElementById('tradeType').value;
     if (type === 'SELL') {
@@ -708,12 +1329,12 @@ function onStrategySearchInput() {
     const kw = document.getElementById('strategyInput').value.trim();
     if (!kw) {
         loadSearchHistory();
-        document.getElementById('strategySuggestions').style.display = 'none';
+        const sug = document.getElementById('strategySuggestions');
+        if (sug) { sug.style.display = 'none'; sug.innerHTML = ''; }
         return;
     }
     
-    clearTimeout(_searchTimer);
-    _searchTimer = setTimeout(async () => {
+    setSearchTimer('strategy', async () => {
         const loadingEl = document.getElementById('strategyLoading');
         if (loadingEl) loadingEl.style.display = 'inline';
         
@@ -722,9 +1343,9 @@ function onStrategySearchInput() {
             const sug = document.getElementById('strategySuggestions');
             if (results.length > 0) {
                 sug.innerHTML = results.map(item => `
-                    <div class="suggestion-item" data-code="${item.code}" data-name="${item.name}">
-                        <span class="suggestion-code">${item.code}</span>
-                        <span class="suggestion-name">${item.name}</span>
+                    <div class="suggestion-item" data-code="${escapeHtml(item.code)}" data-name="${escapeHtml(item.name)}">
+                        <span class="suggestion-code">${escapeHtml(item.code)}</span>
+                        <span class="suggestion-name">${escapeHtml(item.name)}</span>
                     </div>
                 `).join('');
                 sug.style.display = 'block';
@@ -753,12 +1374,12 @@ function onPanoramaSearchInput() {
     const kw = document.getElementById('panoramaInput').value.trim();
     if (!kw) {
         loadPanoramaHistory();
-        document.getElementById('panoramaSuggestions').style.display = 'none';
+        const sug = document.getElementById('panoramaSuggestions');
+        if (sug) { sug.style.display = 'none'; sug.innerHTML = ''; }
         return;
     }
     
-    clearTimeout(_searchTimer);
-    _searchTimer = setTimeout(async () => {
+    setSearchTimer('panorama', async () => {
         const loadingEl = document.getElementById('panoramaLoading');
         if (loadingEl) loadingEl.style.display = 'inline';
         
@@ -767,9 +1388,9 @@ function onPanoramaSearchInput() {
             const sug = document.getElementById('panoramaSuggestions');
             if (results.length > 0) {
                 sug.innerHTML = results.map(item => `
-                    <div class="suggestion-item" data-code="${item.code}" data-name="${item.name}">
-                        <span class="suggestion-code">${item.code}</span>
-                        <span class="suggestion-name">${item.name}</span>
+                    <div class="suggestion-item" data-code="${escapeHtml(item.code)}" data-name="${escapeHtml(item.name)}">
+                        <span class="suggestion-code">${escapeHtml(item.code)}</span>
+                        <span class="suggestion-name">${escapeHtml(item.name)}</span>
                     </div>
                 `).join('');
                 sug.style.display = 'block';
@@ -798,20 +1419,20 @@ function onNewsSearchInput() {
     const kw = document.getElementById('newsInput').value.trim();
     if (!kw) {
         loadSearchHistory();
-        document.getElementById('newsSuggestions').style.display = 'none';
+        const sug = document.getElementById('newsSuggestions');
+        if (sug) { sug.style.display = 'none'; sug.innerHTML = ''; }
         return;
     }
     
-    clearTimeout(_searchTimer);
-    _searchTimer = setTimeout(async () => {
+    setSearchTimer('news', async () => {
         try {
             const results = await searchStockByName(kw);
             const sug = document.getElementById('newsSuggestions');
             if (results.length > 0) {
                 sug.innerHTML = results.map(item => `
-                    <div class="suggestion-item" data-code="${item.code}" data-name="${item.name}">
-                        <span class="suggestion-code">${item.code}</span>
-                        <span class="suggestion-name">${item.name}</span>
+                    <div class="suggestion-item" data-code="${escapeHtml(item.code)}" data-name="${escapeHtml(item.name)}">
+                        <span class="suggestion-code">${escapeHtml(item.code)}</span>
+                        <span class="suggestion-name">${escapeHtml(item.name)}</span>
                     </div>
                 `).join('');
                 sug.style.display = 'block';
@@ -856,7 +1477,7 @@ async function doSearch() {
         renderSearchHistory();
     } catch (e) {
         console.error(e);
-        showToast('搜索失败：' + e.message);
+        showToast('搜索失败：' + (e.message || String(e)));
     }
 }
 
@@ -876,15 +1497,15 @@ async function searchStockByName(name) {
 async function searchStockByName_tencent(name) {
     const url = `https://smartbox.gtimg.cn/s3/?v=2&q=${encodeURIComponent(name)}&t=all&p=1&o=0&n=10`;
     try {
-        let text;
-        const Http = getCapacitorHttp();
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
         
-        if (Http) {
-            const response = await Http.get({ url });
-            text = response.data;
-        } else {
-            const response = await fetch(url);
+        let text;
+        try {
+            const response = await fetch(url, { signal: controller.signal });
             text = await response.text();
+        } finally {
+            clearTimeout(timeoutId);
         }
         
         if (!text || text.length === 0) {
@@ -905,7 +1526,7 @@ async function searchStockByName_tencent(name) {
                     let decodedName = nameStr;
                     try {
                         if (nameStr.indexOf('\\u') >= 0) {
-                            decodedName = JSON.parse('"' + nameStr + '"');
+                            decodedName = JSON.parse('"' + nameStr.replace(/\\u([0-9a-fA-F]{4})/g, '\\u$1') + '"');
                         }
                     } catch (e) {
                         decodedName = nameStr;
@@ -924,15 +1545,15 @@ async function searchStockByName_tencent(name) {
 async function searchStockByName_eastmoney(name) {
     const url = `https://searchapi.eastmoney.com/api/suggest/get?input=${encodeURIComponent(name)}&type=14&token=D43BF722C8E33BDC906FB84D85E326E8&count=10`;
     try {
-        let data;
-        const Http = getCapacitorHttp();
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000);
         
-        if (Http) {
-            const response = await Http.get({ url });
-            data = typeof response.data === 'string' ? JSON.parse(response.data) : response.data;
-        } else {
-            const response = await fetch(url);
+        let data;
+        try {
+            const response = await fetch(url, { signal: controller.signal });
             data = await response.json();
+        } finally {
+            clearTimeout(timeoutId);
         }
         
         if (!data || !data.Data || !Array.isArray(data.Data)) return [];
@@ -1005,7 +1626,7 @@ function calcDailyAccuracy(highPrice, lowPrice, predictHigh, predictLow) {
 }
 
 function savePredictionRecord(code, name, currentPrice, highPrice, lowPrice, predictHigh, predictLow, direction, fixedPrediction) {
-    const today = new Date().toISOString().split('T')[0];
+    const today = getLocalDateStr();
     const key = `${code}_${today}`;
 
     const accuracy = calcDailyAccuracy(highPrice, lowPrice, predictHigh, predictLow);
@@ -1051,25 +1672,18 @@ function savePredictionRecord(code, name, currentPrice, highPrice, lowPrice, pre
         record.fixedLowDev = fpAccuracy.lowDev;
     }
 
-    const existing = _predictionRecords[key];
-    if (existing && !existing.fixedPredictHigh && record.fixedPredictHigh) {
-        _predictionRecords[key] = { ...existing, ...record };
+    // 按月分块存储
+    const monthKey = today.substring(0, 7); // "2026-07"
+    const monthRecords = getPredictionMonthRecords(monthKey);
+
+    const existing = monthRecords[key];
+    if (existing) {
+        monthRecords[key] = { ...existing, ...record };
     } else {
-        _predictionRecords[key] = record;
+        monthRecords[key] = record;
     }
 
-    localStorage.setItem('predictionRecords', JSON.stringify(_predictionRecords));
-}
-
-// 获取指定股票的历史预测记录
-function getPredictionHistory(code) {
-    const records = [];
-    for (const key in _predictionRecords) {
-        if (key.startsWith(code + '_')) {
-            records.push(_predictionRecords[key]);
-        }
-    }
-    return records.sort((a, b) => new Date(b.date) - new Date(a.date));
+    savePredictionMonthRecords(monthKey, monthRecords);
 }
 
 // 计算平均准确度
@@ -1089,26 +1703,57 @@ function getAvgAccuracy(code) {
 
 // 显示预测历史记录弹窗
 function showPredictionHistoryModal(code, name) {
-    const records = getPredictionHistory(code);
+    let records = getPredictionHistory(code);
+
+    // 如果没有记录，生成模拟数据展示效果
+    const isDemo = records.length === 0;
+    if (isDemo) {
+        records = generateDemoPredictionRecords(code, name);
+    }
+
     const stats = getAvgAccuracy(code);
+    // 如果是模拟数据，从模拟数据重新算
+    const displayStats = isDemo ? calcStatsFromRecords(records) : stats;
+
+    // 区分近一周和更早的记录
+    const oneWeekAgo = new Date();
+    oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+    oneWeekAgo.setHours(0, 0, 0, 0);
+    const recentRecords = records.filter(r => new Date(r.date) >= oneWeekAgo);
+    const olderRecords = records.filter(r => new Date(r.date) < oneWeekAgo);
+
+    // 按月分组更早的记录
+    const olderByMonth = {};
+    olderRecords.forEach(r => {
+        const mk = r.date.substring(0, 7);
+        if (!olderByMonth[mk]) olderByMonth[mk] = [];
+        olderByMonth[mk].push(r);
+    });
 
     let html = `
         <div style="padding:10px;">
             <div style="text-align:center; margin-bottom:16px;">
                 <div style="display:flex; justify-content:center; gap:20px; align-items:flex-end;">
                     <div>
-                        <div style="font-size:20px; font-weight:700; color:${stats.avg >= 80 ? 'var(--green)' : stats.avg >= 60 ? 'var(--yellow)' : 'var(--red)'};">${stats.avg}分</div>
-                        <div style="font-size:10px; color:var(--text-muted);">动态预测 (${stats.total}天)</div>
+                        <div style="font-size:20px; font-weight:700; color:${displayStats.avg >= 80 ? 'var(--green)' : displayStats.avg >= 60 ? 'var(--yellow)' : 'var(--red)'};">${displayStats.avg}分</div>
+                        <div style="font-size:10px; color:var(--text-muted);">动态预测 (${displayStats.total}天)</div>
                     </div>
     `;
 
-    if (stats.fixedTotal > 0) {
+    if (displayStats.fixedTotal > 0) {
         html += `
                     <div style="width:1px; height:30px; background:var(--surface-active);"></div>
                     <div>
-                        <div style="font-size:20px; font-weight:700; color:${stats.fixedAvg >= 80 ? 'var(--green)' : stats.fixedAvg >= 60 ? 'var(--yellow)' : 'var(--red)'};">${stats.fixedAvg}分</div>
-                        <div style="font-size:10px; color:var(--text-muted);">固定预测 (${stats.fixedTotal}天)</div>
+                        <div style="font-size:20px; font-weight:700; color:${displayStats.fixedAvg >= 80 ? 'var(--green)' : displayStats.fixedAvg >= 60 ? 'var(--yellow)' : 'var(--red)'};">${displayStats.fixedAvg}分</div>
+                        <div style="font-size:10px; color:var(--text-muted);">固定预测 (${displayStats.fixedTotal}天)</div>
                     </div>
+        `;
+    }
+
+    if (isDemo) {
+        html += `
+                    <div style="width:1px; height:30px; background:var(--surface-active);"></div>
+                    <div style="font-size:10px; color:var(--yellow); background:rgba(251,191,36,0.15); padding:3px 8px; border-radius:8px;">模拟数据</div>
         `;
     }
 
@@ -1121,67 +1766,29 @@ function showPredictionHistoryModal(code, name) {
         html += '<div style="text-align:center; color:var(--text-muted); padding:30px;">暂无预测记录</div>';
     } else {
         html += '<div style="max-height:500px; overflow-y:auto;">';
-        records.forEach((r, idx) => {
-            const dateStr = r.date;
-            const acc = r.accuracy || 0;
-            const accColor = acc >= 80 ? 'var(--green)' : acc >= 60 ? 'var(--yellow)' : 'var(--red)';
-            const hasFixed = typeof r.fixedAccuracy === 'number';
-            const fAcc = r.fixedAccuracy || 0;
-            const fAccColor = fAcc >= 80 ? 'var(--green)' : fAcc >= 60 ? 'var(--yellow)' : 'var(--red)';
 
-            let recordHtml = '<div style="background:var(--surface-3); border-radius:10px; padding:12px; margin-bottom:8px;">';
-            recordHtml += '<div style="display:flex; justify-content:space-between; margin-bottom:8px; align-items:center;">';
-            recordHtml += '<span style="font-size:13px; font-weight:600;">' + dateStr + '</span>';
-            recordHtml += '<div style="display:flex; gap:6px; align-items:center;">';
-            if (hasFixed) {
-                recordHtml += '<span style="color:' + fAccColor + '; font-size:10px; font-weight:600; background:rgba(99,102,241,0.2); padding:2px 6px; border-radius:4px;">固' + fAcc + '分</span>';
-            }
-            recordHtml += '<span style="color:' + accColor + '; font-size:10px; font-weight:600; background:rgba(34,197,94,0.2); padding:2px 6px; border-radius:4px;">动' + acc + '分</span>';
-            recordHtml += '</div></div>';
+        // 近一周：卡片展示
+        if (recentRecords.length > 0) {
+            html += '<div style="font-size:11px; color:var(--text-muted); margin-bottom:8px; font-weight:600;">近一周</div>';
+            recentRecords.forEach(r => {
+                html += renderPredictionCard(r);
+            });
+        }
 
-            if (hasFixed) {
-                recordHtml += '<div style="background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.2); border-radius:8px; padding:8px; margin-bottom:8px;">';
-                recordHtml += '<div style="font-size:10px; color:var(--accent); font-weight:600; margin-bottom:6px;">📌 固定预测（前日收盘）</div>';
-                recordHtml += '<div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; font-size:10px;">';
-                recordHtml += '<div>';
-                recordHtml += '<div style="color:var(--text-muted); margin-bottom:1px;">预测最高: ¥' + r.fixedPredictHigh.toFixed(2) + '</div>';
-                recordHtml += '<div style="color:var(--text-muted);">实际最高: ¥' + r.highPrice.toFixed(2) + '</div>';
-                const fHighText = r.fixedHitHigh ? '✓触及' : '差' + r.fixedHighDev.toFixed(2) + '%';
-                const fHighColor = r.fixedHighAccuracy >= 80 ? 'var(--green)' : r.fixedHighAccuracy >= 60 ? 'var(--yellow)' : 'var(--red)';
-                recordHtml += '<div style="color:' + fHighColor + '; margin-top:1px;">' + fHighText + ' (' + r.fixedHighAccuracy + '分)</div>';
-                recordHtml += '</div>';
-                recordHtml += '<div>';
-                recordHtml += '<div style="color:var(--text-muted); margin-bottom:1px;">预测最低: ¥' + r.fixedPredictLow.toFixed(2) + '</div>';
-                recordHtml += '<div style="color:var(--text-muted);">实际最低: ¥' + r.lowPrice.toFixed(2) + '</div>';
-                const fLowText = r.fixedHitLow ? '✓触及' : '差' + r.fixedLowDev.toFixed(2) + '%';
-                const fLowColor = r.fixedLowAccuracy >= 80 ? 'var(--green)' : r.fixedLowAccuracy >= 60 ? 'var(--yellow)' : 'var(--red)';
-                recordHtml += '<div style="color:' + fLowColor + '; margin-top:1px;">' + fLowText + ' (' + r.fixedLowAccuracy + '分)</div>';
-                recordHtml += '</div>';
-                recordHtml += '</div></div>';
-            }
-
-            recordHtml += '<div style="background:rgba(34,197,94,0.06); border:1px solid rgba(34,197,94,0.15); border-radius:8px; padding:8px;">';
-            recordHtml += '<div style="font-size:10px; color:var(--green); font-weight:600; margin-bottom:6px;">📊 动态预测（实时）</div>';
-            recordHtml += '<div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; font-size:10px;">';
-            recordHtml += '<div>';
-            recordHtml += '<div style="color:var(--text-muted); margin-bottom:1px;">预测最高: ¥' + r.predictHigh.toFixed(2) + '</div>';
-            recordHtml += '<div style="color:var(--text-muted);">实际最高: ¥' + r.highPrice.toFixed(2) + '</div>';
-            const highText = r.hitHigh ? '✓触及' : '差' + r.highDev.toFixed(2) + '%';
-            const highColor = r.highAccuracy >= 80 ? 'var(--green)' : r.highAccuracy >= 60 ? 'var(--yellow)' : 'var(--red)';
-            recordHtml += '<div style="color:' + highColor + '; margin-top:1px;">' + highText + ' (' + r.highAccuracy + '分)</div>';
-            recordHtml += '</div>';
-            recordHtml += '<div>';
-            recordHtml += '<div style="color:var(--text-muted); margin-bottom:1px;">预测最低: ¥' + r.predictLow.toFixed(2) + '</div>';
-            recordHtml += '<div style="color:var(--text-muted);">实际最低: ¥' + r.lowPrice.toFixed(2) + '</div>';
-            const lowText = r.hitLow ? '✓触及' : '差' + r.lowDev.toFixed(2) + '%';
-            const lowColor = r.lowAccuracy >= 80 ? 'var(--green)' : r.lowAccuracy >= 60 ? 'var(--yellow)' : 'var(--red)';
-            recordHtml += '<div style="color:' + lowColor + '; margin-top:1px;">' + lowText + ' (' + r.lowAccuracy + '分)</div>';
-            recordHtml += '</div>';
-            recordHtml += '</div></div>';
-            recordHtml += '</div>';
-
-            html += recordHtml;
+        // 更早：按月分表格
+        const monthKeys = Object.keys(olderByMonth).sort().reverse();
+        monthKeys.forEach(mk => {
+            const monthLabel = mk.replace('-', '年') + '月';
+            html += `
+                <div style="margin-top:12px; margin-bottom:6px;">
+                    <div style="font-size:11px; color:var(--text-muted); font-weight:600; display:flex; align-items:center; gap:6px; cursor:pointer;" onclick="const content=this.nextElementSibling; content.classList.toggle('open'); this.querySelector('.toggle-icon').innerText=content.classList.contains('open')?'▼':'▶';">
+                        <span class="toggle-icon">▼</span> ${monthLabel} (${olderByMonth[mk].length}天)
+                    </div>
+                    <div class="collapsible-content open">${renderPredictionTable(olderByMonth[mk])}</div>
+                </div>
+            `;
         });
+
         html += '</div>';
     }
 
@@ -1190,45 +1797,258 @@ function showPredictionHistoryModal(code, name) {
     document.body.style.overflow = 'hidden';
 }
 
-async function loadStockInfo(code) {
-    try {
-        const prefix = getTencentPrefix(code);
-        const fullCode = `${prefix}${code}`;
-        const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${fullCode},day,,,1,qfq`;
-        const data = await httpGet(url);
-        
-        if (data.code !== 0 || !data.data || !data.data[fullCode]) {
-            throw new Error('行情数据接口返回错误');
-        }
+// 渲染单条预测卡片（近一周用）
+function renderPredictionCard(r) {
+    const dateStr = r.date;
+    const acc = r.accuracy || 0;
+    const accColor = acc >= 80 ? 'var(--green)' : acc >= 60 ? 'var(--yellow)' : 'var(--red)';
+    const hasFixed = typeof r.fixedAccuracy === 'number';
+    const fAcc = r.fixedAccuracy || 0;
+    const fAccColor = fAcc >= 80 ? 'var(--green)' : fAcc >= 60 ? 'var(--yellow)' : 'var(--red)';
 
-        const stockData = data.data[fullCode];
-        const qt = stockData.qt?.[fullCode];
-        if (!qt || qt.length < 38) {
-            throw new Error('行情数据格式错误');
-        }
-
-        _currentStock = {
-            code: qt[2],
-            name: qt[1],
-            current_price: parseFloat(qt[3]) || 0,
-            prev_close: parseFloat(qt[4]) || 0,
-            open_price: parseFloat(qt[5]) || 0,
-            volume: parseFloat(qt[36]) * 100 || 0,
-            amount: parseFloat(qt[37]) * 10000 || 0,
-            change_amount: parseFloat(qt[31]) || 0,
-            change_percent: parseFloat(qt[32]) || 0,
-            high_price: parseFloat(qt[33]) || 0,
-            low_price: parseFloat(qt[34]) || 0,
-            turnover: parseFloat(qt[38]) || 0
-        };
-
-        renderStockInfo();
-        await loadKlineData(code);
-    } catch (e) {
-        console.error('loadStockInfo错误:', e);
-        _currentStock = null; // 确保失败时清除旧数据
-        throw e; // 重新抛出错误
+    let recordHtml = '<div style="background:var(--surface-3); border-radius:10px; padding:12px; margin-bottom:8px;">';
+    recordHtml += '<div style="display:flex; justify-content:space-between; margin-bottom:8px; align-items:center;">';
+    recordHtml += '<span style="font-size:13px; font-weight:600;">' + dateStr + '</span>';
+    recordHtml += '<div style="display:flex; gap:6px; align-items:center;">';
+    if (hasFixed) {
+        recordHtml += '<span style="color:' + fAccColor + '; font-size:10px; font-weight:600; background:rgba(99,102,241,0.2); padding:2px 6px; border-radius:4px;">固' + fAcc + '分</span>';
     }
+    recordHtml += '<span style="color:' + accColor + '; font-size:10px; font-weight:600; background:rgba(34,197,94,0.2); padding:2px 6px; border-radius:4px;">动' + acc + '分</span>';
+    recordHtml += '</div></div>';
+
+    if (hasFixed) {
+        recordHtml += '<div style="background:rgba(99,102,241,0.08); border:1px solid rgba(99,102,241,0.2); border-radius:8px; padding:8px; margin-bottom:8px;">';
+        recordHtml += '<div style="font-size:10px; color:var(--accent); font-weight:600; margin-bottom:6px;">📌 固定预测（前日收盘）</div>';
+        recordHtml += '<div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; font-size:10px;">';
+        recordHtml += '<div>';
+        recordHtml += '<div style="color:var(--text-muted); margin-bottom:1px;">预测最高: ¥' + (r.fixedPredictHigh || 0).toFixed(2) + '</div>';
+        recordHtml += '<div style="color:var(--text-muted);">实际最高: ¥' + (r.highPrice || 0).toFixed(2) + '</div>';
+        const fHighText = r.fixedHitHigh ? '✓触及' : '差' + (r.fixedHighDev || 0).toFixed(2) + '%';
+        const fHighColor = r.fixedHighAccuracy >= 80 ? 'var(--green)' : r.fixedHighAccuracy >= 60 ? 'var(--yellow)' : 'var(--red)';
+        recordHtml += '<div style="color:' + fHighColor + '; margin-top:1px;">' + fHighText + ' (' + r.fixedHighAccuracy + '分)</div>';
+        recordHtml += '</div>';
+        recordHtml += '<div>';
+        recordHtml += '<div style="color:var(--text-muted); margin-bottom:1px;">预测最低: ¥' + (r.fixedPredictLow || 0).toFixed(2) + '</div>';
+        recordHtml += '<div style="color:var(--text-muted);">实际最低: ¥' + (r.lowPrice || 0).toFixed(2) + '</div>';
+        const fLowText = r.fixedHitLow ? '✓触及' : '差' + (r.fixedLowDev || 0).toFixed(2) + '%';
+        const fLowColor = r.fixedLowAccuracy >= 80 ? 'var(--green)' : r.fixedLowAccuracy >= 60 ? 'var(--yellow)' : 'var(--red)';
+        recordHtml += '<div style="color:' + fLowColor + '; margin-top:1px;">' + fLowText + ' (' + r.fixedLowAccuracy + '分)</div>';
+        recordHtml += '</div>';
+        recordHtml += '</div></div>';
+    }
+
+    recordHtml += '<div style="background:rgba(34,197,94,0.06); border:1px solid rgba(34,197,94,0.15); border-radius:8px; padding:8px;">';
+    recordHtml += '<div style="font-size:10px; color:var(--green); font-weight:600; margin-bottom:6px;">📊 动态预测（实时）</div>';
+    recordHtml += '<div style="display:grid; grid-template-columns:1fr 1fr; gap:6px; font-size:10px;">';
+    recordHtml += '<div>';
+    recordHtml += '<div style="color:var(--text-muted); margin-bottom:1px;">预测最高: ¥' + (r.predictHigh || 0).toFixed(2) + '</div>';
+    recordHtml += '<div style="color:var(--text-muted);">实际最高: ¥' + (r.highPrice || 0).toFixed(2) + '</div>';
+    const highText = r.hitHigh ? '✓触及' : '差' + (r.highDev || 0).toFixed(2) + '%';
+    const highColor = r.highAccuracy >= 80 ? 'var(--green)' : r.highAccuracy >= 60 ? 'var(--yellow)' : 'var(--red)';
+    recordHtml += '<div style="color:' + highColor + '; margin-top:1px;">' + highText + ' (' + r.highAccuracy + '分)</div>';
+    recordHtml += '</div>';
+    recordHtml += '<div>';
+    recordHtml += '<div style="color:var(--text-muted); margin-bottom:1px;">预测最低: ¥' + (r.predictLow || 0).toFixed(2) + '</div>';
+    recordHtml += '<div style="color:var(--text-muted);">实际最低: ¥' + (r.lowPrice || 0).toFixed(2) + '</div>';
+    const lowText = r.hitLow ? '✓触及' : '差' + (r.lowDev || 0).toFixed(2) + '%';
+    const lowColor = r.lowAccuracy >= 80 ? 'var(--green)' : r.lowAccuracy >= 60 ? 'var(--yellow)' : 'var(--red)';
+    recordHtml += '<div style="color:' + lowColor + '; margin-top:1px;">' + lowText + ' (' + r.lowAccuracy + '分)</div>';
+    recordHtml += '</div>';
+    recordHtml += '</div></div>';
+    recordHtml += '</div>';
+
+    return recordHtml;
+}
+
+// 渲染预测表格（一周前用）
+function renderPredictionTable(records) {
+    if (!records || records.length === 0) return '';
+
+    let html = '<div style="overflow-x:auto; margin-top:4px;">';
+    html += '<table style="width:100%; border-collapse:collapse; font-size:10px;">';
+    html += '<thead><tr style="background:var(--surface-3);">';
+    html += '<th style="padding:6px 4px; text-align:center; color:var(--text-muted); font-weight:600; white-space:nowrap;">日期</th>';
+    html += '<th style="padding:6px 4px; text-align:center; color:var(--accent); font-weight:600; white-space:nowrap;">固测高</th>';
+    html += '<th style="padding:6px 4px; text-align:center; color:var(--accent); font-weight:600; white-space:nowrap;">固测低</th>';
+    html += '<th style="padding:6px 4px; text-align:center; color:var(--green); font-weight:600; white-space:nowrap;">动测高</th>';
+    html += '<th style="padding:6px 4px; text-align:center; color:var(--green); font-weight:600; white-space:nowrap;">动测低</th>';
+    html += '<th style="padding:6px 4px; text-align:center; color:var(--text-muted); font-weight:600; white-space:nowrap;">实高</th>';
+    html += '<th style="padding:6px 4px; text-align:center; color:var(--text-muted); font-weight:600; white-space:nowrap;">实低</th>';
+    html += '<th style="padding:6px 4px; text-align:center; color:var(--accent); font-weight:600; white-space:nowrap;">固分</th>';
+    html += '<th style="padding:6px 4px; text-align:center; color:var(--green); font-weight:600; white-space:nowrap;">动分</th>';
+    html += '</tr></thead>';
+    html += '<tbody>';
+
+    records.forEach((r, idx) => {
+        const bgColor = idx % 2 === 0 ? 'transparent' : 'var(--surface-3)';
+        const acc = r.accuracy || 0;
+        const accColor = acc >= 80 ? 'var(--green)' : acc >= 60 ? 'var(--yellow)' : 'var(--red)';
+        const hasFixed = typeof r.fixedAccuracy === 'number';
+        const fAcc = r.fixedAccuracy || 0;
+        const fAccColor = fAcc >= 80 ? 'var(--green)' : fAcc >= 60 ? 'var(--yellow)' : 'var(--red)';
+
+        html += `<tr style="background:${bgColor};">`;
+        html += `<td style="padding:5px 4px; text-align:center; color:var(--text-secondary); white-space:nowrap;">${r.date.substring(5)}</td>`;
+        html += `<td style="padding:5px 4px; text-align:center; color:var(--accent);">${hasFixed ? (r.fixedPredictHigh || 0).toFixed(2) : '-'}</td>`;
+        html += `<td style="padding:5px 4px; text-align:center; color:var(--accent);">${hasFixed ? (r.fixedPredictLow || 0).toFixed(2) : '-'}</td>`;
+        html += `<td style="padding:5px 4px; text-align:center; color:var(--green);">${(r.predictHigh || 0).toFixed(2)}</td>`;
+        html += `<td style="padding:5px 4px; text-align:center; color:var(--green);">${(r.predictLow || 0).toFixed(2)}</td>`;
+        html += `<td style="padding:5px 4px; text-align:center; color:var(--text-primary);">${(r.highPrice || 0).toFixed(2)}</td>`;
+        html += `<td style="padding:5px 4px; text-align:center; color:var(--text-primary);">${(r.lowPrice || 0).toFixed(2)}</td>`;
+        html += `<td style="padding:5px 4px; text-align:center; color:${fAccColor}; font-weight:600;">${hasFixed ? fAcc : '-'}</td>`;
+        html += `<td style="padding:5px 4px; text-align:center; color:${accColor}; font-weight:600;">${acc}</td>`;
+        html += '</tr>';
+    });
+
+    html += '</tbody></table></div>';
+    return html;
+}
+
+// 从记录数组计算统计
+function calcStatsFromRecords(records) {
+    if (records.length === 0) return { avg: 0, total: 0, fixedAvg: 0, fixedTotal: 0 };
+    const sum = records.reduce((acc, r) => acc + (r.accuracy || 0), 0);
+    const fixedRecords = records.filter(r => typeof r.fixedAccuracy === 'number');
+    const fixedSum = fixedRecords.reduce((acc, r) => acc + r.fixedAccuracy, 0);
+    return {
+        avg: Math.round(sum / records.length),
+        total: records.length,
+        fixedAvg: fixedRecords.length > 0 ? Math.round(fixedSum / fixedRecords.length) : 0,
+        fixedTotal: fixedRecords.length
+    };
+}
+
+// 生成模拟预测记录
+function generateDemoPredictionRecords(code, name) {
+    const records = [];
+    const basePrice = 15.80;
+    const today = new Date();
+
+    for (let i = 0; i < 45; i++) {
+        const d = new Date(today);
+        d.setDate(d.getDate() - i);
+        // 跳过周末
+        if (d.getDay() === 0 || d.getDay() === 6) continue;
+
+        const dateStr = getLocalDateStr(d);
+        const volatility = (Math.random() - 0.5) * 0.04;
+        const cp = basePrice * (1 + volatility * i * 0.1);
+        const amplitude = 0.02 + Math.random() * 0.03;
+
+        const predictHigh = cp * (1 + amplitude);
+        const predictLow = cp * (1 - amplitude);
+        const actualHigh = predictHigh * (0.97 + Math.random() * 0.06);
+        const actualLow = predictLow * (0.94 + Math.random() * 0.12);
+
+        const fixedAmplitude = 0.018 + Math.random() * 0.025;
+        const fixedPredictHigh = cp * (1 + fixedAmplitude);
+        const fixedPredictLow = cp * (1 - fixedAmplitude);
+
+        const hitHigh = actualHigh >= predictHigh;
+        const hitLow = actualLow <= predictLow;
+        const highDev = Math.abs(actualHigh - predictHigh) / predictHigh * 100;
+        const lowDev = Math.abs(actualLow - predictLow) / predictLow * 100;
+        const highAccuracy = Math.max(0, Math.round(100 - highDev * 10));
+        const lowAccuracy = Math.max(0, Math.round(100 - lowDev * 10));
+        const overall = Math.round((highAccuracy + lowAccuracy) / 2);
+
+        const fHitHigh = actualHigh >= fixedPredictHigh;
+        const fHitLow = actualLow <= fixedPredictLow;
+        const fHighDev = Math.abs(actualHigh - fixedPredictHigh) / fixedPredictHigh * 100;
+        const fLowDev = Math.abs(actualLow - fixedPredictLow) / fixedPredictLow * 100;
+        const fHighAccuracy = Math.max(0, Math.round(100 - fHighDev * 10));
+        const fLowAccuracy = Math.max(0, Math.round(100 - fLowDev * 10));
+        const fOverall = Math.round((fHighAccuracy + fLowAccuracy) / 2);
+
+        records.push({
+            code: code,
+            name: name,
+            date: dateStr,
+            currentPrice: cp,
+            highPrice: actualHigh,
+            lowPrice: actualLow,
+            predictHigh: predictHigh,
+            predictLow: predictLow,
+            direction: volatility > 0 ? '上升' : '下跌',
+            hitHigh: hitHigh,
+            hitLow: hitLow,
+            isSuccess: hitHigh || hitLow,
+            accuracy: overall,
+            highAccuracy: highAccuracy,
+            lowAccuracy: lowAccuracy,
+            highDev: highDev,
+            lowDev: lowDev,
+            fixedPredictHigh: fixedPredictHigh,
+            fixedPredictLow: fixedPredictLow,
+            fixedBasePrice: cp * 0.998,
+            fixedTrend: volatility > 0 ? '上升' : '下跌',
+            fixedAvgAmplitude: (fixedAmplitude * 100).toFixed(2),
+            fixedHitHigh: fHitHigh,
+            fixedHitLow: fHitLow,
+            fixedIsSuccess: fHitHigh || fHitLow,
+            fixedAccuracy: fOverall,
+            fixedHighAccuracy: fHighAccuracy,
+            fixedLowAccuracy: fLowAccuracy,
+            fixedHighDev: fHighDev,
+            fixedLowDev: fLowDev,
+            updateTime: d.getTime()
+        });
+    }
+
+    return records;
+}
+
+async function loadStockInfo(code) {
+    const reqId = ++_stockRequestId;
+    _lastSummary = null;
+    _lastStrategies = [];
+    _lastKlines = [];
+    _lastPanoramaStrategies = [];
+    _lastPanoramaSummary = null;
+    
+    async function attempt(retryCount) {
+        try {
+            const prefix = getTencentPrefix(code);
+            const fullCode = `${prefix}${code}`;
+            const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${fullCode},day,,,1,qfq`;
+            const data = await httpGet(url);
+
+            if (reqId !== _stockRequestId) return;
+
+            if (data.code !== 0 || !data.data || !data.data[fullCode]) {
+                throw new Error('行情数据接口返回错误');
+            }
+
+            const stockData = data.data[fullCode];
+            const qt = stockData.qt?.[fullCode];
+            const parsedStock = parseTencentQtData(qt);
+            if (!parsedStock) {
+                throw new Error('行情数据格式错误');
+            }
+
+            _currentStock = parsedStock;
+
+            if (_currentStock) {
+                _stockNames[_currentStock.code] = _currentStock.name;
+                saveStockNames();
+                _lastSearchedStock = { code: _currentStock.code, name: _currentStock.name };
+                safeSetItem('lastSearchedStock', JSON.stringify(_lastSearchedStock));
+            }
+
+            renderStockInfo();
+            await loadKlineData(code, reqId, retryCount);
+        } catch (e) {
+            console.error('loadStockInfo错误:', e);
+            if (retryCount === 0 && e.name !== 'AbortError') {
+                console.log('loadStockInfo 重试中...');
+                await new Promise(r => setTimeout(r, 500));
+                return attempt(1);
+            }
+            throw e;
+        }
+    }
+    
+    return attempt(0);
 }
 
 function renderStockInfo() {
@@ -1254,7 +2074,7 @@ function updateHeaderQuote(tOpportunity) {
     if (codeEl) codeEl.innerText = _currentStock.code;
     
     const chg = _currentStock.change_percent || 0;
-    const chgColor = chg >= 0 ? 'var(--red)' : 'var(--green)';
+    const chgColor = chg > 0 ? 'var(--red)' : (chg < 0 ? 'var(--green)' : 'var(--text-muted)');
     const chgSign = chg >= 0 ? '+' : '';
     
     if (priceEl) {
@@ -1271,7 +2091,7 @@ function updateHeaderQuote(tOpportunity) {
         const highPrice = _currentStock.high_price ? _currentStock.high_price.toFixed(2) : '--';
         const lowPrice = _currentStock.low_price ? _currentStock.low_price.toFixed(2) : '--';
         const prevClose = _currentStock.prev_close ? _currentStock.prev_close.toFixed(2) : '--';
-        const vol = _currentStock.volume ? formatVolume(_currentStock.volume) : '--';
+        const vol = _currentStock.amount ? formatAmount(_currentStock.amount) : '--';
         const turnover = _currentStock.turnover != null ? _currentStock.turnover.toFixed(2) + '%' : '--';
         const tText = tOpportunity != null ? tOpportunity : '分析中';
         
@@ -1283,7 +2103,7 @@ function updateHeaderQuote(tOpportunity) {
             '<span style="width:12px; display:inline-block;"></span>' +
             '<span style="font-size:11px; color:var(--text-muted);">昨收 <span style="color:var(--text-primary);">' + prevClose + '</span></span>' +
             '<span style="width:12px; display:inline-block;"></span>' +
-            '<span style="font-size:11px; color:var(--text-muted);">成交量 <span style="color:var(--text-primary);">' + vol + '</span></span>' +
+            '<span style="font-size:11px; color:var(--text-muted);">成交额 <span style="color:var(--text-primary);">' + vol + '</span></span>' +
             '<span style="width:12px; display:inline-block;"></span>' +
             '<span style="font-size:11px; color:var(--text-muted);">换手率 <span style="color:var(--text-primary);">' + turnover + '</span></span>' +
             '<span style="width:12px; display:inline-block;"></span>' +
@@ -1294,94 +2114,126 @@ function updateHeaderQuote(tOpportunity) {
     }
 }
 
+function formatLargeNumber(num) {
+    if (isNaN(num) || num == null) return '0';
+    if (Math.abs(num) >= 100000000) return (num / 100000000).toFixed(2) + '亿';
+    if (Math.abs(num) >= 10000) return (num / 10000).toFixed(2) + '万';
+    return Math.round(num).toString();
+}
+
 function formatVolume(vol) {
-    if (vol >= 100000000) return (vol / 100000000).toFixed(2) + '亿';
-    if (vol >= 10000) return (vol / 10000).toFixed(2) + '万';
-    return vol.toFixed(0);
+    return formatLargeNumber(vol);
 }
 
-async function loadKlineData(code) {
-    try {
-        const prefix = getTencentPrefix(code);
-        const fullCode = `${prefix}${code}`;
-        const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${fullCode},day,,,120,qfq`;
-        const data = await httpGet(url);
-        
-        if (data.code !== 0 || !data.data || !data.data[fullCode]) {
-            throw new Error('K线数据接口返回错误');
+function formatAmount(amount) {
+    return formatLargeNumber(amount);
+}
+
+async function loadKlineData(code, reqId, retryCount = 0) {
+    const myReqId = reqId || ++_stockRequestId;
+    
+    async function attempt(attemptNum) {
+        try {
+            const prefix = getTencentPrefix(code);
+            const fullCode = `${prefix}${code}`;
+            const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${fullCode},day,,,250,qfq`;
+            const data = await httpGet(url);
+
+            if (myReqId !== _stockRequestId) return;
+
+            if (data.code !== 0 || !data.data || !data.data[fullCode]) {
+                throw new Error('K线数据接口返回错误');
+            }
+
+            const klineArray = data.data[fullCode].qfqday || data.data[fullCode].day || [];
+            if (klineArray.length === 0) {
+                throw new Error('K线数据为空');
+            }
+
+            const klines = klineArray.map(k => ({
+                date: k[0],
+                open: parseFloat(k[1]) || 0,
+                close: parseFloat(k[2]) || 0,
+                high: parseFloat(k[3]) || 0,
+                low: parseFloat(k[4]) || 0,
+                volume: k[5] ? parseFloat(k[5]) * 100 : 0,
+                amount: k[6] ? parseFloat(k[6]) * 10000 : 0
+            }));
+
+            await runStrategyAnalysis(klines, myReqId);
+            await runPanoramaAnalysis(klines, myReqId);
+        } catch (e) {
+            console.error('loadKlineData错误:', e);
+            if (attemptNum === 0 && e.name !== 'AbortError') {
+                console.log('loadKlineData 重试中...');
+                await new Promise(r => setTimeout(r, 500));
+                return attempt(1);
+            }
+            throw e;
         }
-
-        const klineArray = data.data[fullCode].qfqday || data.data[fullCode].day || [];
-        if (klineArray.length === 0) {
-            throw new Error('K线数据为空');
-        }
-
-        const klines = klineArray.map(k => ({
-            date: k[0],
-            open: parseFloat(k[1]),
-            close: parseFloat(k[2]),
-            high: parseFloat(k[3]),
-            low: parseFloat(k[4]),
-            volume: parseFloat(k[5]) * 100,
-            amount: k[6] ? parseFloat(k[6]) * 10000 : 0
-        }));
-
-        await runStrategyAnalysis(klines);
-        await runPanoramaAnalysis(klines);
-    } catch (e) {
-        console.error('loadKlineData错误:', e);
-        throw e; // 重新抛出错误，让调用者知道失败了
     }
+    
+    return attempt(retryCount);
 }
 
-async function runStrategyAnalysis(klines) {
+async function runStrategyAnalysis(klines, reqId) {
     if (!_currentStock || !strategyEngine) return;
-    
+    if (reqId && reqId !== _stockRequestId) return;
+
+    const requestCode = _currentStock.code;
     const holdings = getHoldings(_currentStock.code);
-    const [strategies, summary] = strategyEngine.runAllStrategies(_currentStock, klines, holdings);
-    
+    const result = strategyEngine.runAllStrategies(_currentStock, klines, holdings, {
+        fixedPredictionHour: _settings.fixedPredictionTime
+    });
+    if (!Array.isArray(result) || result.length !== 2) return;
+    const [strategies, summary] = result;
+
+    if (reqId && reqId !== _stockRequestId) return;
+    if (!_currentStock || _currentStock.code !== requestCode) return;
+
     _lastStrategies = strategies;
     _lastSummary = summary;
     _lastKlines = klines;
-    window._lastStrategies = strategies;
     renderSignalPanel(strategies);
     renderStrategySummary(strategies);
     renderBestPlan(summary);
     renderCoreAdvice(_currentStock, strategies);
-    
+
     const strategyDetailSection = document.getElementById('strategyDetailSection');
     if (strategyDetailSection) {
         strategyDetailSection.style.display = 'block';
         renderStrategyDetailSection(strategies);
     }
-    
+
     const emptyStrategy = document.getElementById('emptyStrategy');
     if (emptyStrategy) emptyStrategy.style.display = 'none';
-    
+
     refreshProfit();
 }
 
-async function runPanoramaAnalysis(klines) {
+async function runPanoramaAnalysis(klines, reqId) {
     if (!_currentStock || !strategyEngine) return;
-    
-    const [strategies, summary] = strategyEngine.analyzePanorama(klines) || [[], null];
-    
+    if (reqId && reqId !== _stockRequestId) return;
+
+    const [strategies, summary] = strategyEngine.analyzePanorama(klines, _currentStock || {}) || [[], null];
+
+    if (reqId && reqId !== _stockRequestId) return;
+
     _lastPanoramaStrategies = strategies || [];
     _lastPanoramaSummary = summary || null;
-    window._lastPanoramaStrategies = strategies || [];
-    
+
     renderPanoramaOverview(strategies || [], summary || null);
 }
 
 function renderSignalPanel(strategies) {
-    const buyCount = strategies.filter(s => s.action.includes('BUY')).length;
-    const sellCount = strategies.filter(s => s.action.includes('SELL')).length;
-    const tCount = strategies.filter(s => 
-        s.action.includes('TRADING_OPPORTUNITY') || 
-        s.action.includes('BUY_THEN_SELL') || 
-        s.action.includes('SELL_THEN_BUY') ||
-        s.action.includes('BOX_TRADING')
-    ).length;
+    let buyCount = 0;
+    let sellCount = 0;
+    let tCount = 0;
+    strategies.forEach(s => {
+        if (s.action === 'BUY' || s.action === 'STRONG_BUY') buyCount++;
+        else if (s.action === 'SELL' || s.action === 'STRONG_SELL') sellCount++;
+        else if (s.action === 'BUY_THEN_SELL' || s.action === 'SELL_THEN_BUY' || s.action === 'TRADING_OPPORTUNITY' || s.action === 'BOX_TRADING') tCount++;
+    });
     
     let mainText = '等待分析';
     let detailText = '';
@@ -1416,26 +2268,38 @@ function renderSignalPanel(strategies) {
 }
 
 function renderStrategySummary(strategies) {
-    const buyCount = strategies.filter(s => s.action.includes('BUY')).length;
-    const sellCount = strategies.filter(s => s.action.includes('SELL')).length;
-    const tCount = strategies.filter(s => s.action.includes('TRADING_OPPORTUNITY') || s.action.includes('BUY_THEN_SELL') || s.action.includes('SELL_THEN_BUY')).length;
+    let buyCount = 0, sellCount = 0, tCount = 0;
+    strategies.forEach(s => {
+        if (s.action === 'BUY' || s.action === 'STRONG_BUY') buyCount++;
+        else if (s.action === 'SELL' || s.action === 'STRONG_SELL') sellCount++;
+        else if (s.action === 'BUY_THEN_SELL' || s.action === 'SELL_THEN_BUY' || s.action === 'TRADING_OPPORTUNITY' || s.action === 'BOX_TRADING') tCount++;
+    });
     const watchCount = strategies.filter(s => ['WATCH', 'HOLD', 'OBSERVE'].includes(s.action)).length;
     
     const container = document.getElementById('strategySummary');
     if (!container) return;
     container.innerHTML = `
-        <div class="summary-chip" onclick="filterStrategies('buy')"><span class="dot red"></span>买入 ${buyCount}</div>
-        <div class="summary-chip" onclick="filterStrategies('sell')"><span class="dot green"></span>卖出 ${sellCount}</div>
-        <div class="summary-chip" onclick="filterStrategies('t')"><span class="dot yellow"></span>做T ${tCount}</div>
-        <div class="summary-chip" onclick="filterStrategies('watch')"><span class="dot blue"></span>观望 ${watchCount}</div>
+        <div class="summary-chip" onclick="filterStrategies('buy', event)"><span class="dot red"></span>买入 ${buyCount}</div>
+        <div class="summary-chip" onclick="filterStrategies('sell', event)"><span class="dot green"></span>卖出 ${sellCount}</div>
+        <div class="summary-chip" onclick="filterStrategies('t', event)"><span class="dot yellow"></span>做T ${tCount}</div>
+        <div class="summary-chip" onclick="filterStrategies('watch', event)"><span class="dot blue"></span>观望 ${watchCount}</div>
     `;
 }
 
 function renderBestPlan(summary) {
-    const card = document.getElementById('bestPlanCard');
-    if (!card || !summary) return;
+    if (!summary) return;
     
-    card.style.display = 'block';
+    // 校验：如果 summary 的股票代码和当前股票不一致，清空显示
+    if (_currentStock && summary.stock_code && summary.stock_code !== _currentStock.code) {
+        const card = document.getElementById('bestPlanCard');
+        if (card) card.style.display = 'none';
+        const strategyCard = document.getElementById('strategyBestPlanCard');
+        if (strategyCard) strategyCard.style.display = 'none';
+        return;
+    }
+    
+    const card = document.getElementById('bestPlanCard');
+    if (card) card.style.display = 'block';
     
     const setText = (id, text) => {
         const el = document.getElementById(id);
@@ -1461,23 +2325,23 @@ function renderBestPlan(summary) {
     if (summary.best_buy) {
         setText('planBuyName', summary.best_buy.name);
         setText('planBuyEntry', '￥' + (summary.best_buy.entry_price || summary.current_price || 0).toFixed(2));
-        setText('planBuyTarget', '￥' + (summary.best_buy.target_price || 0).toFixed(2));
-        setText('planBuyStop', '￥' + (summary.best_buy.stop_loss || 0).toFixed(2));
-        setText('planBuyProfit', summary.best_buy.profit_potential ? '+' + summary.best_buy.profit_potential.toFixed(2) + '%' : '--');
-        setText('planBuyRisk', summary.best_buy.loss_risk ? summary.best_buy.loss_risk.toFixed(2) + '%' : '--');
-        setText('planBuyRatio', summary.best_buy.risk_reward ? summary.best_buy.risk_reward.toFixed(2) : '--');
+        setText('planBuyTarget', '￥' + (summary.best_buy.target_price != null ? summary.best_buy.target_price.toFixed(2) : '--'));
+        setText('planBuyStop', '￥' + (summary.best_buy.stop_loss != null ? summary.best_buy.stop_loss.toFixed(2) : '--'));
+        setText('planBuyProfit', summary.best_buy.profit_potential != null ? '+' + summary.best_buy.profit_potential.toFixed(2) + '%' : '--');
+        setText('planBuyRisk', summary.best_buy.loss_risk != null ? summary.best_buy.loss_risk.toFixed(2) + '%' : '--');
+        setText('planBuyRatio', summary.best_buy.risk_reward != null ? summary.best_buy.risk_reward.toFixed(2) : '--');
         const buyRate = calcStrategySuccessRate(summary.best_buy, summary, 'buy');
         setText('planBuySuccessRate', '成功率 ' + buyRate + '%');
     }
-    
+
     if (summary.best_sell) {
         setText('planSellName', summary.best_sell.name);
         setText('planSellEntry', '￥' + (summary.best_sell.entry_price || summary.current_price || 0).toFixed(2));
-        setText('planSellTarget', '￥' + (summary.best_sell.target_price || 0).toFixed(2));
-        setText('planSellStop', '￥' + (summary.best_sell.stop_loss || 0).toFixed(2));
-        setText('planSellProfit', summary.best_sell.profit_potential ? '+' + summary.best_sell.profit_potential.toFixed(2) + '%' : '--');
-        setText('planSellRisk', summary.best_sell.loss_risk ? summary.best_sell.loss_risk.toFixed(2) + '%' : '--');
-        setText('planSellRatio', summary.best_sell.risk_reward ? summary.best_sell.risk_reward.toFixed(2) : '--');
+        setText('planSellTarget', '￥' + (summary.best_sell.target_price != null ? summary.best_sell.target_price.toFixed(2) : '--'));
+        setText('planSellStop', '￥' + (summary.best_sell.stop_loss != null ? summary.best_sell.stop_loss.toFixed(2) : '--'));
+        setText('planSellProfit', summary.best_sell.profit_potential != null ? '+' + summary.best_sell.profit_potential.toFixed(2) + '%' : '--');
+        setText('planSellRisk', summary.best_sell.loss_risk != null ? summary.best_sell.loss_risk.toFixed(2) + '%' : '--');
+        setText('planSellRatio', summary.best_sell.risk_reward != null ? summary.best_sell.risk_reward.toFixed(2) : '--');
         const sellRate = calcStrategySuccessRate(summary.best_sell, summary, 'sell');
         setText('planSellSuccessRate', '成功率 ' + sellRate + '%');
     }
@@ -1485,14 +2349,18 @@ function renderBestPlan(summary) {
     if (summary.best_t) {
         setDisplay('planTSection', 'block');
         setText('planTName', summary.best_t.name);
-        const buyPrice = summary.best_t.buy_price || summary.current_price;
-        const sellPrice = summary.best_t.sell_price || summary.current_price;
+        const cp = summary.current_price || 0.01;
+        const buyPrice = summary.best_t.buy_price || cp;
+        const sellPrice = summary.best_t.sell_price || cp;
         setText('planTBuy', '￥' + buyPrice.toFixed(2));
         setText('planTSell', '￥' + sellPrice.toFixed(2));
         const spread = Math.abs(sellPrice - buyPrice);
-        const spreadPct = (spread / summary.current_price * 100);
+        const spreadPct = (spread / cp * 100);
+        // 扣除手续费：买+卖双边各约0.1%
+        const feePct = 0.2;
+        const netProfitPct = spreadPct - feePct;
         setText('planTSpread', '￥' + spread.toFixed(2));
-        setText('planTProfit', '+' + spreadPct.toFixed(2) + '%');
+        setText('planTProfit', '+' + netProfitPct.toFixed(2) + '%');
         const action = summary.best_t.action;
         let actionText = '正T';
         if (action === 'SELL_THEN_BUY') actionText = '反T';
@@ -1501,16 +2369,19 @@ function renderBestPlan(summary) {
     } else {
         setDisplay('planTSection', 'none');
     }
-    
+
     // 同时更新策略页面的做T方案
     const strategyCard = document.getElementById('strategyBestPlanCard');
     if (strategyCard) {
         if (summary.best_t) {
             strategyCard.style.display = 'block';
-            const buyPrice = summary.best_t.buy_price || summary.current_price;
-            const sellPrice = summary.best_t.sell_price || summary.current_price;
+            const cp = summary.current_price || 0.01;
+            const buyPrice = summary.best_t.buy_price || cp;
+            const sellPrice = summary.best_t.sell_price || cp;
             const spread = Math.abs(sellPrice - buyPrice);
-            const spreadPct = (spread / summary.current_price * 100);
+            const spreadPct = (spread / cp * 100);
+            const feePct = 0.2;
+            const netProfitPct = spreadPct - feePct;
             const action = summary.best_t.action;
             let actionText = '正T';
             if (action === 'SELL_THEN_BUY') actionText = '反T';
@@ -1524,7 +2395,7 @@ function renderBestPlan(summary) {
             setStrategyText('strategyPlanTBuy', '￥' + buyPrice.toFixed(2));
             setStrategyText('strategyPlanTSell', '￥' + sellPrice.toFixed(2));
             setStrategyText('strategyPlanTSpread', '￥' + spread.toFixed(2));
-            setStrategyText('strategyPlanTProfit', '+' + spreadPct.toFixed(2) + '%');
+            setStrategyText('strategyPlanTProfit', '+' + netProfitPct.toFixed(2) + '%');
             setStrategyText('strategyPlanTAction', actionText);
         } else {
             strategyCard.style.display = 'none';
@@ -1546,19 +2417,25 @@ function renderBestPlan(summary) {
                 const change = summary.change_percent || 0;
                 curPriceEl.style.color = change >= 0 ? 'var(--red)' : 'var(--green)';
             }
-            document.getElementById('homePredictedHigh').innerText = '￥' + p.predicted_high.toFixed(2);
-            document.getElementById('homePredictedLow').innerText = '￥' + p.predicted_low.toFixed(2);
+            const elHomePredHigh = document.getElementById('homePredictedHigh');
+            if (elHomePredHigh) elHomePredHigh.innerText = '￥' + p.predicted_high.toFixed(2);
+            const elHomePredLow = document.getElementById('homePredictedLow');
+            if (elHomePredLow) elHomePredLow.innerText = '￥' + p.predicted_low.toFixed(2);
             const pos = Math.max(0, Math.min(100, p.price_position));
-            document.getElementById('homePriceDot').style.left = pos + '%';
-            document.getElementById('homePricePosLabel').innerText = '位置: ' + pos.toFixed(1) + '%';
-            
-            // 动态预测时间
+            const elHomePriceDot = document.getElementById('homePriceDot');
+            if (elHomePriceDot) elHomePriceDot.style.left = pos + '%';
+            const elHomePricePosLabel = document.getElementById('homePricePosLabel');
+            if (elHomePricePosLabel) elHomePricePosLabel.innerText = '位置: ' + pos.toFixed(1) + '%';
+
+            // 动态预测时间 + 目标日
             const dynTimeEl = document.getElementById('homeDynamicTime');
-            if (dynTimeEl && summary.update_time) {
-                const d = new Date(summary.update_time);
-                dynTimeEl.innerText = '预测: ' + (d.getMonth()+1) + '/' + d.getDate() + ' ' + d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0') + ':' + d.getSeconds().toString().padStart(2,'0');
+            if (dynTimeEl && p.generated_at) {
+                const d = new Date(p.generated_at);
+                const td = new Date(p.target_date);
+                const targetStr = (td.getMonth()+1) + '/' + td.getDate();
+                dynTimeEl.innerText = '预测' + targetStr + ' · ' + d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0') + ':' + d.getSeconds().toString().padStart(2,'0');
             }
-            
+
             // 固定预测（基于昨日收盘，全天不变）
             const fp = summary.fixed_prediction;
             if (fp) {
@@ -1569,10 +2446,11 @@ function renderBestPlan(summary) {
                 if (elFixedHigh) elFixedHigh.innerText = '￥' + fp.predicted_high.toFixed(2);
                 if (elFixedLow) elFixedLow.innerText = '￥' + fp.predicted_low.toFixed(2);
                 if (elFixedBase) elFixedBase.innerText = '基准价: ￥' + fp.base_price.toFixed(2) + ' · 振幅: ' + fp.avg_amplitude + '% · 趋势: ' + fp.trend;
-                if (elFixedTime) {
-                    const yesterday = new Date();
-                    yesterday.setDate(yesterday.getDate() - 1);
-                    elFixedTime.innerText = '预测: ' + (yesterday.getMonth()+1) + '/' + yesterday.getDate() + ' 15:00';
+                if (elFixedTime && fp.generated_at && fp.target_date) {
+                    const gd = new Date(fp.generated_at);
+                    const td = new Date(fp.target_date);
+                    const targetStr = (td.getMonth()+1) + '/' + td.getDate();
+                    elFixedTime.innerText = '预测' + targetStr + ' · ' + (gd.getMonth()+1) + '/' + gd.getDate() + ' ' + gd.getHours().toString().padStart(2,'0') + ':' + gd.getMinutes().toString().padStart(2,'0');
                 }
             }
         }
@@ -1622,9 +2500,9 @@ function calcStrategySuccessRate(strategy, summary, type) {
     const weightTotal = buyWeight + sellWeight;
     if (weightTotal > 0) {
         if (type === 'buy') {
-            rate += Math.round((buyWeight / weightTotal) * 15) - 7.5;
+            rate += Math.round((buyWeight / weightTotal) * 30) - 15;
         } else if (type === 'sell') {
-            rate += Math.round((sellWeight / weightTotal) * 15) - 7.5;
+            rate += Math.round((sellWeight / weightTotal) * 30) - 15;
         }
     }
     
@@ -1656,8 +2534,51 @@ function calcStrategySuccessRate(strategy, summary, type) {
     // 7. 做T信号支持
     const tCount = summary.t_signals || 0;
     if (tCount > 0) rate += 2;
-    
+
     return Math.max(15, Math.min(92, Math.round(rate)));
+}
+
+/**
+ * 计算全景分析建议的成功率（买入/卖出/观望）
+ * 核心基于100+策略的加权投票结果 summary.trend_bias（范围-1~1）
+ * _bias 直接综合了所有策略的优先级加权结果：
+ *   - 每个策略按 priority 加权（0=3分, 1=2分, 2=1分）
+ *   - _bias = (buy_weight - sell_weight) / (buy_weight + sell_weight)
+ *   - _bias >= 0.4 为 STRONG_BUY，<= -0.4 为 STRONG_SELL
+ * 辅以信号充足度和ATR波动率修正
+ */
+function calcPanoramaActionSuccessRate(summary, actionType) {
+    if (!summary || actionType === 'watch') return 0; // 观望不显示成功率
+
+    let rate = 50;
+
+    // ===== 核心因子：策略投票偏离度（±35分）=====
+    // trend_bias 是所有100+策略加权投票的结果，范围 -1 ~ 1
+    // 越接近 1（强烈看多），买入成功率越高
+    // 越接近 -1（强烈看空），卖出成功率越高
+    const bias = summary.trend_bias != null ? summary.trend_bias : 0;
+    if (actionType === 'buy') {
+        rate += bias * 35;
+    } else if (actionType === 'sell') {
+        rate -= bias * 35;
+    }
+
+    // ===== 辅助因子1：信号充足度（±6分）=====
+    // 策略数量越多，统计结果越可靠
+    const totalSignals = summary.total_signals || 0;
+    if (totalSignals >= 80) rate += 6;
+    else if (totalSignals >= 50) rate += 4;
+    else if (totalSignals >= 30) rate += 2;
+    else if (totalSignals < 15) rate -= 3;
+
+    // ===== 辅助因子2：ATR波动率修正（±4分）=====
+    // 高波动环境降低确定性，低波动环境提高确定性
+    const atrPct = summary.atr_pct || 2;
+    if (atrPct > 5) rate -= 4;
+    else if (atrPct > 3.5) rate -= 2;
+    else if (atrPct < 1.5) rate += 3;
+
+    return Math.max(30, Math.min(88, Math.round(rate)));
 }
 
 function switchPlanTab(tab) {
@@ -1749,7 +2670,7 @@ function showProfitDetail(type) {
             listHtml = allTrades.map(t => {
                 const ttype = t.trade_type || t.type;
                 const isBuy = ttype === 'BUY';
-                const date = t.time ? new Date(t.time).toLocaleDateString() : '';
+                const date = t.time ? new Date(t.time).toLocaleDateString('zh-CN') : '';
                 const timeStr = t.time ? new Date(t.time).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
                 const amount = (t.price || 0) * (t.quantity || 0);
                 return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-soft);">'
@@ -1775,22 +2696,26 @@ function showProfitDetail(type) {
             const ttype = t.trade_type || t.type;
             const code = t.code;
             if (ttype === 'BUY') {
-                if (!holdings[code]) holdings[code] = { qty: 0, cost: 0, name: t.name || code };
+                if (!holdings[code]) {
+                    holdings[code] = { qty: 0, cost: 0, name: t.name || code };
+                } else if (t.name && t.name !== code) {
+                    holdings[code].name = t.name;
+                }
                 holdings[code].qty += t.quantity;
                 const amount = t.price * t.quantity;
-                const comm = Math.max(amount * 0.0003, 5);
-                const trans = amount * 0.00001;
-                holdings[code].cost += amount + comm + trans;
+                const fees = calcTradeFees(amount, 'BUY');
+                holdings[code].cost += amount + fees.commission + fees.transfer;
             } else {
                 if (holdings[code] && holdings[code].qty > 0) {
+                    if (t.name && t.name !== code && holdings[code].name === code) {
+                        holdings[code].name = t.name;
+                    }
                     const avgCost = holdings[code].cost / holdings[code].qty;
                     const sellQty = Math.min(t.quantity, holdings[code].qty);
                     const sellCost = avgCost * sellQty;
                     const amount = t.price * sellQty;
-                    const comm = Math.max(amount * 0.0003, 5);
-                    const stamp = amount * 0.001;
-                    const trans = amount * 0.00001;
-                    const net = amount - comm - stamp - trans - sellCost;
+                    const fees = calcTradeFees(amount, 'SELL');
+                    const net = amount - fees.commission - fees.stamp - fees.transfer - sellCost;
                     if (!sellByStock[code]) sellByStock[code] = { name: t.name || code, profit: 0, qty: 0 };
                     sellByStock[code].profit += net;
                     sellByStock[code].qty += sellQty;
@@ -1802,7 +2727,7 @@ function showProfitDetail(type) {
         const list = Object.entries(sellByStock).map(([code, v]) => ({ code, ...v })).sort((a, b) => b.profit - a.profit);
         let listHtml = '';
         if (list.length > 0) {
-            listHtml = list.map(s => '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-soft);"><div><div style="font-size:13px;font-weight:600;">' + s.name + '</div><div style="font-size:10px;color:var(--text-muted);">' + s.code + ' · 已卖' + s.qty + '股</div></div><div style="font-size:14px;font-weight:700;' + colorCls(s.profit) + '">' + fmtMoney(s.profit) + '</div></div>').join('');
+            listHtml = list.map(s => '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-soft);"><div><div style="font-size:13px;font-weight:600;">' + escapeHtml(s.name) + '</div><div style="font-size:10px;color:var(--text-muted);">' + escapeHtml(s.code) + ' · 已卖' + s.qty + '股</div></div><div style="font-size:14px;font-weight:700;' + colorCls(s.profit) + '">' + fmtMoney(s.profit) + '</div></div>').join('');
         } else {
             listHtml = '<div class="empty-state" style="padding:20px 0;"><div class="empty-state-icon">📊</div><div>暂无已实现收益</div></div>';
         }
@@ -1812,7 +2737,7 @@ function showProfitDetail(type) {
         title = '未实现盈亏明细';
         let listHtml = '';
         if (stocks.length > 0) {
-            listHtml = stocks.map(s => '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-soft);"><div><div style="font-size:13px;font-weight:600;">' + s.name + '</div><div style="font-size:10px;color:var(--text-muted);">' + s.code + ' · ' + s.quantity + '股 · 成本¥' + s.avg_cost.toFixed(2) + '</div></div><div style="text-align:right;"><div style="font-size:14px;font-weight:700;' + colorCls(s.profit) + '">' + fmtMoney(s.profit) + '</div><div style="font-size:10px;color:var(--text-muted);">现价¥' + s.current_price.toFixed(2) + '</div></div></div>').join('');
+            listHtml = stocks.map(s => '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-soft);"><div><div style="font-size:13px;font-weight:600;">' + escapeHtml(s.name) + '</div><div style="font-size:10px;color:var(--text-muted);">' + escapeHtml(s.code) + ' · ' + s.quantity + '股 · 成本¥' + s.avg_cost.toFixed(2) + '</div></div><div style="text-align:right;"><div style="font-size:14px;font-weight:700;' + colorCls(s.profit) + '">' + fmtMoney(s.profit) + '</div><div style="font-size:10px;color:var(--text-muted);">现价¥' + s.current_price.toFixed(2) + '</div></div></div>').join('');
         } else {
             listHtml = '<div class="empty-state" style="padding:20px 0;"><div class="empty-state-icon">📊</div><div>暂无持仓</div></div>';
         }
@@ -1826,8 +2751,8 @@ function showProfitDetail(type) {
         if (sorted.length > 0) {
             listHtml = sorted.map(tt => {
                 const profit = tt.pair_profit || 0;
-                const date = tt.pair_time ? new Date(tt.pair_time).toLocaleDateString() : (tt.time ? new Date(tt.time).toLocaleDateString() : '');
-                return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-soft);"><div><div style="font-size:13px;font-weight:600;">' + (tt.name || tt.code) + '</div><div style="font-size:10px;color:var(--text-muted);">' + date + ' · ' + (tt.pair_quantity || 0) + '股</div></div><div style="font-size:14px;font-weight:700;' + colorCls(profit) + '">' + fmtMoney(profit) + '</div></div>';
+                const date = tt.pair_time ? new Date(tt.pair_time).toLocaleDateString('zh-CN') : (tt.time ? new Date(tt.time).toLocaleDateString('zh-CN') : '');
+                return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-soft);"><div><div style="font-size:13px;font-weight:600;">' + escapeHtml(tt.name || tt.code) + '</div><div style="font-size:10px;color:var(--text-muted);">' + date + ' · ' + (tt.pair_quantity || 0) + '股</div></div><div style="font-size:14px;font-weight:700;' + colorCls(profit) + '">' + fmtMoney(profit) + '</div></div>';
             }).join('');
         } else {
             listHtml = '<div class="empty-state" style="padding:20px 0;"><div class="empty-state-icon">⚡</div><div>暂无做T记录</div></div>';
@@ -1872,12 +2797,12 @@ function showStockDetailModal() {
     
     const s = _currentStock;
     const chg = s.change_percent || 0;
-    const chgColor = chg >= 0 ? 'var(--red)' : 'var(--green)';
+    const chgColor = chg > 0 ? 'var(--red)' : (chg < 0 ? 'var(--green)' : 'var(--text-muted)');
     const chgSign = chg >= 0 ? '+' : '';
     
     const modalHtml = '<div id="stockDetailModal" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999;">' +
         '<div style="background:var(--bg-overlay);border-radius:16px;padding:20px;max-width:360px;width:90%;max-height:85vh;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,0.4);">' +
-        '<div style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:16px;text-align:center;">📈 ' + s.name + ' ' + s.code + '</div>' +
+        '<div style="font-size:16px;font-weight:700;color:var(--text-primary);margin-bottom:16px;text-align:center;">📈 ' + escapeHtml(s.name) + ' ' + escapeHtml(s.code) + '</div>' +
         '<div style="flex:1;overflow-y:auto;">' +
         '<div style="text-align:center;margin-bottom:16px;padding:16px;background:var(--bg-inset);border-radius:12px;">' +
         '<div style="font-size:32px;font-weight:800;color:' + chgColor + ';">￥' + s.current_price.toFixed(2) + '</div>' +
@@ -1888,7 +2813,7 @@ function showStockDetailModal() {
         '<div style="padding:12px;background:var(--bg-inset);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">昨收</div><div style="font-weight:700;margin-top:4px;">￥' + s.prev_close.toFixed(2) + '</div></div>' +
         '<div style="padding:12px;background:rgba(248,113,113,0.08);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">最高</div><div style="font-weight:700;margin-top:4px;color:var(--red);">￥' + s.high_price.toFixed(2) + '</div></div>' +
         '<div style="padding:12px;background:rgba(52,211,153,0.08);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">最低</div><div style="font-weight:700;margin-top:4px;color:var(--green);">￥' + s.low_price.toFixed(2) + '</div></div>' +
-        '<div style="padding:12px;background:var(--bg-inset);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">成交量</div><div style="font-weight:700;margin-top:4px;">' + formatVolume(s.volume) + '</div></div>' +
+        '<div style="padding:12px;background:var(--bg-inset);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">成交额</div><div style="font-weight:700;margin-top:4px;">' + formatAmount(s.amount) + '</div></div>' +
         '<div style="padding:12px;background:var(--bg-inset);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">换手率</div><div style="font-weight:700;margin-top:4px;">' + s.turnover.toFixed(2) + '%</div></div>' +
         '</div>' +
         '</div>' +
@@ -1911,16 +2836,24 @@ function closeStockDetailModal() {
 function loadDefaultStock() {
     if (_currentStock) return;
     let code = null;
-    // 优先从做T信号列表取第一个
-    if (_watchList.length > 0) {
+    let name = null;
+
+    // 优先使用最后一次查询的股票（持久化到本地）
+    if (_lastSearchedStock && _lastSearchedStock.code) {
+        code = _lastSearchedStock.code;
+        name = _lastSearchedStock.name;
+    }
+    // 其次从做T信号列表取第一个
+    if (!code && _watchList.length > 0) {
         code = _watchList[0];
     }
-    // 如果做T信号为空，取最近搜索历史最新的
+    // 最后取最近搜索历史最新的
     if (!code && _searchHistory.length > 0) {
         code = _searchHistory[0].code;
     }
     if (code) {
-        loadStockInfo(code).catch(() => {});
+        if (name) _stockNames[code] = name;
+        loadStockInfo(code).catch(e => console.warn('默认股票加载失败:', e));
     }
 }
 
@@ -1933,12 +2866,17 @@ function refreshAll() {
 }
 
 function loadWatchList() {
-    const saved = localStorage.getItem('watchList');
-    _watchList = saved ? JSON.parse(saved) : [];
+    try {
+        const saved = localStorage.getItem('watchList');
+        const parsed = saved ? JSON.parse(saved) : [];
+        _watchList = Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+        _watchList = [];
+    }
 }
 
 function saveWatchList() {
-    localStorage.setItem('watchList', JSON.stringify(_watchList));
+    safeSetItem('watchList', JSON.stringify(_watchList));
 }
 
 function doSearchByCode(code) {
@@ -1964,27 +2902,53 @@ function addToWatchlist() {
 
 function removeFromWatchlist(code) {
     _watchList = _watchList.filter(c => c !== code);
+    for (const key in _alertedSignals) {
+        if (key.startsWith(code + '_')) {
+            delete _alertedSignals[key];
+        }
+    }
+    saveAlertedSignals();
     saveWatchList();
     renderWatchList();
     showToast('已移除监控');
 }
 
 function loadSearchHistory() {
-    const saved = localStorage.getItem('searchHistory');
-    let h = saved ? JSON.parse(saved) : [];
+    try {
+        const saved = localStorage.getItem('searchHistory');
+        let h = saved ? JSON.parse(saved) : [];
+
+        h = h.map(item => {
+            if (typeof item === 'string') {
+                return { code: item, name: item };
+            }
+            if (!item.name) {
+                item.name = _stockNames[item.code] || item.code;
+            }
+            return item;
+        });
+
+        _searchHistory = h;
+    } catch (e) {
+        _searchHistory = [];
+    }
     
-    h = h.map(item => {
-        if (typeof item === 'string') {
-            return { code: item, name: item };
-        }
-        if (!item.name) {
-            item.name = _stockNames[item.code] || item.code;
-        }
-        return item;
-    });
-    
-    _searchHistory = h;
-    
+    renderSearchHistoryDom();
+}
+
+function deleteSearchHistory(code) {
+    try {
+        let h = JSON.parse(localStorage.getItem('searchHistory') || '[]');
+        h = h.filter(i => i.code !== code);
+        safeSetItem('searchHistory', JSON.stringify(h));
+        _searchHistory = h;
+    } catch (e) {
+        _searchHistory = [];
+    }
+    renderSearchHistoryDom();
+}
+
+function renderSearchHistoryDom() {
     const homeWrap = document.getElementById('searchHistoryWrap');
     const homeList = document.getElementById('searchHistory');
     const strategyWrap = document.getElementById('strategyHistory');
@@ -1993,15 +2957,24 @@ function loadSearchHistory() {
     const sentimentList = document.getElementById('sentimentHistoryList');
     
     const homeHtml = _searchHistory.length > 0 ? _searchHistory.map(item =>
-        `<span class="history-tag" onclick="goToStockDetail('${item.code}','${item.name || item.code}')">${item.name || item.code}</span>`
+        `<span class="history-tag" onclick="goToStockDetail('${escapeHtml(item.code)}','${escapeHtml(item.name || item.code)}')">
+            ${escapeHtml(item.name || item.code)}
+            <span class="tag-del" onclick="event.stopPropagation();deleteSearchHistory('${escapeHtml(item.code)}')">×</span>
+        </span>`
     ).join('') : '';
     
     const strategyHtml = _searchHistory.length > 0 ? _searchHistory.map(item =>
-        `<span class="history-tag" onclick="analyzeHistory('${item.code}','${item.name || item.code}')">${item.name || item.code}</span>`
+        `<span class="history-tag" onclick="analyzeHistory('${escapeHtml(item.code)}','${escapeHtml(item.name || item.code)}')">
+            ${escapeHtml(item.name || item.code)}
+            <span class="tag-del" onclick="event.stopPropagation();deleteSearchHistory('${escapeHtml(item.code)}')">×</span>
+        </span>`
     ).join('') : '';
     
     const sentimentHtml = _searchHistory.length > 0 ? _searchHistory.map(item =>
-        `<span class="history-tag" onclick="loadSentimentByCode('${item.code}','${item.name || item.code}')">${item.name || item.code}</span>`
+        `<span class="history-tag" onclick="loadSentimentByCode('${escapeHtml(item.code)}','${escapeHtml(item.name || item.code)}')">
+            ${escapeHtml(item.name || item.code)}
+            <span class="tag-del" onclick="event.stopPropagation();deleteSearchHistory('${escapeHtml(item.code)}')">×</span>
+        </span>`
     ).join('') : '';
     
     if (homeWrap && homeList) {
@@ -2019,13 +2992,19 @@ function loadSearchHistory() {
 }
 
 function saveSearchHistory(code, name) {
-    let h = JSON.parse(localStorage.getItem('searchHistory') || '[]');
+    let h = [];
+    try {
+        h = JSON.parse(localStorage.getItem('searchHistory') || '[]');
+    } catch (e) {
+        console.warn('搜索历史解析失败:', e);
+        h = [];
+    }
     h = h.filter(i => i.code !== code);
     h.unshift({ code, name, time: Date.now() });
     h = h.slice(0, 10);
-    localStorage.setItem('searchHistory', JSON.stringify(h));
+    safeSetItem('searchHistory', JSON.stringify(h));
     _searchHistory = h;
-    loadSearchHistory();
+    renderSearchHistoryDom();
 }
 
 function addToSearchHistory(code) {
@@ -2033,38 +3012,108 @@ function addToSearchHistory(code) {
     saveSearchHistory(code, name);
 }
 
+function showSearchHistoryInSuggestions(sugId, inputId) {
+    const sug = document.getElementById(sugId);
+    if (!sug || _searchHistory.length === 0) return;
+    
+    const selectAction = (code, name) => {
+        const input = document.getElementById(inputId);
+        if (input) input.value = code;
+        if (name) _stockNames[code] = name;
+        
+        if (inputId === 'searchInput') {
+            goToStockDetail(code, name);
+        } else if (inputId === 'strategyInput') {
+            document.getElementById('strategyInput').value = code;
+            loadStrategyDetail();
+            saveSearchHistory(code, name);
+        } else if (inputId === 'newsInput') {
+            document.getElementById('newsInput').value = code;
+            loadNews();
+            saveSearchHistory(code, name);
+        } else if (inputId === 'panoramaInput') {
+            document.getElementById('panoramaInput').value = code;
+            loadPanoramaDetail();
+            addToPanoramaHistory(code);
+        }
+        sug.style.display = 'none';
+    };
+    
+    sug.innerHTML = '<div style="padding:8px 14px;font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;">最近搜索</div>' +
+        _searchHistory.slice(0, 8).map(item => `
+            <div class="suggestion-item" data-code="${escapeHtml(item.code)}" data-name="${escapeHtml(item.name || item.code)}">
+                <span class="suggestion-code">${escapeHtml(item.code)}</span>
+                <span class="suggestion-name">${escapeHtml(item.name || item.code)}</span>
+            </div>
+        `).join('');
+    sug.style.display = 'block';
+    
+    sug.querySelectorAll('.suggestion-item').forEach(el => {
+        el.addEventListener('click', () => {
+            selectAction(el.dataset.code, el.dataset.name);
+        });
+    });
+}
+
 function addToPanoramaHistory(code) {
     let name = _stockNames[code] || code;
-    let h = JSON.parse(localStorage.getItem('panoramaHistory') || '[]');
-    h = h.filter(i => i.code !== code);
-    h.unshift({ code, name, time: Date.now() });
-    h = h.slice(0, 10);
-    localStorage.setItem('panoramaHistory', JSON.stringify(h));
-    _panoramaHistory = h;
-    loadPanoramaHistory();
+    try {
+        let h = JSON.parse(localStorage.getItem('panoramaHistory') || '[]');
+        h = h.filter(i => i.code !== code);
+        h.unshift({ code, name, time: Date.now() });
+        h = h.slice(0, 10);
+        safeSetItem('panoramaHistory', JSON.stringify(h));
+        _panoramaHistory = h;
+    } catch (e) {
+        _panoramaHistory = [{ code, name, time: Date.now() }];
+    }
+    renderPanoramaHistoryDom();
 }
 
 function loadPanoramaHistory() {
-    const saved = localStorage.getItem('panoramaHistory');
-    let h = saved ? JSON.parse(saved) : [];
+    try {
+        const saved = localStorage.getItem('panoramaHistory');
+        let h = saved ? JSON.parse(saved) : [];
+
+        h = h.map(item => {
+            if (typeof item === 'string') {
+                return { code: item, name: item };
+            }
+            if (!item.name) {
+                item.name = _stockNames[item.code] || item.code;
+            }
+            return item;
+        });
+
+        _panoramaHistory = h;
+    } catch (e) {
+        _panoramaHistory = [];
+    }
     
-    h = h.map(item => {
-        if (typeof item === 'string') {
-            return { code: item, name: item };
-        }
-        if (!item.name) {
-            item.name = _stockNames[item.code] || item.code;
-        }
-        return item;
-    });
-    
-    _panoramaHistory = h;
-    
+    renderPanoramaHistoryDom();
+}
+
+function deletePanoramaHistory(code) {
+    try {
+        let h = JSON.parse(localStorage.getItem('panoramaHistory') || '[]');
+        h = h.filter(i => i.code !== code);
+        safeSetItem('panoramaHistory', JSON.stringify(h));
+        _panoramaHistory = h;
+    } catch (e) {
+        _panoramaHistory = [];
+    }
+    renderPanoramaHistoryDom();
+}
+
+function renderPanoramaHistoryDom() {
     const panoramaWrap = document.getElementById('panoramaHistory');
     const panoramaList = document.getElementById('panoramaHistoryList');
     
     const panoramaHtml = _panoramaHistory.length > 0 ? _panoramaHistory.map(item =>
-        `<span class="history-tag" onclick="loadPanoramaByCode('${item.code}','${item.name || item.code}')">${item.name || item.code}</span>`
+        `<span class="history-tag" onclick="loadPanoramaByCode('${escapeHtml(item.code)}','${escapeHtml(item.name || item.code)}')">
+            ${escapeHtml(item.name || item.code)}
+            <span class="tag-del" onclick="event.stopPropagation();deletePanoramaHistory('${escapeHtml(item.code)}')">×</span>
+        </span>`
     ).join('') : '';
     
     if (panoramaWrap && panoramaList) {
@@ -2144,21 +3193,24 @@ async function loadPanoramaDetail() {
 }
 
 function renderStrategyDetailSection(strategies) {
-    document.getElementById('emptyStrategy').style.display = 'none';
-    document.getElementById('strategyDetailSection').style.display = 'block';
-    
-    const buyCount = strategies.filter(s => s.action.includes('BUY')).length;
-    const sellCount = strategies.filter(s => s.action.includes('SELL')).length;
-    const tCount = strategies.filter(s => 
-        s.action.includes('TRADING_OPPORTUNITY') || 
-        s.action.includes('BUY_THEN_SELL') || 
-        s.action.includes('SELL_THEN_BUY') ||
-        s.action.includes('BOX_TRADING')
-    ).length;
-    
-    document.getElementById('buyCount').innerText = buyCount;
-    document.getElementById('sellCount').innerText = sellCount;
-    document.getElementById('tCount').innerText = tCount;
+    // 校验：如果策略数据的股票代码和当前股票不一致，不渲染
+    if (_currentStock && _lastSummary && _lastSummary.stock_code && _lastSummary.stock_code !== _currentStock.code) {
+        const section = document.getElementById('strategyDetailSection');
+        if (section) section.style.display = 'none';
+        return;
+    }
+
+    // 注：display 的设置由调用方负责，此处不再重复设置
+
+    const counts = countStrategyActions(strategies);
+    const buyCount = counts.buy;
+    const sellCount = counts.sell;
+    const tCount = counts.t;
+
+    const setCnt = (id, val) => { const el = document.getElementById(id); if (el) el.innerText = val; };
+    setCnt('buyCount', buyCount);
+    setCnt('sellCount', sellCount);
+    setCnt('tCount', tCount);
 
     // 渲染今日价格预测
     if (_lastSummary && _lastSummary.price_prediction) {
@@ -2166,26 +3218,44 @@ function renderStrategyDetailSection(strategies) {
         const card = document.getElementById('pricePredictionCard');
         if (card) {
             card.style.display = 'block';
-            document.getElementById('predictedHigh').innerText = '￥' + p.predicted_high.toFixed(2);
-            document.getElementById('predictedLow').innerText = '￥' + p.predicted_low.toFixed(2);
-            document.getElementById('predictedAmp').innerText = p.avg_amplitude.toFixed(2) + '%';
-            document.getElementById('predictedTrend').innerText = p.trend;
-            document.getElementById('predictedConfidence').innerText = p.confidence + '%';
-            
+            setCnt('predictedHigh', '￥' + p.predicted_high.toFixed(2));
+            setCnt('predictedLow', '￥' + p.predicted_low.toFixed(2));
+            setCnt('predictedAmp', p.avg_amplitude.toFixed(2) + '%');
+            setCnt('predictedTrend', p.trend);
+            setCnt('predictedConfidence', p.confidence + '%');
+
+            // 动态预测目标日 + 更新时间
+            const dynTimeEl = document.getElementById('strategyDynamicTime');
+            if (dynTimeEl && p.generated_at && p.target_date) {
+                const d = new Date(p.generated_at);
+                const td = new Date(p.target_date);
+                const targetStr = (td.getMonth()+1) + '/' + td.getDate();
+                dynTimeEl.innerText = '预测' + targetStr + ' · ' + d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0') + ':' + d.getSeconds().toString().padStart(2,'0');
+            }
+
             // 固定预测（基于昨日收盘，全天不变）
             const fp = _lastSummary.fixed_prediction;
             if (fp) {
                 const elFHigh = document.getElementById('fixedPredictedHigh');
                 const elFLow = document.getElementById('fixedPredictedLow');
                 const elFInfo = document.getElementById('fixedPredictedInfo');
+                const elFTime = document.getElementById('strategyFixedTime');
                 if (elFHigh) elFHigh.innerText = '￥' + fp.predicted_high.toFixed(2);
                 if (elFLow) elFLow.innerText = '￥' + fp.predicted_low.toFixed(2);
                 if (elFInfo) elFInfo.innerText = '基准价: ￥' + fp.base_price.toFixed(2) + ' · 振幅: ' + fp.avg_amplitude + '% · 趋势: ' + fp.trend + ' · ATR: ' + fp.atr;
+                if (elFTime && fp.generated_at && fp.target_date) {
+                    const gd = new Date(fp.generated_at);
+                    const td = new Date(fp.target_date);
+                    const targetStr = (td.getMonth()+1) + '/' + td.getDate();
+                    elFTime.innerText = '预测' + targetStr + ' · ' + (gd.getMonth()+1) + '/' + gd.getDate() + ' ' + gd.getHours().toString().padStart(2,'0') + ':' + gd.getMinutes().toString().padStart(2,'0');
+                }
             }
             
             const pos = Math.max(0, Math.min(100, p.price_position));
-            document.getElementById('pricePositionDot').style.left = pos + '%';
-            document.getElementById('pricePositionLabel').innerText = '当前位置: ' + pos.toFixed(1) + '%';
+            const priceDotEl = document.getElementById('pricePositionDot');
+            if (priceDotEl) priceDotEl.style.left = pos + '%';
+            const pricePosLabelEl = document.getElementById('pricePositionLabel');
+            if (pricePosLabelEl) pricePosLabelEl.innerText = '当前位置: ' + pos.toFixed(1) + '%';
 
             // 计算差值显示
             const highDeltaEl = document.getElementById('predictedHighDelta');
@@ -2193,8 +3263,8 @@ function renderStrategyDetailSection(strategies) {
             if (_currentStock && _currentStock.high_price && _currentStock.low_price) {
                 const realHigh = _currentStock.high_price;
                 const realLow = _currentStock.low_price;
-                
-                if (realHigh > 0) {
+
+                if (realHigh > 0 && highDeltaEl) {
                     const delta = p.predicted_high - realHigh;
                     if (delta <= 0) {
                         highDeltaEl.innerHTML = '<span style="color:var(--green);">✓已触及</span>';
@@ -2203,7 +3273,7 @@ function renderStrategyDetailSection(strategies) {
                         highDeltaEl.innerHTML = '<span style="color:var(--red);">差' + percent + '%</span>';
                     }
                 }
-                if (realLow > 0) {
+                if (realLow > 0 && lowDeltaEl) {
                     const delta = realLow - p.predicted_low;
                     if (delta >= 0) {
                         lowDeltaEl.innerHTML = '<span style="color:var(--green);">✓已触及</span>';
@@ -2216,15 +3286,15 @@ function renderStrategyDetailSection(strategies) {
 
             // 显示平均准确度
             const rateEl = document.getElementById('predictedSuccessRate');
-            if (_currentStock) {
+            if (_currentStock && rateEl) {
                 const stats = getAvgAccuracy(_currentStock.code);
                 rateEl.innerText = stats.avg + '分';
                 rateEl.style.color = stats.avg >= 80 ? 'var(--green)' : stats.avg >= 60 ? 'var(--yellow)' : 'var(--red)';
-                
+
                 // 显示实际价格
                 if (_currentStock.high_price) {
-                    document.getElementById('actualHigh').innerText = _currentStock.high_price.toFixed(2);
-                    document.getElementById('actualLow').innerText = _currentStock.low_price.toFixed(2);
+                    setCnt('actualHigh', _currentStock.high_price.toFixed(2));
+                    setCnt('actualLow', _currentStock.low_price.toFixed(2));
                 }
                 
                 // 保存今日预测记录
@@ -2261,31 +3331,32 @@ function renderCategoryTabs(strategies) {
     });
     
     tabs.innerHTML = `
-        <button class="cat-tab active" onclick="filterStrategies('all')">全部 <span class="cat-count">${strategies.length}</span></button>
+        <button class="cat-tab active" onclick="filterStrategies('all', event)">全部 <span class="cat-count">${strategies.length}</span></button>
         ${Object.entries(categories).map(([cat, count]) => `
-            <button class="cat-tab" onclick="filterStrategies('${cat}')">${cat} <span class="cat-count">${count}</span></button>
+            <button class="cat-tab" onclick="filterStrategies('${escapeHtml(cat)}', event)">${escapeHtml(cat)} <span class="cat-count">${count}</span></button>
         `).join('')}
     `;
 }
 
-function filterStrategies(filter) {
-    const tabs = document.querySelectorAll('.cat-tab');
+function filterStrategies(filter, event) {
+    // 同时重置 .cat-tab 和 .summary-chip 的 active 状态
+    const tabs = document.querySelectorAll('.cat-tab, .summary-chip');
     tabs.forEach(t => t.classList.remove('active'));
-    event.target.classList.add('active');
-    
+    if (event && event.currentTarget) event.currentTarget.classList.add('active');
+
     let filtered = _lastStrategies;
     if (filter === 'buy') {
-        filtered = _lastStrategies.filter(s => s.action.includes('BUY'));
+        filtered = _lastStrategies.filter(s => isBuyAction(s.action));
     } else if (filter === 'sell') {
-        filtered = _lastStrategies.filter(s => s.action.includes('SELL'));
+        filtered = _lastStrategies.filter(s => isSellAction(s.action));
     } else if (filter === 't') {
-        filtered = _lastStrategies.filter(s => s.action.includes('TRADING_OPPORTUNITY') || s.action.includes('BUY_THEN_SELL') || s.action.includes('SELL_THEN_BUY'));
+        filtered = _lastStrategies.filter(s => s.action.includes('TRADING_OPPORTUNITY') || s.action.includes('BUY_THEN_SELL') || s.action.includes('SELL_THEN_BUY') || s.action.includes('BOX_TRADING'));
     } else if (filter === 'watch') {
         filtered = _lastStrategies.filter(s => ['WATCH', 'HOLD', 'OBSERVE'].includes(s.action));
     } else if (filter !== 'all') {
         filtered = _lastStrategies.filter(s => s.category === filter);
     }
-    
+
     renderStrategyList(filtered);
 }
 
@@ -2298,18 +3369,18 @@ function renderStrategyList(strategies) {
     }
     
     list.innerHTML = strategies.map(s => `
-        <div class="strategy-card ${s.action.includes('BUY') ? 'priority' : ''}" onclick="showStrategyDetail('${s.name}')">
+        <div class="strategy-card ${isBuyAction(s.action) ? 'priority' : ''}" onclick="showStrategyDetail('${escapeHtml(s.name)}')">
             <div class="strategy-header">
                 <div class="strategy-name">
-                    <span class="strat-icon">${s.icon}</span>
-                    ${s.name}
+                    <span class="strat-icon">${escapeHtml(s.icon)}</span>
+                    ${escapeHtml(s.name)}
                     ${s.priority === 'high' ? '<span class="high-badge">高优先级</span>' : ''}
                     ${s.novel ? '<span class="novel-badge">新策略</span>' : ''}
                 </div>
-                <span class="strategy-feasibility feasibility-${s.feasibility}">${s.feasibility}</span>
+                <span class="strategy-feasibility feasibility-${escapeHtml(s.feasibility)}">${escapeHtml(s.feasibility)}</span>
             </div>
-            <div class="strategy-suggestion">${s.suggestion}</div>
-            <div class="strategy-reasoning">${s.reasoning}</div>
+            <div class="strategy-suggestion">${escapeHtml(s.suggestion)}</div>
+            <div class="strategy-reasoning">${escapeHtml(s.reasoning)}</div>
             <div class="strategy-prices">
                 ${s.target_price ? `<span class="price-target">🎯 目标: ¥${s.target_price}</span>` : ''}
                 ${s.stop_loss ? `<span class="price-stoploss">🛡️ 止损: ¥${s.stop_loss}</span>` : ''}
@@ -2325,9 +3396,10 @@ function renderPanoramaOverview(strategies, summary) {
     if (emptyPanorama) emptyPanorama.style.display = 'none';
     if (panoramaOverview) panoramaOverview.style.display = 'block';
     
-    const buyCount = strategies.filter(s => s.action.includes('BUY')).length;
-    const sellCount = strategies.filter(s => s.action.includes('SELL')).length;
-    const watchCount = strategies.filter(s => ['WATCH', 'HOLD', 'OBSERVE'].includes(s.action)).length;
+    const panoCounts = countStrategyActions(strategies);
+    const buyCount = panoCounts.buy;
+    const sellCount = panoCounts.sell;
+    const watchCount = panoCounts.watch;
     const totalCount = strategies.length;
     
     const setText = (id, text) => {
@@ -2355,8 +3427,8 @@ function renderPanoramaOverview(strategies, summary) {
         if (catStrategies.length === 0) {
             categoryScores[item.key] = 50;
         } else {
-            const catBuy = catStrategies.filter(s => s.action.includes('BUY')).length;
-            const catSell = catStrategies.filter(s => s.action.includes('SELL')).length;
+            const catBuy = catStrategies.filter(s => isBuyAction(s.action)).length;
+            const catSell = catStrategies.filter(s => isSellAction(s.action)).length;
             const total = catStrategies.length;
             const score = Math.round(50 + (catBuy - catSell) / total * 50);
             categoryScores[item.key] = Math.max(0, Math.min(100, score));
@@ -2398,32 +3470,53 @@ function renderPanoramaOverview(strategies, summary) {
     }
     
     const totalActionEl = document.getElementById('totalPanoramaAction');
+    let actionType = 'watch';
     if (totalActionEl) {
         totalActionEl.className = 'total-action';
         if (avgScore >= 70) {
             totalActionEl.innerText = '⭐ 强烈买入';
             totalActionEl.classList.add('buy');
+            actionType = 'buy';
         } else if (avgScore >= 55) {
             totalActionEl.innerText = '📈 建议买入';
             totalActionEl.classList.add('buy');
+            actionType = 'buy';
         } else if (avgScore >= 45) {
             totalActionEl.innerText = '👀 观望';
             totalActionEl.classList.add('watch');
+            actionType = 'watch';
         } else if (avgScore >= 30) {
             totalActionEl.innerText = '📉 建议卖出';
             totalActionEl.classList.add('sell');
+            actionType = 'sell';
         } else {
             totalActionEl.innerText = '⚠️ 强烈卖出';
             totalActionEl.classList.add('sell');
+            actionType = 'sell';
+        }
+    }
+
+    // 计算并显示成功率
+    const successRateEl = document.getElementById('panoramaSuccessRate');
+    if (successRateEl && summary) {
+        const rate = calcPanoramaActionSuccessRate(summary, actionType);
+        if (rate > 0) {
+            successRateEl.innerText = '成功率 ' + rate + '%';
+            successRateEl.style.display = 'block';
+            if (actionType === 'buy') {
+                successRateEl.style.color = 'var(--green)';
+            } else if (actionType === 'sell') {
+                successRateEl.style.color = 'var(--red)';
+            } else {
+                successRateEl.style.color = 'var(--text-muted)';
+            }
+        } else {
+            successRateEl.style.display = 'none';
         }
     }
     
     renderPanoramaCategoryTabs(strategies);
     renderPanoramaStrategyList(strategies);
-    
-    if (_currentStock) {
-        addToPanoramaHistory(_currentStock.code);
-    }
 }
 
 function renderPanoramaCategoryTabs(strategies) {
@@ -2436,29 +3529,29 @@ function renderPanoramaCategoryTabs(strategies) {
     });
     
     tabs.innerHTML = `
-        <button class="cat-tab active" onclick="filterPanoramaStrategies('all')">全部 <span class="cat-count">${strategies.length}</span></button>
+        <button class="cat-tab active" onclick="filterPanoramaStrategies('all', event)">全部 <span class="cat-count">${strategies.length}</span></button>
         ${Object.entries(categories).map(([cat, count]) => `
-            <button class="cat-tab" onclick="filterPanoramaStrategies('${cat}')">${cat} <span class="cat-count">${count}</span></button>
+            <button class="cat-tab" onclick="filterPanoramaStrategies('${escapeHtml(cat)}', event)">${escapeHtml(cat)} <span class="cat-count">${count}</span></button>
         `).join('')}
     `;
 }
 
-function filterPanoramaStrategies(filter) {
+function filterPanoramaStrategies(filter, event) {
     const tabs = document.querySelectorAll('#panoramaCategoryTabs .cat-tab');
     tabs.forEach(t => t.classList.remove('active'));
-    event.target.classList.add('active');
-    
+    if (event && event.currentTarget) event.currentTarget.classList.add('active');
+
     let filtered = _lastPanoramaStrategies;
     if (filter === 'buy') {
-        filtered = _lastPanoramaStrategies.filter(s => s.action.includes('BUY'));
+        filtered = _lastPanoramaStrategies.filter(s => isBuyAction(s.action));
     } else if (filter === 'sell') {
-        filtered = _lastPanoramaStrategies.filter(s => s.action.includes('SELL'));
+        filtered = _lastPanoramaStrategies.filter(s => isSellAction(s.action));
     } else if (filter === 'watch') {
         filtered = _lastPanoramaStrategies.filter(s => ['WATCH', 'HOLD', 'OBSERVE'].includes(s.action));
     } else if (filter !== 'all') {
         filtered = _lastPanoramaStrategies.filter(s => s.category === filter);
     }
-    
+
     renderPanoramaStrategyList(filtered);
 }
 
@@ -2472,18 +3565,18 @@ function renderPanoramaStrategyList(strategies) {
     }
     
     list.innerHTML = strategies.map(s => `
-        <div class="strategy-card ${s.action.includes('BUY') ? 'priority' : ''}" onclick="showPanoramaStrategyDetail('${s.name}')">
+        <div class="strategy-card ${isBuyAction(s.action) ? 'priority' : ''}" onclick="showPanoramaStrategyDetail('${escapeHtml(s.name)}')">
             <div class="strategy-header">
                 <div class="strategy-name">
-                    <span class="strat-icon">${s.icon}</span>
-                    ${s.name}
+                    <span class="strat-icon">${escapeHtml(s.icon)}</span>
+                    ${escapeHtml(s.name)}
                     ${s.priority === 'high' ? '<span class="high-badge">高优先级</span>' : ''}
                     ${s.novel ? '<span class="novel-badge">新策略</span>' : ''}
                 </div>
-                <span class="strategy-feasibility feasibility-${s.feasibility}">${s.feasibility}</span>
+                <span class="strategy-feasibility feasibility-${escapeHtml(s.feasibility)}">${escapeHtml(s.feasibility)}</span>
             </div>
-            <div class="strategy-suggestion">${s.suggestion}</div>
-            <div class="strategy-reasoning">${s.reasoning}</div>
+            <div class="strategy-suggestion">${escapeHtml(s.suggestion)}</div>
+            <div class="strategy-reasoning">${escapeHtml(s.reasoning)}</div>
             <div class="strategy-prices">
                 ${s.target_price ? `<span class="price-target">🎯 目标: ¥${s.target_price}</span>` : ''}
                 ${s.stop_loss ? `<span class="price-stoploss">🛡️ 止损: ¥${s.stop_loss}</span>` : ''}
@@ -2499,22 +3592,22 @@ function showPanoramaStrategyDetail(name) {
     const content = `
         <div style="padding: 10px;">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:15px;">
-                <span style="font-size:24px;">${strategy.icon}</span>
+                <span style="font-size:24px;">${escapeHtml(strategy.icon)}</span>
                 <div>
-                    <div style="font-weight:600;font-size:16px;">${strategy.name}</div>
-                    <div style="font-size:12px;color:var(--text-muted);">${strategy.category}</div>
+                    <div style="font-weight:600;font-size:16px;">${escapeHtml(strategy.name)}</div>
+                    <div style="font-size:12px;color:var(--text-muted);">${escapeHtml(strategy.category)}</div>
                 </div>
             </div>
             <div style="background:var(--surface-2);padding:12px;border-radius:var(--radius-sm);margin-bottom:15px;border:1px solid var(--border-glass);">
-                <div style="font-size:14px;margin-bottom:8px;"><strong>操作建议：</strong>${strategy.suggestion}</div>
-                <div style="font-size:13px;color:var(--text-secondary);"><strong>分析理由：</strong>${strategy.reasoning}</div>
+                <div style="font-size:14px;margin-bottom:8px;"><strong>操作建议：</strong>${escapeHtml(strategy.suggestion)}</div>
+                <div style="font-size:13px;color:var(--text-secondary);"><strong>分析理由：</strong>${escapeHtml(strategy.reasoning)}</div>
             </div>
             ${strategy.target_price ? `<div style="font-size:13px;margin-bottom:5px;">🎯 目标价：<strong>¥${strategy.target_price}</strong></div>` : ''}
             ${strategy.stop_loss ? `<div style="font-size:13px;margin-bottom:5px;">🛡️ 止损价：<strong>¥${strategy.stop_loss}</strong></div>` : ''}
             ${strategy.buy_price ? `<div style="font-size:13px;margin-bottom:5px;">💰 买入价：<strong>¥${strategy.buy_price}</strong></div>` : ''}
             ${strategy.sell_price ? `<div style="font-size:13px;margin-bottom:5px;">📉 卖出价：<strong>¥${strategy.sell_price}</strong></div>` : ''}
             <div style="font-size:12px;color:var(--text-muted);margin-top:10px;">
-                可行性：${strategy.feasibility} | 优先级：${strategy.priority}
+                可行性：${escapeHtml(strategy.feasibility)} | 优先级：${escapeHtml(strategy.priority)}
             </div>
         </div>
     `;
@@ -2620,7 +3713,7 @@ function showDimensionDetail(dimKey) {
     // 评分等级
     let scoreLevel = '中性';
     let scoreColor = 'var(--yellow)';
-    const numScore = parseInt(score);
+    const numScore = parseInt(score, 10);
     if (!isNaN(numScore)) {
         if (numScore >= 70) { scoreLevel = '强势看多'; scoreColor = 'var(--green)'; }
         else if (numScore >= 55) { scoreLevel = '偏多'; scoreColor = 'var(--green)'; }
@@ -2630,9 +3723,10 @@ function showDimensionDetail(dimKey) {
     }
     
     // 统计信号
-    const buyCount = dimStrategies.filter(s => s.action.includes('BUY')).length;
-    const sellCount = dimStrategies.filter(s => s.action.includes('SELL')).length;
-    const watchCount = dimStrategies.filter(s => ['WATCH', 'HOLD', 'OBSERVE'].includes(s.action)).length;
+    const dimCounts = countStrategyActions(dimStrategies);
+    const buyCount = dimCounts.buy;
+    const sellCount = dimCounts.sell;
+    const watchCount = dimCounts.watch;
     
     const content = `
         <div style="padding: 4px;">
@@ -2694,11 +3788,11 @@ function showDimensionDetail(dimKey) {
                     return `
                         <div style="margin-bottom:8px;padding:8px;background:var(--surface-2);border-radius:6px;border-left:3px solid ${actionColor};">
                             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-                                <span style="font-size:12px;font-weight:600;">${s.icon} ${s.name}</span>
+                                <span style="font-size:12px;font-weight:600;">${escapeHtml(s.icon)} ${escapeHtml(s.name)}</span>
                                 <span style="font-size:11px;font-weight:700;color:${actionColor};background:var(--surface-3);padding:2px 8px;border-radius:10px;">${actionText}</span>
                             </div>
-                            <div style="font-size:11px;color:var(--text-secondary);margin-bottom:3px;line-height:1.5;">${s.suggestion}</div>
-                            <div style="font-size:10px;color:var(--text-muted);line-height:1.4;">${s.reasoning}</div>
+                            <div style="font-size:11px;color:var(--text-secondary);margin-bottom:3px;line-height:1.5;">${escapeHtml(s.suggestion)}</div>
+                            <div style="font-size:10px;color:var(--text-muted);line-height:1.4;">${escapeHtml(s.reasoning)}</div>
                             ${s.target_price ? `<div style="font-size:10px;margin-top:3px;color:var(--text-muted);">🎯 目标 ¥${s.target_price} | 🛡️ 止损 ¥${s.stop_loss || '-'}</div>` : ''}
                         </div>
                     `;
@@ -2712,7 +3806,10 @@ function showDimensionDetail(dimKey) {
     const bodyEl = document.getElementById('dimModalBody');
     if (titleEl) titleEl.innerText = info.title;
     if (bodyEl) bodyEl.innerHTML = content;
-    if (modal) modal.style.display = 'flex';
+    if (modal) {
+        closeAllModals();
+        modal.style.display = 'flex';
+    }
 }
 
 function closeDimensionModal() {
@@ -2727,22 +3824,22 @@ function showStrategyDetail(name) {
     const content = `
         <div style="padding: 10px;">
             <div style="display:flex;align-items:center;gap:10px;margin-bottom:15px;">
-                <span style="font-size:24px;">${strategy.icon}</span>
+                <span style="font-size:24px;">${escapeHtml(strategy.icon)}</span>
                 <div>
-                    <div style="font-weight:600;font-size:16px;">${strategy.name}</div>
-                    <div style="font-size:12px;color:var(--text-muted);">${strategy.category}</div>
+                    <div style="font-weight:600;font-size:16px;">${escapeHtml(strategy.name)}</div>
+                    <div style="font-size:12px;color:var(--text-muted);">${escapeHtml(strategy.category)}</div>
                 </div>
             </div>
             <div style="background:var(--surface-2);padding:12px;border-radius:var(--radius-sm);margin-bottom:15px;border:1px solid var(--border-glass);">
-                <div style="font-size:14px;margin-bottom:8px;"><strong>操作建议：</strong>${strategy.suggestion}</div>
-                <div style="font-size:13px;color:var(--text-secondary);"><strong>分析理由：</strong>${strategy.reasoning}</div>
+                <div style="font-size:14px;margin-bottom:8px;"><strong>操作建议：</strong>${escapeHtml(strategy.suggestion)}</div>
+                <div style="font-size:13px;color:var(--text-secondary);"><strong>分析理由：</strong>${escapeHtml(strategy.reasoning)}</div>
             </div>
             ${strategy.target_price ? `<div style="font-size:13px;margin-bottom:5px;">🎯 目标价：<strong>¥${strategy.target_price}</strong></div>` : ''}
             ${strategy.stop_loss ? `<div style="font-size:13px;margin-bottom:5px;">🛡️ 止损价：<strong>¥${strategy.stop_loss}</strong></div>` : ''}
             ${strategy.buy_price ? `<div style="font-size:13px;margin-bottom:5px;">💰 买入价：<strong>¥${strategy.buy_price}</strong></div>` : ''}
             ${strategy.sell_price ? `<div style="font-size:13px;margin-bottom:5px;">📉 卖出价：<strong>¥${strategy.sell_price}</strong></div>` : ''}
             <div style="font-size:12px;color:var(--text-muted);margin-top:10px;">
-                可行性：${strategy.feasibility} | 优先级：${strategy.priority}
+                可行性：${escapeHtml(strategy.feasibility)} | 优先级：${escapeHtml(strategy.priority)}
             </div>
         </div>
     `;
@@ -2751,22 +3848,111 @@ function showStrategyDetail(name) {
 }
 
 // 交易页
-function loadTrades() {
-    const saved = localStorage.getItem('trades');
-    _trades = saved ? JSON.parse(saved) : [];
+function _sanitizeTrade(t) {
+    if (!t || typeof t !== 'object') return null;
+    return {
+        code: t.code || '',
+        name: t.name || '',
+        trade_type: t.trade_type || t.type || 'BUY',
+        quantity: Math.max(0, parseInt(t.quantity) || 0),
+        price: Math.max(0, parseFloat(t.price) || 0),
+        date: t.date || '',
+        fee: Math.max(0, parseFloat(t.fee) || 0),
+        pair_buy_index: t.pair_buy_index != null ? t.pair_buy_index : null,
+        timestamp: t.timestamp ? parseInt(t.timestamp) || 0 : 0,
+        note: t.note || ''
+    };
 }
+
+function loadTrades() {
+    try {
+        const saved = localStorage.getItem('trades');
+        if (saved) {
+            const parsed = JSON.parse(saved);
+            _trades = Array.isArray(parsed) ? parsed.map(_sanitizeTrade).filter(Boolean) : [];
+        }
+    } catch (e) {
+        console.warn('交易数据损坏，尝试从备份恢复', e);
+        try {
+            const backups = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith('trades_backup_')) {
+                    backups.push(key);
+                }
+            }
+            backups.sort().reverse();
+            let recovered = false;
+            for (const bk of backups) {
+                try {
+                    const backupData = JSON.parse(localStorage.getItem(bk) || '[]');
+                    if (Array.isArray(backupData)) {
+                        _trades = backupData.map(_sanitizeTrade).filter(Boolean);
+                        showToast('已从备份恢复交易数据');
+                        recovered = true;
+                        break;
+                    }
+                } catch (e2) {
+                    continue;
+                }
+            }
+            if (!recovered) {
+                _trades = [];
+            }
+        } catch (e2) {
+            _trades = [];
+        }
+    }
+    if (!Array.isArray(_trades)) _trades = [];
+    _trades.sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+}
+
+let _lastBackupTime = 0;
 
 function saveTrades() {
-    localStorage.setItem('trades', JSON.stringify(_trades));
+    const data = JSON.stringify(_trades);
+    safeSetItem('trades', data);
+    try {
+        const now = Date.now();
+        if (now - _lastBackupTime > 60000) {
+            const backupKey = 'trades_backup_' + now;
+            safeSetItem(backupKey, data);
+            _lastBackupTime = now;
+            const backups = [];
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (key && key.startsWith('trades_backup_')) {
+                    backups.push(key);
+                }
+            }
+            backups.sort();
+            while (backups.length > 5) {
+                const oldest = backups.shift();
+                localStorage.removeItem(oldest);
+            }
+        }
+    } catch (e) {
+        console.warn('备份失败', e);
+    }
 }
 
-function renderTrades() {
+function openAddTradeModal() {
+    switchTab('trade');
+    setTimeout(() => {
+        const card = document.querySelector('#tab-trade .card:first-child');
+        if (card) {
+            card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+    }, 100);
+}
+
+async function renderTrades() {
     const tradeList = document.getElementById('tradeList');
     const holdingsList = document.getElementById('holdingsList');
     
     if (_trades.length === 0) {
-        if (tradeList) tradeList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📝</div><div>暂无交易记录</div></div>';
-        if (holdingsList) holdingsList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">💹</div><div>暂无持仓记录</div></div>';
+        if (tradeList) tradeList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📝</div><div>暂无交易记录</div><button onclick="openAddTradeModal()" class="btn btn-primary" style="margin-top:12px;width:auto;padding:10px 24px;">添加交易</button></div>';
+        if (holdingsList) holdingsList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">💹</div><div>暂无持仓记录</div><button onclick="openAddTradeModal()" class="btn btn-primary" style="margin-top:12px;width:auto;padding:10px 24px;">添加买入</button></div>';
         return;
     }
     
@@ -2777,16 +3963,14 @@ function renderTrades() {
             const remaining = isBuy ? getTradeRemaining(idx) : 0;
             const isPaired = t.pair_buy_index !== undefined;
             const amount = t.price * t.quantity;
-            const comm = Math.max(amount * 0.0003, 5);
-            const stamp = isBuy ? 0 : amount * 0.001;
-            const trans = amount * 0.00001;
-            const totalFee = comm + stamp + trans;
+            const fees = calcTradeFees(amount, type);
+            const totalFee = fees.total;
             
             let feeInfo = `
                 <div style="font-size:10px;color:var(--text-muted);margin-top:2px;padding:4px 6px;background:var(--surface-3);border-radius:4px;">
                     <span>金额 ¥${amount.toFixed(2)}</span>
                     <span style="margin-left:8px;color:var(--red);">手续费 ¥${totalFee.toFixed(2)}</span>
-                    ${isBuy ? '' : `<span style="margin-left:4px;">(印花税¥${stamp.toFixed(2)})</span>`}
+                    ${isBuy ? '' : `<span style="margin-left:4px;">(印花税¥${fees.stamp.toFixed(2)})</span>`}
                 </div>
             `;
             
@@ -2801,7 +3985,8 @@ function renderTrades() {
                 const grossProfit = (pairSellPrice - pairBuyPrice) * pairQty;
                 const profitPercent = buyAmount > 0 ? (profit / buyAmount) * 100 : 0;
                 const isProfit = profit >= 0;
-                const buyFee = Math.max(buyAmount * 0.0003, 5) + buyAmount * 0.00001;
+                const buyFees = calcTradeFees(buyAmount, 'BUY');
+                const buyFee = buyFees.commission + buyFees.transfer;
                 const sellFee = pairFee - buyFee;
                 
                 if (pairQty > 0) {
@@ -2846,18 +4031,18 @@ function renderTrades() {
             return `
                 <div class="trade-item" onclick="showTradeDetail(${idx})" style="cursor:pointer;">
                     <div class="trade-header">
-                        <span class="trade-stock">${t.name || t.code}</span>
+                        <span class="trade-stock">${escapeHtml(t.name || t.code)}</span>
                         <span class="trade-type ${type.toLowerCase()}">${isBuy ? '买入' : '卖出'}</span>
                         <button onclick="event.stopPropagation();deleteTrade(${idx})" style="margin-left:auto;background:rgba(239,68,68,0.15);color:var(--red);border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:11px;">删除</button>
                     </div>
                     <div class="trade-info">
-                        <span>${t.code}</span>
-                        <span>¥${t.price.toFixed(2)} × ${t.quantity}股</span>
+                        <span>${escapeHtml(t.code)}</span>
+                        <span>¥${(t.price || 0).toFixed(2)} × ${(t.quantity || 0)}股</span>
                     </div>
                     ${feeInfo}
                     ${remainingInfo}
                     ${pairInfo}
-                    ${t.note ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">📝 ${t.note}</div>` : ''}
+                    ${t.note ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">📝 ${escapeHtml(t.note)}</div>` : ''}
                     <div class="trade-time">${new Date(t.timestamp || t.date).toLocaleString('zh-CN')}</div>
                 </div>
             `;
@@ -2867,19 +4052,23 @@ function renderTrades() {
     const holdings = {};
     _trades.forEach(t => {
         const type = t.trade_type || t.type;
-        if (!holdings[t.code]) holdings[t.code] = { qty: 0, cost: 0, name: t.name || t.code };
+        if (!holdings[t.code]) {
+            holdings[t.code] = { qty: 0, cost: 0, name: t.name || t.code };
+        } else if (t.name && t.name !== t.code) {
+            holdings[t.code].name = t.name;
+        }
         if (type === 'BUY') {
             const amount = t.price * t.quantity;
-            const comm = Math.max(amount * 0.0003, 5);
-            const trans = amount * 0.00001;
+            const fees = calcTradeFees(amount, 'BUY');
             holdings[t.code].qty += t.quantity;
-            holdings[t.code].cost += amount + comm + trans;
+            holdings[t.code].cost += amount + fees.commission + fees.transfer;
         } else if (type === 'SELL') {
             if (holdings[t.code].qty > 0) {
                 const avgCost = holdings[t.code].cost / holdings[t.code].qty;
-                const sellCost = avgCost * t.quantity;
+                const sellQty = Math.min(t.quantity, holdings[t.code].qty);
+                const sellCost = avgCost * sellQty;
                 holdings[t.code].cost -= sellCost;
-                holdings[t.code].qty -= t.quantity;
+                holdings[t.code].qty -= sellQty;
             }
         }
     });
@@ -2896,8 +4085,8 @@ function renderTrades() {
             holdingsHtml += `
                 <div class="stock-profit-item" id="holding-${code}" onclick="switchToStrategy('${code}')" style="cursor:pointer;">
                     <div>
-                        <div class="stock-profit-name">${info.name}</div>
-                        <div class="stock-profit-detail">${code} · 持仓 ${info.qty}股 · 成本 ¥${avgCost.toFixed(2)}</div>
+                        <div class="stock-profit-name">${escapeHtml(info.name)}</div>
+                        <div class="stock-profit-detail">${escapeHtml(code)} · 持仓 ${info.qty}股 · 成本 ¥${avgCost.toFixed(2)}</div>
                     </div>
                     <div class="holding-profit" id="holding-profit-${code}" style="text-align:right;">
                         <div style="font-size:11px;color:var(--text-muted);">加载中...</div>
@@ -2909,13 +4098,13 @@ function renderTrades() {
     
     if (holdingsList) {
         if (!hasHoldings) {
-            holdingsList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">💹</div><div>暂无持仓记录</div></div>';
+            holdingsList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">💹</div><div>暂无持仓记录</div><button onclick="openAddTradeModal()" class="btn btn-primary" style="margin-top:12px;width:auto;padding:10px 24px;">添加买入</button></div>';
         } else {
             holdingsList.innerHTML = holdingsHtml;
             
-            // 异步获取持仓股票的价格并更新盈亏显示
-            holdingsCodes.forEach(async (code) => {
-                const avgCost = holdings[code].cost / holdings[code].qty;
+            // 异步获取持仓股票的价格并更新盈亏显示（分批控制，避免大量并发请求）
+            const updateHoldingProfit = async (code) => {
+                const avgCost = holdings[code].qty > 0 ? holdings[code].cost / holdings[code].qty : 0;
                 const currentPrice = await getCurrentPrice(code);
                 const profit = (currentPrice - avgCost) * holdings[code].qty;
                 const profitPercent = avgCost > 0 ? ((currentPrice - avgCost) / avgCost * 100) : 0;
@@ -2934,14 +4123,19 @@ function renderTrades() {
                         <div style="font-size:11px;color:var(--text-muted);">¥${currentPrice.toFixed(2)}</div>
                     `;
                 }
-            });
+            };
+            
+            // 分批更新，每批2个，避免同时发起大量请求
+            const batchSize = 2;
+            for (let i = 0; i < holdingsCodes.length; i += batchSize) {
+                const batch = holdingsCodes.slice(i, i + batchSize);
+                await Promise.all(batch.map(code => updateHoldingProfit(code)));
+            }
         }
     }
 }
 
 function refreshTradeStats() {
-    loadTrades();
-    
     let tProfit = 0;
     let tCount = 0;
     let totalFee = 0;
@@ -2949,10 +4143,8 @@ function refreshTradeStats() {
     _trades.forEach(t => {
         const type = t.trade_type || t.type;
         const amount = t.price * t.quantity;
-        const comm = Math.max(amount * 0.0003, 5);
-        const stamp = type === 'SELL' ? amount * 0.001 : 0;
-        const trans = amount * 0.00001;
-        totalFee += comm + stamp + trans;
+        const fees = calcTradeFees(amount, type);
+        totalFee += fees.total;
         
         if (type === 'SELL' && t.pair_profit !== undefined) {
             tProfit += t.pair_profit;
@@ -2979,10 +4171,8 @@ function showTradeDetail(idx) {
     const type = t.trade_type || t.type;
     const isBuy = type === 'BUY';
     const amount = t.price * t.quantity;
-    const comm = Math.max(amount * 0.0003, 5);
-    const stamp = isBuy ? 0 : amount * 0.001;
-    const trans = amount * 0.00001;
-    const totalFee = comm + stamp + trans;
+    const fees = calcTradeFees(amount, type);
+    const totalFee = fees.total;
     
     let content = `
         <div style="padding:16px;">
@@ -2997,7 +4187,7 @@ function showTradeDetail(idx) {
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;">
                     <div style="text-align:center;">
                         <div style="font-size:11px;color:var(--text-muted);">价格</div>
-                        <div style="font-size:20px;font-weight:700;">¥${t.price.toFixed(2)}</div>
+                        <div style="font-size:20px;font-weight:700;">¥${(t.price || 0).toFixed(2)}</div>
                     </div>
                     <div style="text-align:center;">
                         <div style="font-size:11px;color:var(--text-muted);">数量</div>
@@ -3015,16 +4205,16 @@ function showTradeDetail(idx) {
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:12px;">
                     <div style="display:flex;justify-content:space-between;padding:6px 8px;background:var(--surface-3);border-radius:6px;">
                         <span>佣金</span>
-                        <span style="color:var(--red);">¥${comm.toFixed(2)}</span>
+                        <span style="color:var(--red);">¥${fees.commission.toFixed(2)}</span>
                     </div>
                     <div style="display:flex;justify-content:space-between;padding:6px 8px;background:var(--surface-3);border-radius:6px;">
                         <span>过户费</span>
-                        <span style="color:var(--red);">¥${trans.toFixed(4)}</span>
+                        <span style="color:var(--red);">¥${fees.transfer.toFixed(4)}</span>
                     </div>
                     ${isBuy ? '' : `
                     <div style="display:flex;justify-content:space-between;padding:6px 8px;background:var(--surface-3);border-radius:6px;grid-column:span 2;">
                         <span>印花税（卖出）</span>
-                        <span style="color:var(--red);">¥${stamp.toFixed(2)}</span>
+                        <span style="color:var(--red);">¥${fees.stamp.toFixed(2)}</span>
                     </div>
                     `}
                 </div>
@@ -3097,16 +4287,28 @@ function showTradeDetail(idx) {
     openModal('交易详情', content);
 }
 
+let _selectedPairBuyIndex = -1;
+
 function addTrade() {
     const code = document.getElementById('stockCode').value.trim();
     const name = document.getElementById('stockName').value.trim();
     const type = document.getElementById('tradeType').value;
     const price = parseFloat(document.getElementById('price').value);
-    const qty = parseInt(document.getElementById('quantity').value);
+    const qty = parseInt(document.getElementById('quantity').value, 10);
     const note = document.getElementById('note').value.trim();
     
-    if (!code || isNaN(price) || isNaN(qty) || qty <= 0) {
+    if (!code || isNaN(price) || price <= 0 || isNaN(qty) || qty <= 0) {
         showToast('请填写完整交易信息');
+        return;
+    }
+    
+    if (!Number.isInteger(qty)) {
+        showToast('数量必须是整数');
+        return;
+    }
+    
+    if (!/^\d{6}$/.test(code)) {
+        showToast('请输入正确的股票代码');
         return;
     }
     
@@ -3133,24 +4335,26 @@ function addTrade() {
     };
     
     if (type === 'SELL' && _selectedPairBuyIndex >= 0) {
-        const remaining = getTradeRemaining(_selectedPairBuyIndex);
-        const actualQty = Math.min(qty, remaining);
-        if (actualQty > 0) {
-            newTrade.pair_buy_index = _selectedPairBuyIndex;
-            newTrade.pair_quantity = actualQty;
-            const buyPrice = _trades[_selectedPairBuyIndex].price;
-            const buyAmount = buyPrice * actualQty;
-            const sellAmount = price * actualQty;
-            const buyComm = Math.max(buyAmount * 0.0003, 5);
-            const buyTrans = buyAmount * 0.00001;
-            const sellComm = Math.max(sellAmount * 0.0003, 5);
-            const sellStamp = sellAmount * 0.001;
-            const sellTrans = sellAmount * 0.00001;
-            const totalFee = buyComm + buyTrans + sellComm + sellStamp + sellTrans;
-            newTrade.pair_buy_price = buyPrice;
-            newTrade.pair_sell_price = price;
-            newTrade.pair_fee = totalFee;
-            newTrade.pair_profit = (price - buyPrice) * actualQty - totalFee;
+        const pairTrade = _trades[_selectedPairBuyIndex];
+        if (pairTrade && (pairTrade.trade_type || pairTrade.type) === 'BUY') {
+            const remaining = getTradeRemaining(_selectedPairBuyIndex);
+            const actualQty = Math.min(qty, remaining);
+            if (actualQty > 0) {
+                newTrade.pair_buy_index = _selectedPairBuyIndex;
+                newTrade.pair_quantity = actualQty;
+                const buyPrice = pairTrade.price;
+                const buyAmount = buyPrice * actualQty;
+                const sellAmount = price * actualQty;
+                const buyFees = calcTradeFees(buyAmount, 'BUY');
+                const sellFees = calcTradeFees(sellAmount, 'SELL');
+                const totalFee = buyFees.commission + buyFees.transfer + sellFees.commission + sellFees.stamp + sellFees.transfer;
+                newTrade.pair_buy_price = buyPrice;
+                newTrade.pair_sell_price = price;
+                newTrade.pair_fee = totalFee;
+                newTrade.pair_profit = (price - buyPrice) * actualQty - totalFee;
+            }
+        } else {
+            _selectedPairBuyIndex = -1;
         }
     }
     
@@ -3175,7 +4379,6 @@ function addTrade() {
     showToast('交易记录已添加');
 }
 
-let _selectedPairBuyIndex = -1;
 
 function onTradeTypeChange() {
     const type = document.getElementById('tradeType').value;
@@ -3217,12 +4420,12 @@ function renderPairBuyList(code) {
             <div onclick="selectPairBuy(${idx})" style="padding:8px 10px;border-radius:6px;cursor:pointer;margin-bottom:4px;${isSelected ? 'background:rgba(139,92,246,0.15);border:1px solid rgba(139,92,246,0.3);' : 'background:var(--surface-2);border:1px solid var(--border-glass);'}">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
                     <div>
-                        <div style="font-size:13px;font-weight:600;">¥${t.price.toFixed(2)} × ${t.quantity}股</div>
+                        <div style="font-size:13px;font-weight:600;">¥${(t.price || 0).toFixed(2)} × ${(t.quantity || 0)}股</div>
                         <div style="font-size:11px;color:var(--text-muted);">${new Date(t.timestamp || t.date).toLocaleDateString('zh-CN')}</div>
                     </div>
                     <div style="text-align:right;">
                         <div style="font-size:12px;color:var(--accent);">剩余 ${remaining}股</div>
-                        ${t.note ? `<div style="font-size:10px;color:var(--text-muted);">${t.note}</div>` : ''}
+                        ${t.note ? `<div style="font-size:10px;color:var(--text-muted);">${escapeHtml(t.note)}</div>` : ''}
                     </div>
                 </div>
             </div>
@@ -3247,7 +4450,7 @@ function updatePairProfitPreview() {
     }
     
     const sellPrice = parseFloat(document.getElementById('price').value);
-    const sellQty = parseInt(document.getElementById('quantity').value);
+    const sellQty = parseInt(document.getElementById('quantity').value, 10);
     
     if (!sellPrice || !sellQty || sellQty <= 0) {
         preview.style.display = 'none';
@@ -3270,12 +4473,9 @@ function updatePairProfitPreview() {
     
     const buyAmount = buyTrade.price * actualQty;
     const sellAmount = sellPrice * actualQty;
-    const buyComm = Math.max(buyAmount * 0.0003, 5);
-    const buyTrans = buyAmount * 0.00001;
-    const sellComm = Math.max(sellAmount * 0.0003, 5);
-    const sellStamp = sellAmount * 0.001;
-    const sellTrans = sellAmount * 0.00001;
-    const totalFee = buyComm + buyTrans + sellComm + sellStamp + sellTrans;
+    const buyFees = calcTradeFees(buyAmount, 'BUY');
+    const sellFees = calcTradeFees(sellAmount, 'SELL');
+    const totalFee = buyFees.commission + buyFees.transfer + sellFees.commission + sellFees.stamp + sellFees.transfer;
     const profit = sellAmount - buyAmount - totalFee;
     const profitPercent = (profit / buyAmount) * 100;
     
@@ -3301,11 +4501,11 @@ function getTradeRemaining(idx) {
     let sold = 0;
     _trades.forEach(t => {
         if ((t.trade_type || t.type) === 'SELL' && t.pair_buy_index === idx) {
-            sold += t.quantity;
+            sold += (t.pair_quantity || 0);
         }
     });
     
-    return trade.quantity - sold;
+    return Math.max(0, (trade.quantity || 0) - sold);
 }
 
 function deleteTrade(idx) {
@@ -3316,26 +4516,32 @@ function deleteTrade(idx) {
     
     _trades.splice(idx, 1);
     
-    _trades.forEach(t => {
-        if (t.pair_buy_index !== undefined) {
-            if (t.pair_buy_index === idx) {
-                delete t.pair_buy_index;
-                delete t.pair_quantity;
-                delete t.pair_buy_price;
-                delete t.pair_sell_price;
-                delete t.pair_fee;
-                delete t.pair_profit;
-            } else if (t.pair_buy_index > idx) {
-                t.pair_buy_index--;
-            }
-        }
-    });
-    
     if (deletedType === 'BUY') {
+        _trades.forEach(t => {
+            if (t.pair_buy_index !== undefined) {
+                if (t.pair_buy_index === idx) {
+                    delete t.pair_buy_index;
+                    delete t.pair_quantity;
+                    delete t.pair_buy_price;
+                    delete t.pair_sell_price;
+                    delete t.pair_fee;
+                    delete t.pair_profit;
+                } else if (t.pair_buy_index > idx) {
+                    t.pair_buy_index--;
+                }
+            }
+        });
         showToast('已删除买入记录，相关配对已解除');
     }
     
-    _selectedPairBuyIndex = -1;
+    if (deletedType === 'BUY' && idx === _selectedPairBuyIndex) {
+        _selectedPairBuyIndex = -1;
+    }
+    const pairSection = document.getElementById('pairBuySection');
+    if (pairSection && pairSection.style.display !== 'none') {
+        const code = document.getElementById('stockCode').value;
+        if (code) renderPairBuyList(code);
+    }
     saveTrades();
     renderTrades();
     refreshProfit();
@@ -3347,13 +4553,14 @@ function deleteTrade(idx) {
 }
 
 function getHoldings(code) {
-    return _trades.reduce((sum, t) => {
-        if (t.code === code) {
-            const type = t.trade_type || t.type;
-            return sum + (type === 'BUY' ? t.quantity : -t.quantity);
-        }
-        return sum;
-    }, 0);
+    let qty = 0;
+    for (const t of _trades) {
+        if (t.code !== code) continue;
+        const type = t.trade_type || t.type;
+        if (type === 'BUY') qty += t.quantity;
+        else if (type === 'SELL') qty = Math.max(0, qty - t.quantity);
+    }
+    return qty;
 }
 
 // 舆情页
@@ -3396,15 +4603,16 @@ async function loadNews() {
         try {
             const noticeText = await httpGetText(noticeUrl);
             let noticeJson = noticeText;
-            if (noticeText.startsWith('jQuery')) {
+            if (noticeText && noticeText.startsWith('jQuery')) {
                 const startIdx = noticeText.indexOf('(');
                 const endIdx = noticeText.lastIndexOf(')');
                 if (startIdx > -1 && endIdx > startIdx) {
                     noticeJson = noticeText.substring(startIdx + 1, endIdx);
                 }
             }
-            const noticeData = JSON.parse(noticeJson);
-            const items = (noticeData.data || {}).list || [];
+            let noticeData;
+            try { noticeData = JSON.parse(noticeJson); } catch(pe) { noticeData = null; }
+            const items = (noticeData && noticeData.data && noticeData.data.list) || [];
             notices = items.map(it => ({
                 title: it.title_ch || it.title || '',
                 time: it.display_time || it.notice_date || '',
@@ -3413,19 +4621,20 @@ async function loadNews() {
         } catch (e) {
             console.log('公告获取失败，跳过', e);
         }
-        
+
         try {
             const reportText = await httpGetText(reportUrl);
             let reportJson = reportText;
-            if (reportText.startsWith('jQuery')) {
+            if (reportText && reportText.startsWith('jQuery')) {
                 const startIdx = reportText.indexOf('(');
                 const endIdx = reportText.lastIndexOf(')');
                 if (startIdx > -1 && endIdx > startIdx) {
                     reportJson = reportText.substring(startIdx + 1, endIdx);
                 }
             }
-            const reportData = JSON.parse(reportJson);
-            reports = (reportData.data || []).map(it => ({
+            let reportData;
+            try { reportData = JSON.parse(reportJson); } catch(pe) { reportData = null; }
+            reports = ((reportData && reportData.data) || []).map(it => ({
                 title: it.title || '',
                 org: it.orgSName || it.orgName || '',
                 time: (it.publishDate || '').substring(0, 10),
@@ -3442,19 +4651,47 @@ async function loadNews() {
     }
 }
 
-async function httpGetText(url) {
+async function httpGetText(url, options = {}) {
+    const { timeout = 10000, retry = 1 } = options;
+    let lastError;
+    
     const Http = getCapacitorHttp();
     if (Http) {
-        try {
-            const response = await Http.get({ url });
-            return response.data;
-        } catch (e) {
-            console.log('Capacitor HTTP 请求失败，尝试 fetch:', e);
+        for (let attempt = 0; attempt <= retry; attempt++) {
+            try {
+                const response = await Http.get({ url });
+                return response.data;
+            } catch (e) {
+                lastError = e;
+                if (attempt < retry) {
+                    await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+                }
+            }
         }
+        console.warn('Capacitor HTTP文本请求最终失败:', url, lastError);
     }
     
-    const response = await fetch(url, { mode: 'cors' });
-    return await response.text();
+    for (let attempt = 0; attempt <= retry; attempt++) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeout);
+        try {
+            const response = await fetch(url, { mode: 'cors', signal: controller.signal });
+            clearTimeout(timeoutId);
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}`);
+            }
+            return await response.text();
+        } catch (e) {
+            clearTimeout(timeoutId);
+            lastError = e;
+            if (attempt < retry && e.name !== 'AbortError') {
+                console.log(`HTTP文本请求失败，重试中 (${attempt + 1}/${retry + 1}):`, url, e);
+                await new Promise(r => setTimeout(r, 500 * (attempt + 1)));
+            }
+        }
+    }
+    console.error('HTTP文本请求最终失败:', url, lastError);
+    throw lastError;
 }
 
 function renderNews(notices, reports) {
@@ -3464,25 +4701,25 @@ function renderNews(notices, reports) {
     if (notices.length > 0) {
         noticeList.innerHTML = notices.map(n => `
             <div style="padding:14px 0;border-bottom:1px solid var(--border-glass);">
-                <div style="font-size:13px;font-weight:500;margin-bottom:6px;line-height:1.5;">${n.title}</div>
+                <div style="font-size:13px;font-weight:500;margin-bottom:6px;line-height:1.5;">${escapeHtml(n.title)}</div>
                 <div style="display:flex;gap:10px;font-size:11px;color:var(--text-muted);">
-                    ${n.category ? `<span style="background:rgba(129,140,248,0.1);color:var(--accent);padding:2px 8px;border-radius:10px;">${n.category}</span>` : ''}
-                    <span>${n.time}</span>
+                    ${n.category ? `<span style="background:rgba(129,140,248,0.1);color:var(--accent);padding:2px 8px;border-radius:10px;">${escapeHtml(n.category)}</span>` : ''}
+                    <span>${escapeHtml(n.time)}</span>
                 </div>
             </div>
         `).join('');
     } else {
         noticeList.innerHTML = '<div class="empty-state" style="padding:30px 0;font-size:12px;"><div class="empty-state-icon">📢</div>暂无公告数据</div>';
     }
-    
+
     if (reports.length > 0) {
         reportList.innerHTML = reports.map(r => `
             <div style="padding:14px 0;border-bottom:1px solid var(--border-glass);">
-                <div style="font-size:13px;font-weight:500;margin-bottom:6px;line-height:1.5;">${r.title}</div>
+                <div style="font-size:13px;font-weight:500;margin-bottom:6px;line-height:1.5;">${escapeHtml(r.title)}</div>
                 <div style="display:flex;gap:10px;align-items:center;font-size:11px;color:var(--text-muted);flex-wrap:wrap;">
-                    <span>🏛️ ${r.org || '未知机构'}</span>
-                    ${r.rating ? `<span style="background:rgba(52,211,153,0.1);color:var(--green);padding:2px 8px;border-radius:10px;">${r.rating}</span>` : ''}
-                    <span>${r.time}</span>
+                    <span>🏛️ ${escapeHtml(r.org || '未知机构')}</span>
+                    ${r.rating ? `<span style="background:rgba(52,211,153,0.1);color:var(--green);padding:2px 8px;border-radius:10px;">${escapeHtml(r.rating)}</span>` : ''}
+                    <span>${escapeHtml(r.time)}</span>
                 </div>
             </div>
         `).join('');
@@ -3498,13 +4735,12 @@ function onLongtermSearchInput() {
         document.getElementById('longtermSuggestions').style.display = 'none';
         return;
     }
-    clearTimeout(window.longtermSearchTimer);
-    window.longtermSearchTimer = setTimeout(async () => {
+    setSearchTimer('longterm', async () => {
         const results = await searchStockByName(kw);
         const container = document.getElementById('longtermSuggestions');
         if (results && results.length > 0) {
             container.innerHTML = results.slice(0, 5).map(r =>
-                `<div class="suggestion-item" onclick="selectLongtermStock('${r.code}', '${r.name}')">${r.name} <span class="suggestion-code">${r.code}</span></div>`
+                `<div class="suggestion-item" onclick="selectLongtermStock('${escapeHtml(r.code)}', '${escapeHtml(r.name)}')">${escapeHtml(r.name)} <span class="suggestion-code">${escapeHtml(r.code)}</span></div>`
             ).join('');
             container.style.display = 'block';
         } else {
@@ -3521,13 +4757,14 @@ function selectLongtermStock(code, name) {
 }
 
 function loadLongtermHistory() {
-    const history = JSON.parse(localStorage.getItem('longtermHistory') || '[]');
+    let history = [];
+    try { history = JSON.parse(localStorage.getItem('longtermHistory') || '[]'); } catch(e) { history = []; }
     const container = document.getElementById('longtermHistory');
     const list = document.getElementById('longtermHistoryList');
     if (history.length > 0) {
         container.style.display = 'block';
         list.innerHTML = history.slice(0, 10).map(h =>
-            `<span class="history-tag" onclick="selectLongtermStock('${h.code}', '${h.name || h.code}')">${h.name || h.code}</span>`
+            `<span class="history-tag" onclick="selectLongtermStock('${escapeHtml(h.code)}', '${escapeHtml(h.name || h.code)}')">${escapeHtml(h.name || h.code)}</span>`
         ).join('');
     } else {
         container.style.display = 'none';
@@ -3546,6 +4783,7 @@ async function loadLongtermDetail() {
         if (searchResult && searchResult.length > 0) {
             code = searchResult[0].code;
             _stockNames[code] = searchResult[0].name;
+            saveStockNames();
             document.getElementById('longtermInput').value = code;
         } else {
             showToast('未找到该股票');
@@ -3555,11 +4793,12 @@ async function loadLongtermDetail() {
 
     try {
         // 保存历史
-        const history = JSON.parse(localStorage.getItem('longtermHistory') || '[]');
+        let history = [];
+        try { history = JSON.parse(localStorage.getItem('longtermHistory') || '[]'); } catch(e) { history = []; }
         const newHistory = [{ code, name: _stockNames[code] || code, time: Date.now() }]
             .concat(history.filter(h => h.code !== code))
             .slice(0, 20);
-        localStorage.setItem('longtermHistory', JSON.stringify(newHistory));
+        safeSetItem('longtermHistory', JSON.stringify(newHistory));
         loadLongtermHistory();
 
         document.getElementById('emptyLongterm').style.display = 'none';
@@ -3604,7 +4843,7 @@ async function loadLongtermDetail() {
         document.getElementById('longtermContentWrapper').style.display = 'none';
         const errorDiv = document.createElement('div');
         errorDiv.className = 'empty-state';
-        errorDiv.innerHTML = '<div class="empty-state-icon">📊</div><div>长线分析加载失败</div><div style="font-size:11px;color:var(--text-muted);margin-top:8px;">' + (e.message || '未知错误') + '</div><div style="font-size:10px;color:var(--text-muted);margin-top:4px;">' + debugInfo + '</div>';
+        errorDiv.innerHTML = '<div class="empty-state-icon">📊</div><div>长线分析加载失败</div><div style="font-size:11px;color:var(--text-muted);margin-top:8px;">' + escapeHtml(e.message || '未知错误') + '</div><div style="font-size:10px;color:var(--text-muted);margin-top:4px;">' + escapeHtml(debugInfo) + '</div>';
         const overview = document.getElementById('longtermOverview');
         // 移除之前的错误div（如果有）
         const oldError = overview.querySelector('.longterm-error-msg');
@@ -3614,13 +4853,13 @@ async function loadLongtermDetail() {
     }
 }
 
-function renderLongtermAnalysis(stockInfo, klines, summary) {
+function renderLongtermAnalysis(stockInfo, klines) {
     try {
     const closes = klines.map(k => k.close);
     const highs = klines.map(k => k.high);
     const lows = klines.map(k => k.low);
     const volumes = klines.map(k => k.volume);
-    const cp = closes[closes.length - 1];
+    const cp = closes.length > 0 ? closes[closes.length - 1] : 0;
     const pc = stockInfo.prev_close || closes[closes.length - 2] || cp;
 
     // 检查strategyEngine
@@ -3676,7 +4915,7 @@ function renderLongtermAnalysis(stockInfo, klines, summary) {
 
     // 估值分析（简化版PE分析）
     const avgPrice = closes.slice(-250).reduce((a, b) => a + b, 0) / Math.min(250, closes.length);
-    const peRatio = avgPrice > 0 ? cp / (avgPrice / 10) : 0; // 简化PE计算
+    const peRatio = avgPrice > 0 ? cp / avgPrice : 0; // 简化PE计算
     let valueLevel = '适中';
     let valueDesc = '';
     if (peRatio < 0.8) {
@@ -3693,11 +4932,11 @@ function renderLongtermAnalysis(stockInfo, klines, summary) {
     // 核心原理：价格 = 价值中枢 × (1 + 均值回归 + 趋势漂移 + 动量衰减) ± 波动率锥
     // 比单因子模型精准的原因：融合了价值回归、中枢漂移、动量延续三个维度
 
-    const ma60Val = ma60 ? ma60[ma60.length - 1] : null;
-    const ma120Val = ma120 ? ma120[ma120.length - 1] : null;
-    const ma250Val = ma250 ? ma250[ma250.length - 1] : null;
-    const allTimeHigh = Math.max(...highs);
-    const allTimeLow = Math.min(...lows);
+    const ma60Val = ma60;
+    const ma120Val = ma120;
+    const ma250Val = ma250;
+    const allTimeHigh = highs.length > 0 ? highs.reduce((a, b) => Math.max(a, b), highs[0]) : cp;
+    const allTimeLow = lows.length > 0 ? lows.reduce((a, b) => Math.min(a, b), lows[0]) : cp;
 
     // 1. 多锚点加权价值中枢（比单一MA更稳定）
     let valueCenter;
@@ -3718,38 +4957,38 @@ function renderLongtermAnalysis(stockInfo, klines, summary) {
     // 2. 价值中枢漂移率（年化）—— 捕捉中枢本身的移动方向
     // 优先用MA120/MA250的斜率（更稳定），MA60作为辅助
     let centerDriftAnnual = 0;
-    if (ma250 && ma250.length >= 121) {
-        const maNow = ma250[ma250.length - 1];
-        const maBefore = ma250[ma250.length - 121];
+    if (ma250 && closes.length >= 121) {
+        const maNow = ma250;
+        const maBefore = strategyEngine.sma(closes.slice(0, closes.length - 120), 250);
         if (maBefore > 0) {
-            centerDriftAnnual = (maNow - maBefore) / maBefore * (250 / 120);
+            centerDriftAnnual = Math.pow(maNow / maBefore, 250 / 120) - 1;
         }
-    } else if (ma120 && ma120.length >= 61) {
-        const maNow = ma120[ma120.length - 1];
-        const maBefore = ma120[ma120.length - 61];
+    } else if (ma120 && closes.length >= 61) {
+        const maNow = ma120;
+        const maBefore = strategyEngine.sma(closes.slice(0, closes.length - 60), 120);
         if (maBefore > 0) {
-            centerDriftAnnual = (maNow - maBefore) / maBefore * (250 / 60);
+            centerDriftAnnual = Math.pow(maNow / maBefore, 250 / 60) - 1;
         }
-    } else if (ma60 && ma60.length >= 31) {
-        const maNow = ma60[ma60.length - 1];
-        const maBefore = ma60[ma60.length - 31];
+    } else if (ma60 && closes.length >= 31) {
+        const maNow = ma60;
+        const maBefore = strategyEngine.sma(closes.slice(0, closes.length - 30), 60);
         if (maBefore > 0) {
-            centerDriftAnnual = (maNow - maBefore) / maBefore * (250 / 30);
+            centerDriftAnnual = Math.pow(maNow / maBefore, 250 / 30) - 1;
         }
     }
     // 限制漂移率在保守范围 -20%~+25%（长期可持续的增长率）
     centerDriftAnnual = Math.max(-0.2, Math.min(0.25, centerDriftAnnual));
 
     // 3. 均值回归因子 —— 价格偏离价值中枢越远，回归力越强
-    const deviation = (cp - valueCenter) / valueCenter; // 正=偏高，负=偏低
+    const deviation = valueCenter > 0 ? (cp - valueCenter) / valueCenter : 0; // 正=偏高，负=偏低
 
     // 4. 动量因子 —— 近期涨跌有延续性，但随时间衰减
     let momentum20 = 0;
-    if (closes.length >= 21) {
+    if (closes.length >= 21 && closes[closes.length - 21] > 0) {
         momentum20 = (cp - closes[closes.length - 21]) / closes[closes.length - 21];
     }
     let momentum60 = 0;
-    if (closes.length >= 61) {
+    if (closes.length >= 61 && closes[closes.length - 61] > 0) {
         momentum60 = (cp - closes[closes.length - 61]) / closes[closes.length - 61];
     }
     // 综合20日和60日动量，20日权重高
@@ -3771,7 +5010,8 @@ function renderLongtermAnalysis(stockInfo, klines, summary) {
     annualVolatility = Math.max(0.1, Math.min(0.6, annualVolatility));
 
     // 估值位置：当前价在历史区间的位置（0=最低，1=最高）
-    const pricePosition = (cp - allTimeLow) / (allTimeHigh - allTimeLow);
+    const priceRange = allTimeHigh - allTimeLow;
+    const pricePosition = priceRange > 0 ? (cp - allTimeLow) / priceRange : 0.5;
 
     // 趋势方向判断（基于均线系统）—— 仅用于展示建议
     let trendLevel = 0;
@@ -3817,8 +5057,8 @@ function renderLongtermAnalysis(stockInfo, klines, summary) {
         const periodChange = periodCloses.length >= 2
             ? (periodCloses[periodCloses.length - 1] - periodCloses[0]) / periodCloses[0] * 100
             : 0;
-        const periodHigh = Math.max(...periodHighs);
-        const periodLow = Math.min(...periodLows);
+        const periodHigh = periodHighs.reduce((a, b) => Math.max(a, b), periodHighs[0]);
+        const periodLow = periodLows.reduce((a, b) => Math.min(a, b), periodLows[0]);
 
         // ====== 多因子价格预测 ======
         const years = p.days / 250;
@@ -3848,12 +5088,14 @@ function renderLongtermAnalysis(stockInfo, klines, summary) {
         let optimistic = neutral * (1 + volForPeriod * 0.85);
         let pessimistic = neutral * (1 - volForPeriod * 0.85);
 
-        // 边界保护：不超过历史高点的1.15倍，不低于历史低点的0.85倍
+        // 边界保护：不超过历史高点的1.15倍，不低于历史低点的0.85倍，且最低0.01
         const maxPrice = allTimeHigh * 1.15;
         const minPrice = Math.max(allTimeLow * 0.85, 0.01);
         optimistic = Math.min(optimistic, maxPrice);
         pessimistic = Math.max(pessimistic, minPrice);
         neutral = Math.max(Math.min(neutral, maxPrice), minPrice);
+        // 确保悲观价不低于0.01（避免出现负数或零）
+        pessimistic = Math.max(pessimistic, 0.01);
 
         // 确保乐观 > 中性 > 悲观
         if (neutral <= pessimistic) neutral = pessimistic * 1.05;
@@ -4018,7 +5260,7 @@ function renderLongtermAnalysis(stockInfo, klines, summary) {
     if (rsi14 < 20) riskItems.push({ level: 'low', text: 'RSI严重超卖，可能存在反弹机会' });
     if (peRatio > 1.5) riskItems.push({ level: 'high', text: '估值偏高，注意追高风险' });
     if (peRatio < 0.6) riskItems.push({ level: 'low', text: '估值偏低，可能被低估' });
-    if (ma5 < ma10 && ma10 < ma20) riskItems.push({ level: 'high', text: '均线空头排列，中期趋势向下' });
+    if (ma5 && ma10 && ma20 && ma5 < ma10 && ma10 < ma20) riskItems.push({ level: 'high', text: '均线空头排列，中期趋势向下' });
     if (bar < 0 && dif < 0) riskItems.push({ level: 'medium', text: 'MACD死叉，短线走弱' });
 
     if (riskItems.length === 0) {
@@ -4090,28 +5332,64 @@ function renderLongtermAnalysis(stockInfo, klines, summary) {
 
 document.addEventListener('DOMContentLoaded', init);
 
+document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+        const strategyModal = document.getElementById('strategyModal');
+        if (strategyModal && strategyModal.classList.contains('show')) {
+            closeModal();
+            return;
+        }
+        const watchModal = document.getElementById('watchModal');
+        if (watchModal && watchModal.classList.contains('show')) {
+            closeWatchModal();
+            return;
+        }
+        const learnModal = document.getElementById('learnModal');
+        if (learnModal && learnModal.classList.contains('show')) {
+            closeLearnModal();
+            return;
+        }
+    }
+});
+
 // ==================== 监控股票管理 ====================
 function showAddWatchModal() {
-    document.getElementById('watchModal').style.display = 'flex';
+    closeAllModals();
+    const modal = document.getElementById('watchModal');
+    if (modal) {
+        modal.style.display = 'flex';
+        requestAnimationFrame(() => {
+            modal.classList.add('show');
+        });
+    }
     document.getElementById('watchCodeInput').value = '';
     setTimeout(() => document.getElementById('watchCodeInput').focus(), 100);
+    document.body.style.overflow = 'hidden';
 }
 
 function closeWatchModal() {
-    document.getElementById('watchModal').style.display = 'none';
+    const modal = document.getElementById('watchModal');
+    if (modal) {
+        modal.classList.remove('show');
+        setTimeout(() => {
+            modal.style.display = 'none';
+        }, 250);
+    }
     document.getElementById('watchCodeInput').value = '';
-    document.getElementById('watchSearchSuggestions').style.display = 'none';
+    const sug = document.getElementById('watchSearchSuggestions');
+    if (sug) { sug.style.display = 'none'; sug.innerHTML = ''; }
+    document.body.style.overflow = '';
 }
 
 function onWatchSearchInput() {
     const kw = document.getElementById('watchCodeInput').value.trim();
     if (!kw) {
-        document.getElementById('watchSearchSuggestions').style.display = 'none';
+        const sug = document.getElementById('watchSearchSuggestions');
+        if (sug) { sug.style.display = 'none'; sug.innerHTML = ''; }
         return;
     }
     
-    clearTimeout(_searchTimer);
-    _searchTimer = setTimeout(async () => {
+    setSearchTimer('watch_add', async () => {
         const loadingEl = document.getElementById('watchSearchLoading');
         if (loadingEl) loadingEl.style.display = 'inline';
         
@@ -4120,9 +5398,9 @@ function onWatchSearchInput() {
             const sug = document.getElementById('watchSearchSuggestions');
             if (results.length > 0) {
                 sug.innerHTML = results.map(item => `
-                    <div class="suggestion-item" data-code="${item.code}" data-name="${item.name}">
-                        <span class="suggestion-code">${item.code}</span>
-                        <span class="suggestion-name">${item.name}</span>
+                    <div class="suggestion-item" data-code="${escapeHtml(item.code)}" data-name="${escapeHtml(item.name)}">
+                        <span class="suggestion-code">${escapeHtml(item.code)}</span>
+                        <span class="suggestion-name">${escapeHtml(item.name)}</span>
                     </div>
                 `).join('');
                 sug.style.display = 'block';
@@ -4183,14 +5461,14 @@ function renderWatchList(autoRefresh = true) {
     if (!miniContainer) return;
     
     if (!_watchList || _watchList.length === 0) {
-        miniContainer.innerHTML = '<span style="font-size:11px;color:var(--text-muted);">暂无监控</span>';
+        miniContainer.innerHTML = '<span style="font-size:11px;color:var(--text-muted);">暂无监控</span> <button onclick="showAddWatchModal()" style="background:none;border:none;color:var(--accent);cursor:pointer;font-size:12px;padding:2px 6px;">+添加</button>';
         return;
     }
     
     const miniHtml = _watchList.map(code => `
-        <span class="watch-tag" onclick="refreshTSignalForStock('${code}')">
-            ${code}
-            <button onclick="event.stopPropagation(); removeFromWatchlist('${code}')">×</button>
+        <span class="watch-tag" onclick="refreshTSignalForStock('${escapeHtml(code)}')">
+            ${escapeHtml(code)}
+            <button onclick="event.stopPropagation(); removeFromWatchlist('${escapeHtml(code)}')">×</button>
         </span>
     `).join('');
     miniContainer.innerHTML = miniHtml;
@@ -4212,25 +5490,29 @@ function refreshAllTSignals() {
     miniDiv.innerHTML = _watchList.map(code => {
         const name = _stockNames[code] || code;
         return `
-            <div id="signal-card-${code}" class="signal-card" style="background:var(--bg-inset);border-radius:8px;padding:10px;margin-top:8px;cursor:pointer;" onclick="viewTSignalDetail('${code}')">
+            <div id="signal-card-${escapeHtml(code)}" class="signal-card" style="background:var(--bg-inset);border-radius:8px;padding:10px;margin-top:8px;cursor:pointer;" onclick="viewTSignalDetail('${escapeHtml(code)}')">
                 <div style="display:flex;justify-content:space-between;align-items:center;">
-                    <div style="font-size:12px;font-weight:600;">${name} <span style="color:var(--text-muted);font-weight:400;">${code}</span></div>
+                    <div style="font-size:12px;font-weight:600;">${escapeHtml(name)} <span style="color:var(--text-muted);font-weight:400;">${escapeHtml(code)}</span></div>
                     <span style="font-size:10px;color:var(--text-muted);">加载中...</span>
                 </div>
             </div>
         `;
     }).join('');
     
-    // 分批加载，每次2个，避免同时发起大量请求阻塞UI
+    // 分批加载，每次3个，避免同时发起大量请求阻塞UI
     let index = 0;
-    const batchSize = 2;
+    const batchSize = 3;
+    if (_tSignalBatchTimer) {
+        clearTimeout(_tSignalBatchTimer);
+        _tSignalBatchTimer = null;
+    }
     const loadNextBatch = () => {
         if (index >= _watchList.length) return;
         const batch = _watchList.slice(index, index + batchSize);
         index += batchSize;
         batch.forEach(code => getLiveTSignals(code));
         // 下一批延迟一点加载，给UI喘息时间
-        setTimeout(loadNextBatch, 200);
+        _tSignalBatchTimer = setTimeout(loadNextBatch, 150);
     };
     loadNextBatch();
 }
@@ -4247,7 +5529,7 @@ function refreshTSignalForStock(code) {
     const name = _stockNames[code] || code;
     cardDiv.innerHTML = `
         <div style="display:flex;justify-content:space-between;align-items:center;">
-            <div style="font-size:12px;font-weight:600;">${name} <span style="color:var(--text-muted);font-weight:400;">${code}</span></div>
+            <div style="font-size:12px;font-weight:600;">${escapeHtml(name)} <span style="color:var(--text-muted);font-weight:400;">${escapeHtml(code)}</span></div>
             <span style="font-size:10px;color:var(--text-muted);">刷新中...</span>
         </div>
     `;
@@ -4257,15 +5539,21 @@ function refreshTSignalForStock(code) {
 // ==================== 实时做T信号 ====================
 async function getLiveTSignals(stockCode) {
     const cardDiv = document.getElementById('signal-card-' + stockCode);
-    
+
     if (!cardDiv) return;
-    
+
+    const myReqId = ++_tSignalRequestId;
+    _tSignalReqMap[stockCode] = myReqId;
+
     try {
         const prefix = getTencentPrefix(stockCode);
         const fullCode = `${prefix}${stockCode}`;
         const quoteUrl = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${fullCode},day,,,1,qfq`;
         const quoteData = await httpGet(quoteUrl);
-        
+
+        if (_tSignalReqMap[stockCode] !== myReqId) return;
+        if (!cardDiv || !cardDiv.parentNode) return;
+
         if (quoteData.code !== 0 || !quoteData.data || !quoteData.data[fullCode]) {
             cardDiv.innerHTML = renderSignalCardError(stockCode, '加载失败');
             return;
@@ -4273,29 +5561,18 @@ async function getLiveTSignals(stockCode) {
         
         const stockData = quoteData.data[fullCode];
         const qt = stockData.qt?.[fullCode];
-        if (!qt || qt.length < 38) {
+        const stockInfo = parseTencentQtData(qt);
+        if (!stockInfo) {
             cardDiv.innerHTML = renderSignalCardError(stockCode, '数据异常');
             return;
         }
         
-        const stockInfo = {
-            code: qt[2],
-            name: qt[1],
-            current_price: parseFloat(qt[3]) || 0,
-            prev_close: parseFloat(qt[4]) || 0,
-            open_price: parseFloat(qt[5]) || 0,
-            volume: parseFloat(qt[36]) * 100 || 0,
-            amount: parseFloat(qt[37]) * 10000 || 0,
-            change_amount: parseFloat(qt[31]) || 0,
-            change_percent: parseFloat(qt[32]) || 0,
-            high_price: parseFloat(qt[33]) || 0,
-            low_price: parseFloat(qt[34]) || 0,
-            turnover: parseFloat(qt[38]) || 0
-        };
-        
         const klineUrl = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${fullCode},day,,,120,qfq`;
         const klineData = await httpGet(klineUrl);
-        
+
+        if (_tSignalReqMap[stockCode] !== myReqId) return;
+        if (!cardDiv || !cardDiv.parentNode) return;
+
         if (klineData.code !== 0 || !klineData.data || !klineData.data[fullCode]) {
             cardDiv.innerHTML = renderSignalCardError(stockCode, 'K线加载失败');
             return;
@@ -4304,16 +5581,23 @@ async function getLiveTSignals(stockCode) {
         const klineArray = klineData.data[fullCode].qfqday || klineData.data[fullCode].day || [];
         const klines = klineArray.map(k => ({
             date: k[0],
-            open: parseFloat(k[1]),
-            close: parseFloat(k[2]),
-            high: parseFloat(k[3]),
-            low: parseFloat(k[4]),
-            volume: parseFloat(k[5]) * 100,
+            open: parseFloat(k[1]) || 0,
+            close: parseFloat(k[2]) || 0,
+            high: parseFloat(k[3]) || 0,
+            low: parseFloat(k[4]) || 0,
+            volume: k[5] ? parseFloat(k[5]) * 100 : 0,
             amount: k[6] ? parseFloat(k[6]) * 10000 : 0
         }));
         
         const holdings = getHoldings(stockCode);
-        const [strategies, summary] = strategyEngine.runAllStrategies(stockInfo, klines, holdings);
+        const result = strategyEngine.runAllStrategies(stockInfo, klines, holdings, {
+            fixedPredictionHour: _settings.fixedPredictionTime
+        });
+        if (!Array.isArray(result) || result.length !== 2) {
+            cardDiv.innerHTML = renderSignalCardError(stockCode, '策略计算失败');
+            return;
+        }
+        const [strategies, summary] = result;
         
         const tSignals = strategies.filter(s => 
             s.action === 'TRADING_OPPORTUNITY' || 
@@ -4324,7 +5608,8 @@ async function getLiveTSignals(stockCode) {
         
         if (tSignals.length > 0) {
             const s = tSignals[0];
-            const isBuyT = s.action === 'BUY_THEN_SELL' || s.action === 'TRADING_OPPORTUNITY';
+            const isBuyT = s.action === 'BUY_THEN_SELL' || (s.action === 'TRADING_OPPORTUNITY' && summary.trend_bias >= 0);
+            const isSellT = s.action === 'SELL_THEN_BUY' || (s.action === 'TRADING_OPPORTUNITY' && summary.trend_bias < 0);
             const color = isBuyT ? 'var(--green)' : 'var(--red)';
             let tType = '做T机会';
             if (s.action === 'BUY_THEN_SELL') tType = '正T (先买后卖)';
@@ -4334,7 +5619,7 @@ async function getLiveTSignals(stockCode) {
             cardDiv.innerHTML = `
                 <div style="display:flex;justify-content:space-between;align-items:center;">
                     <div>
-                        <div style="font-size:12px;font-weight:600;">${stockInfo.name} <span style="color:var(--text-muted);font-weight:400;">${stockInfo.code}</span></div>
+                        <div style="font-size:12px;font-weight:600;">${escapeHtml(stockInfo.name)} <span style="color:var(--text-muted);font-weight:400;">${escapeHtml(stockInfo.code)}</span></div>
                         <div style="font-size:11px;color:${color};margin-top:2px;">⚡ ${tType}</div>
                     </div>
                     <div style="text-align:right;">
@@ -4345,7 +5630,7 @@ async function getLiveTSignals(stockCode) {
                 ${s.target_price ? `
                 <div style="margin-top:6px;font-size:10px;color:var(--text-muted);">
                     目标价: <span style="color:var(--green);">¥${s.target_price}</span>
-                    ${s.support_price ? ` · 支撑: <span style="color:var(--red);">¥${s.support_price}</span>` : ''}
+                    ${s.stop_loss ? ` · 止损: <span style="color:var(--red);">¥${s.stop_loss}</span>` : ''}
                 </div>
                 ` : ''}
             `;
@@ -4353,7 +5638,7 @@ async function getLiveTSignals(stockCode) {
             cardDiv.innerHTML = `
                 <div style="display:flex;justify-content:space-between;align-items:center;">
                     <div>
-                        <div style="font-size:12px;font-weight:600;">${stockInfo.name} <span style="color:var(--text-muted);font-weight:400;">${stockInfo.code}</span></div>
+                        <div style="font-size:12px;font-weight:600;">${escapeHtml(stockInfo.name)} <span style="color:var(--text-muted);font-weight:400;">${escapeHtml(stockInfo.code)}</span></div>
                         <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">⏸️ 观望中</div>
                     </div>
                     <div style="text-align:right;">
@@ -4368,11 +5653,16 @@ async function getLiveTSignals(stockCode) {
         
         checkAndAlertSignals(stockCode, stockInfo, strategies);
         
-        // 更新首页最优操作方案（优先显示有持仓的股票）
         updateHomeBestPlan(stockCode, stockInfo, summary, holdings);
         
     } catch (e) {
-        cardDiv.innerHTML = renderSignalCardError(stockCode, '加载失败');
+        if (cardDiv && cardDiv.parentNode) {
+            cardDiv.innerHTML = renderSignalCardError(stockCode, '加载失败');
+        }
+    } finally {
+        if (_tSignalReqMap[stockCode] === myReqId) {
+            delete _tSignalReqMap[stockCode];
+        }
     }
 }
 
@@ -4380,11 +5670,17 @@ let _homePlanStock = null;
 function updateHomeBestPlan(code, stockInfo, summary, holdings) {
     const bestPlanCard = document.getElementById('bestPlanCard');
     if (!bestPlanCard) return;
-    
+
+    // 如果用户正在查看其他股票，不覆盖首页最优方案
+    if (_currentStock && _currentStock.code !== code && _lastSearchedStock && _lastSearchedStock.code === _currentStock.code) {
+        return;
+    }
+
     if (!summary) return;
     
     // 如果当前没有显示的股票，或者这只股票有持仓（优先），就显示这只
-    if (!_homePlanStock || holdings > 0) {
+    const hasHoldings = holdings && typeof holdings === 'object' && holdings.qty > 0;
+    if (!_homePlanStock || hasHoldings) {
         _homePlanStock = code;
     }
     
@@ -4392,6 +5688,13 @@ function updateHomeBestPlan(code, stockInfo, summary, holdings) {
     if (_homePlanStock !== code) return;
     
     bestPlanCard.style.display = 'block';
+    bestPlanCard.style.cursor = 'pointer';
+    bestPlanCard.onclick = () => {
+        if (_homePlanStock) {
+            goToStockDetail(_homePlanStock, _stockNames[_homePlanStock] || _homePlanStock);
+            switchTab('strategy');
+        }
+    };
     renderBestPlan(summary);
 }
 
@@ -4399,15 +5702,42 @@ function renderSignalCardError(code, msg) {
     const name = _stockNames[code] || code;
     return `
         <div style="display:flex;justify-content:space-between;align-items:center;">
-            <div style="font-size:12px;font-weight:600;">${name} <span style="color:var(--text-muted);font-weight:400;">${code}</span></div>
-            <span style="font-size:10px;color:var(--text-muted);">${msg}</span>
+            <div style="font-size:12px;font-weight:600;">${escapeHtml(name)} <span style="color:var(--text-muted);font-weight:400;">${escapeHtml(code)}</span></div>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <span style="font-size:10px;color:var(--text-muted);">${escapeHtml(msg)}</span>
+                <button onclick="event.stopPropagation();refreshTSignalForStock('${escapeHtml(code)}')" style="background:none;border:none;color:var(--accent);font-size:11px;cursor:pointer;padding:2px 6px;">重试</button>
+            </div>
         </div>
     `;
 }
 
 // ========== 监控自动刷新与弹窗提醒 ==========
 let _watchRefreshTimer = null;
+let _tSignalBatchTimer = null;
 let _alertedSignals = {};
+
+function loadAlertedSignals() {
+    try {
+        const saved = localStorage.getItem('alertedSignals');
+        _alertedSignals = saved ? JSON.parse(saved) : {};
+    } catch (e) { _alertedSignals = {}; }
+}
+
+function saveAlertedSignals() {
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+    const cutoff = sevenDaysAgo.toDateString();
+    for (const key in _alertedSignals) {
+        const parts = key.split('_');
+        const dateStr = parts.slice(-1)[0];
+        try {
+            if (new Date(dateStr) < sevenDaysAgo) {
+                delete _alertedSignals[key];
+            }
+        } catch (e) {}
+    }
+    safeSetItem('alertedSignals', JSON.stringify(_alertedSignals));
+}
 
 function checkAndAlertSignals(code, stockInfo, strategies) {
     if (!_settings.popupAlert) return;
@@ -4431,6 +5761,7 @@ function checkAndAlertSignals(code, stockInfo, strategies) {
     const alertKey = `${code}_${action}_${today}`;
     if (_alertedSignals[alertKey]) return;
     _alertedSignals[alertKey] = true;
+    saveAlertedSignals();
     
     showSignalAlert(stockInfo.name, code, stockInfo.current_price, avgScore, action);
     sendLocalNotification(stockInfo.name, code, stockInfo.current_price, avgScore, action);
@@ -4438,14 +5769,17 @@ function checkAndAlertSignals(code, stockInfo, strategies) {
 
 function calculatePanoramaScore(strategies) {
     if (!strategies || strategies.length === 0) return 50;
-    
+
     let buyCount = 0;
     let sellCount = 0;
     strategies.forEach(s => {
-        if (s.signal === 'buy' || s.action === 'BUY_THEN_SELL') buyCount++;
-        else if (s.signal === 'sell' || s.action === 'SELL_THEN_BUY') sellCount++;
+        if (s.action === 'BUY' || s.action === 'STRONG_BUY') buyCount++;
+        else if (s.action === 'SELL' || s.action === 'STRONG_SELL') sellCount++;
+        else if (s.action === 'BUY_THEN_SELL') { buyCount += 0.7; sellCount += 0.3; }
+        else if (s.action === 'SELL_THEN_BUY') { buyCount += 0.3; sellCount += 0.7; }
+        // BOX_TRADING/TRADING_OPPORTUNITY 中性，不计入
     });
-    
+
     const total = strategies.length;
     const score = Math.round(50 + (buyCount - sellCount) / total * 50);
     return Math.max(0, Math.min(100, score));
@@ -4483,27 +5817,33 @@ function showSignalAlert(name, code, price, score, action) {
             <div style="font-size:24px;">${icon}</div>
             <div style="flex:1;">
                 <div style="font-size:14px; font-weight:700; color:${color}; margin-bottom:2px;">${action}信号</div>
-                <div style="font-size:13px; font-weight:600; color:var(--text-primary);">${name} <span style="color:var(--text-muted); font-weight:400; font-size:11px;">${code}</span></div>
+                <div style="font-size:13px; font-weight:600; color:var(--text-primary);">${escapeHtml(name)} <span style="color:var(--text-muted); font-weight:400; font-size:11px;">${escapeHtml(code)}</span></div>
                 <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">当前价 ¥${price.toFixed(2)} · 综合评分 ${score}分</div>
             </div>
         </div>
     `;
     
+    let _alertHideTimer = null;
+    let _alertRemoveTimer = null;
     alertDiv.onclick = () => {
-        selectStock(code, name);
+        goToStockDetail(code, name);
         switchTab('strategy');
-        document.body.removeChild(alertDiv);
+        if (_alertHideTimer) clearTimeout(_alertHideTimer);
+        if (_alertRemoveTimer) clearTimeout(_alertRemoveTimer);
+        if (alertDiv.parentNode) {
+            document.body.removeChild(alertDiv);
+        }
     };
-    
+
     document.body.appendChild(alertDiv);
-    
+
     setTimeout(() => {
         alertDiv.style.transform = 'translateX(-50%) translateY(0)';
     }, 50);
-    
-    setTimeout(() => {
+
+    _alertHideTimer = setTimeout(() => {
         alertDiv.style.transform = 'translateX(-50%) translateY(-100px)';
-        setTimeout(() => {
+        _alertRemoveTimer = setTimeout(() => {
             if (alertDiv.parentNode) {
                 document.body.removeChild(alertDiv);
             }
@@ -4542,8 +5882,6 @@ async function sendLocalNotification(name, code, price, score, action) {
 
 // ==================== 收益计算 ====================
 function refreshProfit() {
-    loadTrades();
-    
     let totalBuy = 0;
     let totalSell = 0;
     let realizedProfit = 0;
@@ -4564,26 +5902,27 @@ function refreshProfit() {
             const amount = t.price * t.quantity;
             totalBuyAmount += amount;
             
-            const comm = Math.max(amount * 0.0003, 5);
-            const trans = amount * 0.00001;
-            commissionFee += comm;
-            transferFee += trans;
+            const fees = calcTradeFees(amount, 'BUY');
+            commissionFee += fees.commission;
+            transferFee += fees.transfer;
             
-            if (!holdings[t.code]) holdings[t.code] = { qty: 0, cost: 0, name: t.name || t.code };
+            if (!holdings[t.code]) {
+                holdings[t.code] = { qty: 0, cost: 0, name: t.name || t.code };
+            } else if (t.name && t.name !== t.code) {
+                holdings[t.code].name = t.name;
+            }
             holdings[t.code].qty += t.quantity;
-            holdings[t.code].cost += amount + comm + trans;
+            holdings[t.code].cost += amount + fees.commission + fees.transfer;
             
         } else {
             totalSell += t.quantity;
             const amount = t.price * t.quantity;
             totalSellAmount += amount;
             
-            const comm = Math.max(amount * 0.0003, 5);
-            const stamp = amount * 0.001;
-            const trans = amount * 0.00001;
-            commissionFee += comm;
-            stampTax += stamp;
-            transferFee += trans;
+            const fees = calcTradeFees(amount, 'SELL');
+            commissionFee += fees.commission;
+            stampTax += fees.stamp;
+            transferFee += fees.transfer;
             
             if (t.pair_profit !== undefined && (t.pair_quantity || 0) > 0) {
                 tProfit += t.pair_profit;
@@ -4591,10 +5930,14 @@ function refreshProfit() {
             }
             
             if (holdings[t.code] && holdings[t.code].qty > 0) {
-                const avgCost = holdings[t.code].cost / holdings[t.code].qty;
-                const sellCost = avgCost * t.quantity;
-                realizedProfit += (amount - comm - stamp - trans) - sellCost;
-                holdings[t.code].qty -= t.quantity;
+                if (t.name && t.name !== t.code && holdings[t.code].name === t.code) {
+                    holdings[t.code].name = t.name;
+                }
+                const avgCost = holdings[t.code].qty > 0 ? holdings[t.code].cost / holdings[t.code].qty : 0;
+                const sellQty = Math.min(t.quantity, holdings[t.code].qty);
+                const sellCost = avgCost * sellQty;
+                realizedProfit += (amount - fees.commission - fees.stamp - fees.transfer) - sellCost;
+                holdings[t.code].qty -= sellQty;
                 holdings[t.code].cost -= sellCost;
             }
         }
@@ -4629,7 +5972,15 @@ function refreshProfit() {
         }
     }
     
-    stockProfits.sort((a, b) => b.quantity - a.quantity);
+    // 构建组合数组再排序，避免 holdingCodes 与 stockProfits 错位
+    const combined = holdingCodes.map((code, idx) => ({ code, profit: stockProfits[idx] }));
+    combined.sort((a, b) => b.profit.quantity - a.profit.quantity);
+    const sortedHoldingCodes = combined.map(c => c.code);
+    const sortedStockProfits = combined.map(c => c.profit);
+    holdingCodes.length = 0;
+    sortedHoldingCodes.forEach(c => holdingCodes.push(c));
+    stockProfits.length = 0;
+    sortedStockProfits.forEach(p => stockProfits.push(p));
     
     const totalProfit = realizedProfit + unrealizedProfit;
     const totalFees = commissionFee + stampTax + transferFee;
@@ -4681,24 +6032,39 @@ function refreshProfit() {
     const div = document.getElementById('stockProfits');
     if (div) {
         if (stockProfits.length > 0) {
-            div.innerHTML = stockProfits.map((s, idx) => `
+            // 检查持仓是否变化（数量和代码都相同则视为结构不变）
+            const holdingsChanged = !_profitListRendered ||
+                holdingCodes.length !== _lastHoldingCodes.length ||
+                holdingCodes.some((code, i) => code !== _lastHoldingCodes[i]);
+
+            if (holdingsChanged) {
+                // 持仓变化或首次渲染，重建整个列表
+                div.innerHTML = stockProfits.map((s, idx) => `
                 <div class="stock-profit-item" id="home-holding-${idx}">
                     <div>
-                        <div class="stock-profit-name">${s.name}</div>
-                        <div class="stock-profit-detail">${s.code} · ${s.quantity}股 · ¥<span id="home-price-${idx}">${s.current_price.toFixed(2)}</span></div>
+                        <div class="stock-profit-name">${escapeHtml(s.name)}</div>
+                        <div class="stock-profit-detail">${escapeHtml(s.code)} · ${s.quantity}股 · ¥<span id="home-price-${idx}">${s.current_price.toFixed(2)}</span></div>
                     </div>
                     <div class="stock-profit-value" id="home-profit-${idx}" style="color:${s.profit >= 0 ? 'var(--red)' : 'var(--green)'}">
                         ${s.profit >= 0 ? '+' : ''}¥${s.profit.toFixed(2)}
                     </div>
                 </div>
             `).join('');
-            
+                _profitListRendered = true;
+                _lastHoldingCodes = [...holdingCodes];
+            }
+
             // 异步获取所有持仓股票的实时价格并更新
             let totalUnrealized = 0;
             let fetchedCount = 0;
+            let failedCount = 0;
             holdingCodes.forEach((code, idx) => {
                 const info = holdings[code];
-                if (!info) return;
+                if (!info) {
+                    fetchedCount++;
+                    failedCount++;
+                    return;
+                }
                 getCurrentPrice(code).then(currentPrice => {
                     fetchedCount++;
                     if (currentPrice > 0) {
@@ -4707,9 +6073,9 @@ function refreshProfit() {
                         const isProfit = profit >= 0;
                         const profitColor = isProfit ? 'var(--red)' : 'var(--green)';
                         const profitSign = isProfit ? '+' : '';
-                        
+
                         totalUnrealized += profit;
-                        
+
                         const priceEl = document.getElementById('home-price-' + idx);
                         const profitEl = document.getElementById('home-profit-' + idx);
                         if (priceEl) priceEl.textContent = currentPrice.toFixed(2);
@@ -4717,18 +6083,49 @@ function refreshProfit() {
                             profitEl.style.color = profitColor;
                             profitEl.innerHTML = `${profitSign}¥${profit.toFixed(2)}<div style="font-size:11px;">${profitSign}${profitPercent.toFixed(2)}%</div>`;
                         }
+
+                        // 同步更新 _profitDetail.stockProfits 中对应项的实时价格和盈亏
+                        if (_profitDetail && _profitDetail.stockProfits && _profitDetail.stockProfits[idx]) {
+                            _profitDetail.stockProfits[idx].current_price = currentPrice;
+                            _profitDetail.stockProfits[idx].profit = profit;
+                        }
+                    } else {
+                        failedCount++;
                     }
-                    
+
                     // 所有价格获取完成后更新总浮动盈亏和总盈亏
                     if (fetchedCount === holdingCodes.length) {
                         const newTotalProfit = realizedProfit + totalUnrealized;
                         setProfitVal('unrealizedProfit', totalUnrealized);
                         setProfitVal('totalProfit', newTotalProfit);
+
+                        // 同步更新 _profitDetail 中的总盈亏
+                        if (_profitDetail) {
+                            _profitDetail.unrealizedProfit = totalUnrealized;
+                            _profitDetail.totalProfit = realizedProfit + totalUnrealized;
+                            // 同步每只股票的实时价格、盈亏和盈亏百分比
+                            _profitDetail.stockProfits = _profitDetail.stockProfits.map(s => {
+                                const found = stockProfits.find(p => p.code === s.code);
+                                if (found) {
+                                    const updatedProfit = (found.current_price - s.avg_cost) * s.quantity;
+                                    const updatedProfitPercent = s.avg_cost > 0 ? ((found.current_price - s.avg_cost) / s.avg_cost * 100) : 0;
+                                    return { ...s, currentPrice: found.current_price, profit: updatedProfit, profitPercent: updatedProfitPercent };
+                                }
+                                return s;
+                            });
+                        }
+
+                        // 部分价格获取失败提示
+                        if (failedCount > 0) {
+                            showToast('部分持仓价格获取失败，盈亏按已知价格计算');
+                        }
                     }
                 });
             });
         } else {
-            div.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📊</div><div>暂无持仓</div></div>';
+            div.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📊</div><div>暂无持仓</div><button onclick="openAddTradeModal()" class="btn btn-primary" style="margin-top:12px;width:auto;padding:10px 24px;">添加买入</button></div>';
+            _profitListRendered = false;
+            _lastHoldingCodes = [];
         }
     }
     
@@ -4763,11 +6160,15 @@ function refreshProfit() {
 function autoAddTradedStocks() {
     const holdings = {};
     _trades.forEach(t => {
-        if (!holdings[t.code]) holdings[t.code] = { qty: 0, name: t.name || t.code };
-        if (t.type === 'BUY') {
-            holdings[t.code].qty += t.quantity;
+        if (!holdings[t.code]) {
+            holdings[t.code] = { qty: 0, name: t.name || t.code };
+        } else if (t.name && t.name !== t.code) {
+            holdings[t.code].name = t.name;
+        }
+        if ((t.trade_type || t.type) === 'BUY') {
+            holdings[t.code].qty += (t.quantity || 0);
         } else {
-            holdings[t.code].qty -= t.quantity;
+            holdings[t.code].qty = Math.max(0, holdings[t.code].qty - (t.quantity || 0));
         }
     });
     
@@ -4921,22 +6322,35 @@ function renderCoreAdvice(info, strategies) {
     
     const coreDiv = document.getElementById('coreAdvice');
     if (!coreDiv) return;
-    
+
     const stockCode = info.code || '';
     const stockName = info.name || '';
-    
+
+    // 计算核心建议的成功率（直接基于100+策略加权投票结果）
+    let coreSuccessRate = 0;
+    if (_lastSummary && (direction === 'BUY' || direction === 'SELL')) {
+        const type = direction === 'BUY' ? 'buy' : 'sell';
+        coreSuccessRate = calcPanoramaActionSuccessRate(_lastSummary, type);
+    }
+    const successRateHtml = coreSuccessRate > 0
+        ? `<span style="font-size:11px; font-weight:600; padding:3px 10px; background:${directionColor === 'var(--green)' ? 'rgba(34,197,94,0.15)' : directionColor === 'var(--red)' ? 'rgba(239,68,68,0.15)' : 'rgba(139,92,246,0.15)'}; color:${directionColor}; border-radius:12px; margin-left:auto;">成功率 ${coreSuccessRate}%</span>`
+        : '';
+
     coreDiv.innerHTML = `
         <div style="background:${directionBg}; border:2px solid ${directionColor}; border-radius:16px; padding:16px; margin:10px 0;">
             <div style="margin-bottom:12px;">
-                <span style="font-size:15px; font-weight:700; color:var(--text-primary);">${stockCode}</span>
-                <span style="font-size:13px; color:var(--text-secondary); margin-left:8px;">${stockName}</span>
+                <span style="font-size:15px; font-weight:700; color:var(--text-primary);">${escapeHtml(stockCode)}</span>
+                <span style="font-size:13px; color:var(--text-secondary); margin-left:8px;">${escapeHtml(stockName)}</span>
                 <span style="font-size:11px; color:var(--text-muted); float:right;">策略分析</span>
             </div>
 
             <div style="margin-bottom:14px;">
-                <span style="font-size:24px; vertical-align:middle;">${directionIcon}</span>
-                <span style="font-size:18px; font-weight:700; color:${directionColor}; vertical-align:middle; margin-left:8px; white-space:nowrap;">${directionText}</span>
-                <div style="font-size:11px; color:var(--text-muted); margin-top:6px; margin-left:32px;">${reason}</div>
+                <div style="display:flex; align-items:center; flex-wrap:wrap; gap:4px;">
+                    <span style="font-size:24px;">${directionIcon}</span>
+                    <span style="font-size:18px; font-weight:700; color:${directionColor}; white-space:nowrap;">${directionText}</span>
+                    ${successRateHtml}
+                </div>
+                <div style="font-size:11px; color:var(--text-muted); margin-top:6px; margin-left:32px;">${escapeHtml(reason)}</div>
             </div>
 
             ${direction === 'T_TRADING' ? `
@@ -5041,9 +6455,9 @@ function showStrategyModal(title, list) {
     } else {
         html = `<div style="display:grid; grid-template-columns:1fr; gap:8px;">`;
         list.forEach((s, idx) => {
-            const actionColor = s.action.includes('BUY') && !s.action.includes('SELL') ? 'var(--green)' :
-                               s.action.includes('SELL') && !s.action.includes('BUY') ? 'var(--red)' :
-                               s.action.includes('BUY_THEN_SELL') || s.action.includes('SELL_THEN_BUY') ? '#60a5fa' : 'var(--yellow)';
+            const actionColor = isBuyAction(s.action) ? 'var(--green)' :
+                               isSellAction(s.action) ? 'var(--red)' :
+                               isTAction(s.action) ? '#60a5fa' : 'var(--yellow)';
             const actionText = s.action === 'BUY' ? '📈 买入' :
                               s.action === 'STRONG_BUY' ? '🚀 强买' :
                               s.action === 'SELL' ? '📉 卖出' :
@@ -5060,16 +6474,16 @@ function showStrategyModal(title, list) {
                 <div style="background:var(--surface-3); border-radius:12px; padding:14px; border:1px solid var(--surface-3);">
                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
                         <div style="display:flex; align-items:center; gap:8px;">
-                            <span style="font-size:20px;">${s.icon || '📊'}</span>
-                            <span style="font-weight:600; font-size:15px;">${s.name}</span>
+                            <span style="font-size:20px;">${escapeHtml(s.icon || '📊')}</span>
+                            <span style="font-weight:600; font-size:15px;">${escapeHtml(s.name)}</span>
                         </div>
                         <span style="color:${actionColor}; font-size:12px; font-weight:600; padding:4px 10px; background:${actionColor}22; border-radius:12px;">
                             ${actionText}
                         </span>
                     </div>
-                    <div style="font-size:13px; color:var(--text-muted); margin-bottom:10px;">${s.category} · ${prioText}</div>
-                    <div style="font-size:14px; color:#e5e7eb; line-height:1.6; margin-bottom:10px;">${s.suggestion}</div>
-                    ${s.reason ? `<div style="font-size:12px; color:#6b7280; padding-top:8px; border-top:1px solid var(--surface-3);">💡 ${s.reason}</div>` : ''}
+                    <div style="font-size:13px; color:var(--text-muted); margin-bottom:10px;">${escapeHtml(s.category)} · ${prioText}</div>
+                    <div style="font-size:14px; color:#e5e7eb; line-height:1.6; margin-bottom:10px;">${escapeHtml(s.suggestion)}</div>
+                    ${s.reason ? `<div style="font-size:12px; color:#6b7280; padding-top:8px; border-top:1px solid var(--surface-3);">💡 ${escapeHtml(s.reason)}</div>` : ''}
                     ${s.target_price ? `<div style="margin-top:8px; font-size:12px;">
                         <span style="color:#60a5fa;">🎯 目标价: ¥${s.target_price}</span>
                         ${s.stop_loss ? `<span style="color:var(--red); margin-left:12px;">🛑 止损价: ¥${s.stop_loss}</span>` : ''}
@@ -5085,15 +6499,22 @@ function showStrategyModal(title, list) {
 }
 
 // 修改closeModal以恢复滚动
-const _originalCloseModal = closeModal;
-closeModal = function() {
-    _originalCloseModal();
-    document.body.style.overflow = '';
-};
+if (!closeModal.__wrapped) {
+    const _originalCloseModal = closeModal;
+    const wrapped = function() {
+        _originalCloseModal();
+        document.body.style.overflow = '';
+    };
+    wrapped.__wrapped = true;
+    closeModal = wrapped;
+}
 
 // ==================== 设置功能 ====================
 
+const VALID_THEMES = new Set(['dark-purple', 'deep-blue', 'emerald-gold', 'warm-orange', 'rose-red', 'light', 'ths']);
+
 function changeTheme(themeName) {
+    if (!VALID_THEMES.has(themeName)) themeName = 'dark-purple';
     document.body.className = `theme-${themeName}`;
     
     document.querySelectorAll('.theme-option').forEach(el => el.classList.remove('active'));
@@ -5102,16 +6523,22 @@ function changeTheme(themeName) {
     
     if (_settings) {
         _settings.theme = themeName;
-        localStorage.setItem('appSettings', JSON.stringify(_settings));
+        safeSetItem('appSettings', JSON.stringify(_settings));
     }
 }
 
 function loadSettings() {
-    const saved = localStorage.getItem('appSettings');
+    let saved = null;
+    try {
+        saved = localStorage.getItem('appSettings');
+    } catch (e) {
+        console.warn('loadSettings读取失败:', e);
+    }
     const defaults = {
         autoRefreshInterval: 0,
         soundEnabled: false,
         showChangePercent: true,
+        fixedPredictionTime: 15,
         enableTrend: true,
         enableOscillation: true,
         enableVolume: true,
@@ -5124,31 +6551,59 @@ function loadSettings() {
         popupAlert: false,
         theme: 'dark-purple'
     };
-    
-    _settings = saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
-    
-    document.getElementById('autoRefreshInterval').value = _settings.autoRefreshInterval;
-    document.getElementById('soundEnabled').checked = _settings.soundEnabled;
-    document.getElementById('showChangePercent').checked = _settings.showChangePercent;
-    document.getElementById('enableTrend').checked = _settings.enableTrend;
-    document.getElementById('enableOscillation').checked = _settings.enableOscillation;
-    document.getElementById('enableVolume').checked = _settings.enableVolume;
-    document.getElementById('enablePattern').checked = _settings.enablePattern;
-    document.getElementById('enableIntraday').checked = _settings.enableIntraday;
-    document.getElementById('enableCustom').checked = _settings.enableCustom;
-    document.getElementById('tSignalThreshold').value = _settings.tSignalThreshold;
-    document.getElementById('buySignalThreshold').value = _settings.buySignalThreshold;
-    document.getElementById('sellSignalThreshold').value = _settings.sellSignalThreshold;
-    document.getElementById('popupAlert').checked = _settings.popupAlert;
-    
-    changeTheme(_settings.theme || 'dark-purple');
-    updateAutoRefresh();
+
+    try {
+        const parsed = saved ? JSON.parse(saved) : {};
+        // 防止原型污染：只取已知键
+        _settings = { ...defaults };
+        for (const key of Object.keys(defaults)) {
+            if (key in parsed && parsed[key] !== undefined) {
+                _settings[key] = parsed[key];
+            }
+        }
+    } catch (e) {
+        console.warn('loadSettings解析失败，使用默认值:', e);
+        _settings = defaults;
+    }
+
+    try {
+        const setVal = (id, val) => { const el = document.getElementById(id); if (el) el.value = val; };
+        const setChk = (id, val) => { const el = document.getElementById(id); if (el) el.checked = val; };
+        setVal('autoRefreshInterval', _settings.autoRefreshInterval);
+        setChk('soundEnabled', _settings.soundEnabled);
+        setChk('showChangePercent', _settings.showChangePercent);
+        setVal('fixedPredictionTime', _settings.fixedPredictionTime);
+        setChk('enableTrend', _settings.enableTrend);
+        setChk('enableOscillation', _settings.enableOscillation);
+        setChk('enableVolume', _settings.enableVolume);
+        setChk('enablePattern', _settings.enablePattern);
+        setChk('enableIntraday', _settings.enableIntraday);
+        setChk('enableCustom', _settings.enableCustom);
+        setVal('tSignalThreshold', _settings.tSignalThreshold);
+        setVal('buySignalThreshold', _settings.buySignalThreshold);
+        setVal('sellSignalThreshold', _settings.sellSignalThreshold);
+        setChk('popupAlert', _settings.popupAlert);
+    } catch (e) {
+        console.warn('loadSettings DOM更新失败:', e);
+    }
+
+    try {
+        changeTheme(_settings.theme || 'dark-purple');
+    } catch (e) {
+        console.warn('主题切换失败:', e);
+    }
+    try {
+        updateAutoRefresh();
+    } catch (e) {
+        console.warn('自动刷新初始化失败:', e);
+    }
 }
 
 function saveSettings() {
-    _settings.autoRefreshInterval = parseInt(document.getElementById('autoRefreshInterval').value) || 0;
+    _settings.autoRefreshInterval = parseInt(document.getElementById('autoRefreshInterval').value, 10) || 0;
     _settings.soundEnabled = document.getElementById('soundEnabled').checked;
     _settings.showChangePercent = document.getElementById('showChangePercent').checked;
+    _settings.fixedPredictionTime = parseInt(document.getElementById('fixedPredictionTime').value, 10) || 15;
     _settings.enableTrend = document.getElementById('enableTrend').checked;
     _settings.enableOscillation = document.getElementById('enableOscillation').checked;
     _settings.enableVolume = document.getElementById('enableVolume').checked;
@@ -5156,62 +6611,87 @@ function saveSettings() {
     _settings.enableIntraday = document.getElementById('enableIntraday').checked;
     _settings.enableCustom = document.getElementById('enableCustom').checked;
     _settings.tSignalThreshold = parseFloat(document.getElementById('tSignalThreshold').value) || 2;
-    _settings.buySignalThreshold = parseInt(document.getElementById('buySignalThreshold').value) || 5;
-    _settings.sellSignalThreshold = parseInt(document.getElementById('sellSignalThreshold').value) || 5;
+    _settings.buySignalThreshold = parseInt(document.getElementById('buySignalThreshold').value, 10) || 5;
+    _settings.sellSignalThreshold = parseInt(document.getElementById('sellSignalThreshold').value, 10) || 5;
     _settings.popupAlert = document.getElementById('popupAlert').checked;
     
-    localStorage.setItem('appSettings', JSON.stringify(_settings));
+    safeSetItem('appSettings', JSON.stringify(_settings));
     updateAutoRefresh();
     showToast('设置已保存');
 }
 
 function updateAutoRefresh() {
     if (_autoRefreshTimer) {
-        clearInterval(_autoRefreshTimer);
+        clearTimeout(_autoRefreshTimer);
         _autoRefreshTimer = null;
     }
-    
+
     if (_watchRefreshTimer) {
-        clearInterval(_watchRefreshTimer);
+        clearTimeout(_watchRefreshTimer);
         _watchRefreshTimer = null;
     }
-    
+
+    if (_tSignalBatchTimer) {
+        clearTimeout(_tSignalBatchTimer);
+        _tSignalBatchTimer = null;
+    }
+
     const interval = _settings.autoRefreshInterval || 0;
-    
+
     if (interval > 0) {
         _refreshCountdown = interval;
         updateRefreshIndicator();
-        
-        _autoRefreshTimer = setInterval(() => {
+
+        // _autoRefreshTimer 只负责倒计时显示和策略/全景刷新
+        const countdownTick = () => {
+            if (!_autoRefreshTimer) return;
             _refreshCountdown--;
             updateRefreshIndicator();
-            
+
             if (_refreshCountdown <= 0) {
                 _refreshCountdown = interval;
-                
-                const strategyTab = document.getElementById('tab-strategy');
-                const homeTab = document.getElementById('tab-home');
-                
-                if (strategyTab && strategyTab.classList.contains('active') && _currentStock) {
-                    if (_currentStrategySubtab === 'strategy') {
-                        loadStrategyDetail();
-                    } else if (_currentStrategySubtab === 'panorama') {
-                        loadPanoramaDetail();
+
+                // 防止与 _watchRefreshTimer 重叠
+                if (!_isRefreshing) {
+                    _isRefreshing = true;
+                    try {
+                        const strategyTab = document.getElementById('tab-strategy');
+
+                        if (strategyTab && strategyTab.classList.contains('active') && _currentStock) {
+                            if (_currentStrategySubtab === 'strategy') {
+                                loadStrategyDetail();
+                            } else if (_currentStrategySubtab === 'panorama') {
+                                loadPanoramaDetail();
+                            }
+                        }
+                    } finally {
+                        _isRefreshing = false;
                     }
                 }
-                
-                if (homeTab && homeTab.classList.contains('active')) {
-                    refreshAllTSignals();
-                    refreshProfit();
+            }
+            _autoRefreshTimer = setTimeout(countdownTick, 1000);
+        };
+        _autoRefreshTimer = setTimeout(countdownTick, 1000);
+
+        // _watchRefreshTimer 负责首页实际刷新（T信号 + 盈亏）
+        const watchRefreshTick = () => {
+            if (!_watchRefreshTimer) return;
+            // 防止与 _autoRefreshTimer 重叠
+            if (!_isRefreshing) {
+                _isRefreshing = true;
+                try {
+                    const homeTab = document.getElementById('tab-home');
+                    if (homeTab && homeTab.classList.contains('active')) {
+                        refreshAllTSignals();
+                        refreshProfit();
+                    }
+                } finally {
+                    _isRefreshing = false;
                 }
             }
-        }, 1000);
-        
-        if (_watchList && _watchList.length > 0) {
-            _watchRefreshTimer = setInterval(() => {
-                refreshAllTSignals();
-            }, interval * 1000);
-        }
+            _watchRefreshTimer = setTimeout(watchRefreshTick, interval * 1000);
+        };
+        _watchRefreshTimer = setTimeout(watchRefreshTick, interval * 1000);
     }
 }
 
@@ -5229,65 +6709,158 @@ function updateRefreshIndicator() {
 }
 
 function exportData() {
+    let longtermHistory = [];
+    try {
+        longtermHistory = JSON.parse(localStorage.getItem('longtermHistory') || '[]');
+    } catch (e) {
+        console.warn('导出时长期预测历史解析失败:', e);
+        longtermHistory = [];
+    }
+
+    const predictionRecords = {};
+    try {
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && key.startsWith('pred_')) {
+                try {
+                    predictionRecords[key] = JSON.parse(localStorage.getItem(key) || '[]');
+                } catch (e) {
+                    console.warn('导出时预测记录解析失败:', key, e);
+                }
+            }
+        }
+    } catch (e) {
+        console.warn('导出时遍历预测记录失败:', e);
+    }
+
     const data = {
-        version: '1.0',
+        version: '1.1',
         exportTime: new Date().toISOString(),
         settings: _settings,
         watchList: _watchList,
         trades: _trades,
-        searchHistory: _searchHistory
+        searchHistory: _searchHistory,
+        panoramaHistory: _panoramaHistory,
+        longtermHistory: longtermHistory,
+        stockNames: _stockNames,
+        predictionRecords: predictionRecords,
+        lastSearchedStock: _lastSearchedStock
     };
-    
+
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
     a.download = `stock_thelper_backup_${new Date().toISOString().slice(0,10)}.json`;
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
-    
-    showToast('数据已导出');
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+    showToast('数据已导出，请保存好备份文件');
 }
 
 function importData(input) {
     const file = input.files[0];
     if (!file) return;
-    
+
+    if (!confirm('导入数据将覆盖现有数据，确定继续吗？')) {
+        input.value = '';
+        return;
+    }
+
     const reader = new FileReader();
     reader.onload = function(e) {
         try {
             const data = JSON.parse(e.target.result);
-            
-            if (data.settings) {
-                _settings = { ..._settings, ...data.settings };
-                localStorage.setItem('appSettings', JSON.stringify(_settings));
+            let importedCount = 0;
+
+            if (data.settings && typeof data.settings === 'object') {
+                for (const key of Object.keys(_settings)) {
+                    if (key in data.settings && data.settings[key] !== undefined) {
+                        _settings[key] = data.settings[key];
+                    }
+                }
+                safeSetItem('appSettings', JSON.stringify(_settings));
+                importedCount++;
             }
-            
-            if (data.watchList) {
+
+            if (data.watchList && Array.isArray(data.watchList)) {
                 _watchList = data.watchList;
-                localStorage.setItem('watchList', JSON.stringify(_watchList));
+                safeSetItem('watchList', JSON.stringify(_watchList));
+                importedCount++;
             }
-            
-            if (data.trades) {
-                _trades = data.trades;
-                localStorage.setItem('trades', JSON.stringify(_trades));
+
+            if (data.trades && Array.isArray(data.trades)) {
+                _trades = data.trades.map(t => {
+                    const trade = {
+                        code: t.code || '',
+                        name: t.name || '',
+                        trade_type: t.trade_type || t.type || 'BUY',
+                        quantity: Math.max(0, parseInt(t.quantity) || 0),
+                        price: Math.max(0, parseFloat(t.price) || 0),
+                        date: t.date || '',
+                        fee: Math.max(0, parseFloat(t.fee) || 0),
+                        pair_buy_index: t.pair_buy_index != null ? t.pair_buy_index : null
+                    };
+                    return trade;
+                });
+                saveTrades();
+                importedCount++;
             }
-            
-            if (data.searchHistory) {
+
+            if (data.searchHistory && Array.isArray(data.searchHistory)) {
                 _searchHistory = data.searchHistory;
-                localStorage.setItem('searchHistory', JSON.stringify(_searchHistory));
+                safeSetItem('searchHistory', JSON.stringify(_searchHistory));
+                importedCount++;
             }
-            
+
+            if (data.panoramaHistory && Array.isArray(data.panoramaHistory)) {
+                _panoramaHistory = data.panoramaHistory;
+                safeSetItem('panoramaHistory', JSON.stringify(_panoramaHistory));
+                importedCount++;
+            }
+
+            if (data.longtermHistory && Array.isArray(data.longtermHistory)) {
+                safeSetItem('longtermHistory', JSON.stringify(data.longtermHistory));
+                importedCount++;
+            }
+
+            if (data.stockNames && typeof data.stockNames === 'object' && !Array.isArray(data.stockNames)) {
+                _stockNames = data.stockNames;
+                safeSetItem('stockNames', JSON.stringify(_stockNames));
+                importedCount++;
+            }
+
+            if (data.predictionRecords && typeof data.predictionRecords === 'object') {
+                for (const key of Object.keys(data.predictionRecords)) {
+                    if (key.startsWith('pred_') && Array.isArray(data.predictionRecords[key])) {
+                        safeSetItem(key, JSON.stringify(data.predictionRecords[key]));
+                    }
+                }
+                importedCount++;
+            }
+
+            if (data.lastSearchedStock && data.lastSearchedStock.code) {
+                _lastSearchedStock = data.lastSearchedStock;
+                safeSetItem('lastSearchedStock', JSON.stringify(_lastSearchedStock));
+                importedCount++;
+            }
+
             loadSettings();
             renderWatchList();
-            renderTrades();
+            renderTrades().catch(() => {});
             renderSearchHistory();
             refreshProfit();
-            
-            showToast('数据导入成功');
+
+            showToast(`导入成功，共导入 ${importedCount} 项数据`);
         } catch (err) {
             showToast('导入失败：文件格式错误');
+            console.error('导入失败:', err);
         }
+    };
+    reader.onerror = function() {
+        showToast('导入失败：文件读取错误');
     };
     reader.readAsText(file);
     input.value = '';
@@ -5297,23 +6870,75 @@ function clearAllData() {
     if (!confirm('确定要清除所有数据吗？\n包括：交易记录、监控列表、搜索历史、设置\n此操作不可恢复！')) {
         return;
     }
-    
+
     localStorage.removeItem('watchList');
     localStorage.removeItem('trades');
     localStorage.removeItem('searchHistory');
     localStorage.removeItem('appSettings');
-    
+    localStorage.removeItem('panoramaHistory');
+    localStorage.removeItem('longtermHistory');
+    localStorage.removeItem('lastSearchedStock');
+    localStorage.removeItem('predictionRecords');
+    localStorage.removeItem('stockNames');
+    localStorage.removeItem('alertedSignals');
+    // 遍历清除所有 pred_* 开头的月分块key
+    const keysToRemove = [];
+    for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('pred_')) keysToRemove.push(k);
+    }
+    keysToRemove.forEach(k => localStorage.removeItem(k));
+
     _watchList = [];
     _trades = [];
     _searchHistory = [];
-    _settings = {};
-    
+    _panoramaHistory = [];
+    _settings = {
+        autoRefreshInterval: 0,
+        soundEnabled: false,
+        showChangePercent: true,
+        fixedPredictionTime: 15,
+        enableTrend: true,
+        enableOscillation: true,
+        enableVolume: true,
+        enablePattern: true,
+        enableIntraday: true,
+        enableCustom: true,
+        tSignalThreshold: 2,
+        buySignalThreshold: 5,
+        sellSignalThreshold: 5,
+        popupAlert: false,
+        theme: 'dark-purple'
+    };
+    _predictionRecords = null;
+    _stockNames = {};
+
+    // 清除内存状态变量，避免脏数据残留
+    _lastSearchedStock = null;
+    _lastStrategies = [];
+    _lastSummary = null;
+    _lastKlines = [];
+    _lastPanoramaStrategies = [];
+    _lastPanoramaSummary = null;
+    _homePlanStock = null;
+    _alertedSignals = {};
+    _profitListRendered = false;
+    _lastHoldingCodes = [];
+    _currentStock = null;
+    _feeDetail = { commissionFee: 0, stampTax: 0, transferFee: 0, totalFees: 0 };
+    _profitDetail = { totalProfit: 0, realizedProfit: 0, unrealizedProfit: 0, tProfit: 0, tTradeCount: 0, stockProfits: [], totalBuy: 0, totalSell: 0, remaining: 0, tradeCount: 0, totalBuyAmount: 0, totalSellAmount: 0, commissionFee: 0, stampTax: 0, transferFee: 0, totalFees: 0 };
+    _stockRequestId = 0;
+    _activeCategory = '全部';
+    _currentStrategySubtab = 'strategy';
+    for (const key in _priceCache) delete _priceCache[key];
+    _priceCacheKeys.length = 0;
+
     loadSettings();
     renderWatchList();
     renderTrades();
     renderSearchHistory();
     refreshProfit();
-    
+
     showToast('所有数据已清除');
 }
 
@@ -5324,6 +6949,13 @@ const GITHUB_API = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`
 const GITHUB_DOWNLOAD = `https://github.com/${GITHUB_REPO}/releases/latest`;
 
 async function checkForUpdate() {
+    const lastCheck = localStorage.getItem('lastUpdateCheck');
+    if (lastCheck && Date.now() - parseInt(lastCheck, 10) < 3600000) {
+        showToast('已是最新版本 ✓');
+        return;
+    }
+    localStorage.setItem('lastUpdateCheck', Date.now().toString());
+    
     const btn = document.getElementById('checkUpdateBtn');
     const originalText = btn ? btn.innerText : '检查更新';
     
@@ -5408,7 +7040,7 @@ function downloadUpdate() {
     if (window.Capacitor && window.Capacitor.Plugins && window.Capacitor.Plugins.Browser) {
         window.Capacitor.Plugins.Browser.open({ url: GITHUB_DOWNLOAD });
     } else {
-        window.open(GITHUB_DOWNLOAD, '_blank');
+        window.open(GITHUB_DOWNLOAD, '_blank', 'noopener,noreferrer');
     }
 }
 
@@ -5424,8 +7056,9 @@ function getStrategySettings() {
 }
 
 function checkSignalThresholds(strategies) {
-    const buyCount = strategies.filter(s => s.action.includes('BUY')).length;
-    const sellCount = strategies.filter(s => s.action.includes('SELL')).length;
+    const counts = countStrategyActions(strategies);
+    const buyCount = counts.buy;
+    const sellCount = counts.sell;
     
     const buyThreshold = _settings.buySignalThreshold || 5;
     const sellThreshold = _settings.sellSignalThreshold || 5;
@@ -5441,19 +7074,21 @@ function checkSignalThresholds(strategies) {
     }
 }
 
+let _audioCtx = null;
 function playSound() {
     try {
-        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        if (!_audioCtx) _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const audioContext = _audioCtx;
         const oscillator = audioContext.createOscillator();
         const gainNode = audioContext.createGain();
-        
+
         oscillator.connect(gainNode);
         gainNode.connect(audioContext.destination);
-        
+
         oscillator.frequency.value = 800;
         oscillator.type = 'sine';
         gainNode.gain.value = 0.3;
-        
+
         oscillator.start();
         oscillator.stop(audioContext.currentTime + 0.2);
     } catch (e) {
@@ -7316,6 +8951,7 @@ function openLearnModal(id) {
     const item = LEARN_DATA.items.find(i => i.id === id);
     if (!item) return;
     
+    closeAllModals();
     const modal = document.getElementById('learnModal');
     const titleEl = document.getElementById('learnModalTitle');
     const bodyEl = document.getElementById('learnModalBody');
@@ -7325,10 +8961,20 @@ function openLearnModal(id) {
     
     if (modal) {
         modal.style.display = 'flex';
+        requestAnimationFrame(() => {
+            modal.classList.add('show');
+        });
     }
+    document.body.style.overflow = 'hidden';
 }
 
 function closeLearnModal() {
     const modal = document.getElementById('learnModal');
-    if (modal) modal.style.display = 'none';
+    if (modal) {
+        modal.classList.remove('show');
+        setTimeout(() => {
+            modal.style.display = 'none';
+        }, 250);
+    }
+    document.body.style.overflow = '';
 }

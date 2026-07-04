@@ -1,5 +1,35 @@
+﻿function safeArrMax(arr) {
+    if (!arr || !arr.length) return -Infinity;
+    let m = arr[0];
+    for (let i = 1; i < arr.length; i++) { if (arr[i] > m) m = arr[i]; }
+    return m;
+}
+function safeArrMin(arr) {
+    if (!arr || !arr.length) return Infinity;
+    let m = arr[0];
+    for (let i = 1; i < arr.length; i++) { if (arr[i] < m) m = arr[i]; }
+    return m;
+}
+
+function getLocalDateStr(d = new Date()) {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function getNextTradingDay(dateStr) {
+    const d = new Date(dateStr);
+    d.setDate(d.getDate() + 1);
+    while (d.getDay() === 0 || d.getDay() === 6) {
+        d.setDate(d.getDate() + 1);
+    }
+    return getLocalDateStr(d);
+}
+
 class StrategyEngine {
     calcTxFee(buyPrice, sellPrice, quantity) {
+        if (!buyPrice || !sellPrice || !quantity || buyPrice <= 0 || sellPrice <= 0 || quantity <= 0) return 0;
         const buyAmount = buyPrice * quantity;
         const sellAmount = sellPrice * quantity;
         const buyComm = Math.max(buyAmount * 0.0003, 5);
@@ -7,31 +37,37 @@ class StrategyEngine {
         const sellComm = Math.max(sellAmount * 0.0003, 5);
         const sellStamp = sellAmount * 0.001;
         const sellTrans = sellAmount * 0.00001;
-        return buyComm + buyTrans + sellComm + sellStamp + sellTrans;
+        return parseFloat((buyComm + buyTrans + sellComm + sellStamp + sellTrans).toFixed(2));
     }
     
     calcTxFeePct(buyPrice, sellPrice, quantity = 100) {
+        if (!buyPrice || buyPrice <= 0 || quantity <= 0) return 0;
         const fee = this.calcTxFee(buyPrice, sellPrice, quantity);
         const buyAmount = buyPrice * quantity;
         return buyAmount > 0 ? fee / buyAmount * 100 : 0;
     }
     
     sma(values, period) {
-        if (values.length < period) return null;
-        return values.slice(-period).reduce((a, b) => a + b, 0) / period;
+        if (!values || values.length < period || period <= 0) return null;
+        const sum = values.slice(-period).reduce((a, b) => a + b, 0);
+        return sum / period;
     }
 
     smaSeries(values, period) {
-        if (values.length < period) return [];
+        if (values.length < period || period <= 0) return [];
         const result = [];
-        for (let i = 0; i <= values.length - period; i++) {
-            result.push(values.slice(i, i + period).reduce((a, b) => a + b, 0) / period);
+        let sum = 0;
+        for (let i = 0; i < period; i++) sum += values[i];
+        result.push(sum / period);
+        for (let i = period; i < values.length; i++) {
+            sum += values[i] - values[i - period];
+            result.push(sum / period);
         }
         return result;
     }
 
     ema(values, period) {
-        if (values.length < period) return null;
+        if (!values || period <= 0 || values.length < period) return null;
         const k = 2 / (period + 1);
         let result = values.slice(0, period).reduce((a, b) => a + b, 0) / period;
         for (let i = period; i < values.length; i++) {
@@ -41,7 +77,7 @@ class StrategyEngine {
     }
 
     emaSeries(values, period) {
-        if (values.length < period) return [];
+        if (!values || period <= 0 || values.length < period) return [];
         const k = 2 / (period + 1);
         const result = [values.slice(0, period).reduce((a, b) => a + b, 0) / period];
         for (let i = period; i < values.length; i++) {
@@ -51,7 +87,7 @@ class StrategyEngine {
     }
 
     wma(values, period) {
-        if (values.length < period) return null;
+        if (!values || values.length < period || period <= 0) return null;
         let totalWeight = 0;
         let weightedSum = 0;
         for (let i = 0; i < period; i++) {
@@ -59,7 +95,7 @@ class StrategyEngine {
             weightedSum += values[values.length - period + i] * weight;
             totalWeight += weight;
         }
-        return weightedSum / totalWeight;
+        return totalWeight > 0 ? weightedSum / totalWeight : null;
     }
 
     calcMacd(closes, fast = 12, slow = 26, signal = 9) {
@@ -73,6 +109,7 @@ class StrategyEngine {
     }
 
     calcMacdSeries(closes, fast = 12, slow = 26, signal = 9) {
+        if (fast >= slow) return null;
         if (closes.length < slow + signal) return null;
         const emaFast = this.emaSeries(closes, fast);
         const emaSlow = this.emaSeries(closes, slow);
@@ -90,7 +127,7 @@ class StrategyEngine {
     }
 
     calcRsi(closes, period = 14) {
-        if (closes.length < period + 1) return null;
+        if (!closes || closes.length < period + 1 || period <= 0) return null;
         let avgGain = 0;
         let avgLoss = 0;
         for (let i = 1; i <= period; i++) {
@@ -107,19 +144,26 @@ class StrategyEngine {
             avgGain = (avgGain * (period - 1) + gain) / period;
             avgLoss = (avgLoss * (period - 1) + loss) / period;
         }
-        if (avgLoss === 0) return 100;
+        if (avgLoss === 0) return avgGain > 0 ? 100 : 50;
         const rs = avgGain / avgLoss;
-        return 100 - (100 / (1 + rs));
+        return Math.max(0, Math.min(100, 100 - (100 / (1 + rs))));
     }
 
     calcKdj(highs, lows, closes, n = 9, m1 = 3, m2 = 3) {
-        if (closes.length < n) return [null, null, null];
+        if (!highs || !lows || !closes) return [null, null, null];
+        if (closes.length < n || highs.length < n || lows.length < n || n <= 0 || m1 <= 0 || m2 <= 0) return [null, null, null];
         const rsvList = [];
         for (let i = n - 1; i < closes.length; i++) {
-            const h = Math.max(...highs.slice(i - n + 1, i + 1));
-            const l = Math.min(...lows.slice(i - n + 1, i + 1));
+            let h = highs[i - n + 1];
+            let l = lows[i - n + 1];
+            for (let j = i - n + 2; j <= i; j++) {
+                if (highs[j] > h) h = highs[j];
+                if (lows[j] < l) l = lows[j];
+            }
             if (h === l) {
-                rsvList.push(50);
+                const pc = i > 0 ? closes[i - 1] : null;
+                const rsv = pc !== null ? (closes[i] >= pc ? 100 : 0) : 50;
+                rsvList.push(rsv);
             } else {
                 rsvList.push((closes[i] - l) / (h - l) * 100);
             }
@@ -130,20 +174,32 @@ class StrategyEngine {
             d = (2 / m2) * d + (1 / m2) * k;
         }
         const j = 3 * k - 2 * d;
-        return [k, d, j];
+        return [
+            Math.max(0, Math.min(100, k)),
+            Math.max(0, Math.min(100, d)),
+            Math.max(-20, Math.min(120, j))
+        ];
     }
 
     calcBollinger(closes, period = 20, stdMult = 2) {
-        if (closes.length < period) return [null, null, null];
-        const window = closes.slice(-period);
-        const mid = window.reduce((a, b) => a + b, 0) / period;
-        const variance = window.reduce((sum, x) => sum + Math.pow(x - mid, 2), 0) / period;
+        if (!closes || closes.length < period || period <= 0) return [null, null, null];
+        const actualPeriod = Math.min(period, closes.length);
+        const window = closes.slice(-actualPeriod);
+        const mid = window.reduce((a, b) => a + b, 0) / actualPeriod;
+        const variance = window.reduce((sum, x) => {
+            const diff = x - mid;
+            return sum + diff * diff;
+        }, 0) / actualPeriod;
         const std = Math.sqrt(variance);
-        return [mid - stdMult * std, mid, mid + stdMult * std];
+        if (std === 0 || mid === 0) return [mid, mid, mid];
+        const upper = mid + stdMult * std;
+        const lower = mid - stdMult * std;
+        return [lower, mid, upper];
     }
 
     calcAtr(highs, lows, closes, period = 14) {
-        if (closes.length < period + 1) return null;
+        if (!highs || !lows || !closes) return null;
+        if (closes.length < period + 1 || highs.length < period + 1 || lows.length < period + 1 || period <= 0) return null;
         const trs = [];
         for (let i = 1; i < closes.length; i++) {
             trs.push(Math.max(
@@ -153,7 +209,11 @@ class StrategyEngine {
             ));
         }
         if (trs.length < period) return null;
-        return trs.slice(-period).reduce((a, b) => a + b, 0) / period;
+        let atr = trs.slice(0, period).reduce((a, b) => a + b, 0) / period;
+        for (let i = period; i < trs.length; i++) {
+            atr = (atr * (period - 1) + trs[i]) / period;
+        }
+        return atr;
     }
 
     calcDmi(highs, lows, closes, period = 14) {
@@ -172,68 +232,121 @@ class StrategyEngine {
             trList.push(tr);
         }
         if (trList.length < period) return [null, null, null];
-        const atrVal = trList.slice(-period).reduce((a, b) => a + b, 0) / period;
-        if (atrVal === 0) return [0, 0, 0];
-        const pdi = plusDm.slice(-period).reduce((a, b) => a + b, 0) / period / atrVal * 100;
-        const mdi = minusDm.slice(-period).reduce((a, b) => a + b, 0) / period / atrVal * 100;
-        const dx = (pdi + mdi) > 0 ? Math.abs(pdi - mdi) / (pdi + mdi) * 100 : 0;
-        return [pdi, mdi, dx];
+        const pdiSeries = [], mdiSeries = [], dxSeries = [];
+        let atrPrev = trList.slice(0, period).reduce((a, b) => a + b, 0) / period;
+        let pdmPrev = plusDm.slice(0, period).reduce((a, b) => a + b, 0) / period;
+        let mdmPrev = minusDm.slice(0, period).reduce((a, b) => a + b, 0) / period;
+        for (let i = period; i < trList.length; i++) {
+            atrPrev = (atrPrev * (period - 1) + trList[i]) / period;
+            pdmPrev = (pdmPrev * (period - 1) + plusDm[i]) / period;
+            mdmPrev = (mdmPrev * (period - 1) + minusDm[i]) / period;
+            const pdi = atrPrev > 0 ? pdmPrev / atrPrev * 100 : 0;
+            const mdi = atrPrev > 0 ? mdmPrev / atrPrev * 100 : 0;
+            pdiSeries.push(pdi);
+            mdiSeries.push(mdi);
+            const sum = pdi + mdi;
+            dxSeries.push(sum > 0 ? Math.abs(pdi - mdi) / sum * 100 : 0);
+        }
+        if (pdiSeries.length === 0) return [null, null, null];
+        const adxSeries = [];
+        if (dxSeries.length >= period) {
+            let adx = dxSeries.slice(0, period).reduce((a, b) => a + b, 0) / period;
+            adxSeries.push(adx);
+            for (let i = period; i < dxSeries.length; i++) {
+                adx = (adx * (period - 1) + dxSeries[i]) / period;
+                adxSeries.push(adx);
+            }
+        } else {
+            adxSeries.push(dxSeries.reduce((a, b) => a + b, 0) / Math.max(1, dxSeries.length));
+        }
+        const pdi = pdiSeries[pdiSeries.length - 1];
+        const mdi = mdiSeries[mdiSeries.length - 1];
+        const adx = adxSeries[adxSeries.length - 1];
+        return [pdi, mdi, adx];
     }
 
     calcWilliamsR(highs, lows, closes, period = 14) {
-        if (closes.length < period) return null;
-        const h = Math.max(...highs.slice(-period));
-        const l = Math.min(...lows.slice(-period));
+        if (closes.length < period || highs.length < period || lows.length < period) return null;
+        const h = safeArrMax(highs.slice(-period));
+        const l = safeArrMin(lows.slice(-period));
         if (h === l) return -50;
-        return (h - closes[closes.length - 1]) / (h - l) * -100;
+        const wr = (h - closes[closes.length - 1]) / (h - l) * -100;
+        return Math.max(-100, Math.min(0, wr));
     }
 
     calcCci(highs, lows, closes, period = 14) {
-        if (closes.length < period) return null;
+        if (!highs || !lows || !closes) return null;
+        if (highs.length < period || lows.length < period || closes.length < period) return null;
         const tps = [];
-        for (let i = closes.length - period; i < closes.length; i++) {
+        const startIdx = closes.length - period;
+        for (let i = startIdx; i < closes.length; i++) {
             tps.push((highs[i] + lows[i] + closes[i]) / 3);
         }
         const tpSma = tps.reduce((a, b) => a + b, 0) / period;
         const mad = tps.reduce((sum, tp) => sum + Math.abs(tp - tpSma), 0) / period;
-        if (mad === 0) return 0;
+        if (mad === 0 || tpSma === 0) return 0;
         return (tps[tps.length - 1] - tpSma) / (0.015 * mad);
     }
 
     calcObv(closes, volumes) {
         if (closes.length < 2) return 0;
-        let obv = 0;
+        const series = this.calcObvSeries(closes, volumes);
+        return series[series.length - 1];
+    }
+
+    calcObvSeries(closes, volumes) {
+        if (closes.length < 2 || volumes.length < 2) return [0];
+        const result = [volumes[0] || 0];
+        let obv = volumes[0] || 0;
         for (let i = 1; i < closes.length; i++) {
-            if (closes[i] > closes[i - 1]) obv += volumes[i];
-            else if (closes[i] < closes[i - 1]) obv -= volumes[i];
+            if (closes[i] > closes[i - 1]) obv += volumes[i] || 0;
+            else if (closes[i] < closes[i - 1]) obv -= volumes[i] || 0;
+            result.push(obv);
         }
-        return obv;
+        return result;
     }
 
     calcMfi(highs, lows, closes, volumes, period = 14) {
-        if (closes.length < period + 1) return null;
+        if (closes.length < period + 1 || highs.length < period + 1 || lows.length < period + 1) return null;
+        if (volumes.length < period + 1) return null;
         try {
-            let positiveFlow = 0.0;
-            let negativeFlow = 0.0;
-            for (let i = closes.length - period; i < closes.length; i++) {
-                if (i > 0) {
-                    const typicalCur = (highs[i] + lows[i] + closes[i]) / 3;
-                    const typicalPrev = (highs[i - 1] + lows[i - 1] + closes[i - 1]) / 3;
-                    if (typicalCur > typicalPrev) {
-                        positiveFlow += typicalCur * volumes[i];
-                    } else if (typicalCur < typicalPrev) {
-                        negativeFlow += typicalCur * volumes[i];
-                    }
+            const moneyFlow = [];
+            for (let i = 1; i < closes.length; i++) {
+                const typicalCur = (highs[i] + lows[i] + closes[i]) / 3;
+                const typicalPrev = (highs[i - 1] + lows[i - 1] + closes[i - 1]) / 3;
+                const flow = typicalCur * volumes[i];
+                if (typicalCur > typicalPrev) {
+                    moneyFlow.push({ positive: flow, negative: 0 });
+                } else if (typicalCur < typicalPrev) {
+                    moneyFlow.push({ positive: 0, negative: flow });
+                } else {
+                    moneyFlow.push({ positive: 0, negative: 0 });
                 }
             }
-            if (negativeFlow > 0) {
-                const moneyRatio = positiveFlow / negativeFlow;
-                return 100 - (100 / (1 + moneyRatio));
-            } else if (positiveFlow > 0) {
-                return 100.0;
-            } else {
-                return 50.0;
+            if (moneyFlow.length < period) return 50;
+            let posSum = 0, negSum = 0;
+            for (let i = 0; i < period; i++) {
+                posSum += moneyFlow[i].positive;
+                negSum += moneyFlow[i].negative;
             }
+            let mfi;
+            if (negSum === 0) {
+                mfi = posSum > 0 ? 100 : 50;
+            } else {
+                const moneyRatio = posSum / negSum;
+                mfi = 100 - (100 / (1 + moneyRatio));
+            }
+            for (let i = period; i < moneyFlow.length; i++) {
+                posSum = posSum - moneyFlow[i - period].positive + moneyFlow[i].positive;
+                negSum = negSum - moneyFlow[i - period].negative + moneyFlow[i].negative;
+                if (negSum === 0) {
+                    mfi = posSum > 0 ? 100 : 50;
+                } else {
+                    const moneyRatio = posSum / negSum;
+                    mfi = 100 - (100 / (1 + moneyRatio));
+                }
+            }
+            return Math.max(0, Math.min(100, mfi));
         } catch (e) {
             return null;
         }
@@ -252,16 +365,16 @@ class StrategyEngine {
     }
 
     calcPsy(values, period = 12) {
-        if (values.length < period + 1) return null;
+        if (values.length < period + 1 || period <= 0) return null;
         let riseDays = 0;
-        const start = Math.max(1, values.length - period);
+        const start = values.length - period;
         for (let i = start; i < values.length; i++) {
-            if (values[i] > values[i - 1]) riseDays++;
+            if (i > 0 && values[i] > values[i - 1]) riseDays++;
         }
-        return riseDays / period * 100;
+        return Math.max(0, Math.min(100, riseDays / period * 100));
     }
 
-    calcVwapDeviation(currentPrice, high, low, volume, amount) {
+    calcVwapDeviation(currentPrice, volume, amount) {
         if (volume === 0) return [0, 0];
         const vwap = amount / volume;
         const deviation = vwap > 0 ? (currentPrice - vwap) / vwap * 100 : 0;
@@ -269,15 +382,37 @@ class StrategyEngine {
     }
 
     calcPsar(highs, lows, afStart = 0.02, afStep = 0.02, afMax = 0.2) {
-        if (highs.length < 2) return [null, null];
-        let isLong = highs[1] > highs[0];
+        if (highs.length < 3 || lows.length < 3) return [null, null];
+        const initPeriod = Math.min(10, highs.length);
+        let isLong = false;
+        let ep, sar;
+        if (highs.length >= 5) {
+            const firstHalfHigh = safeArrMax(highs.slice(0, Math.floor(initPeriod / 2)));
+            const secondHalfHigh = safeArrMax(highs.slice(Math.floor(initPeriod / 2), initPeriod));
+            const firstHalfLow = safeArrMin(lows.slice(0, Math.floor(initPeriod / 2)));
+            const secondHalfLow = safeArrMin(lows.slice(Math.floor(initPeriod / 2), initPeriod));
+            const upMove = secondHalfHigh - firstHalfLow;
+            const downMove = firstHalfHigh - secondHalfLow;
+            isLong = upMove >= downMove;
+        } else {
+            isLong = highs[highs.length - 1] > highs[0];
+        }
         let af = afStart;
-        let ep = isLong ? highs[0] : lows[0];
-        let sar = isLong ? lows[0] : highs[0];
-        for (let i = 1; i < highs.length; i++) {
+        if (isLong) {
+            ep = safeArrMax(highs.slice(0, initPeriod));
+            sar = safeArrMin(lows.slice(0, initPeriod));
+        } else {
+            ep = safeArrMin(lows.slice(0, initPeriod));
+            sar = safeArrMax(highs.slice(0, initPeriod));
+        }
+        for (let i = initPeriod; i < highs.length; i++) {
             const prevSar = sar;
             sar = prevSar + af * (ep - prevSar);
             if (isLong) {
+                if (i >= 2) {
+                    sar = Math.min(sar, lows[i - 1]);
+                    if (i >= 3) sar = Math.min(sar, lows[i - 2]);
+                }
                 if (lows[i] < sar) {
                     isLong = false;
                     sar = ep;
@@ -290,6 +425,10 @@ class StrategyEngine {
                     }
                 }
             } else {
+                if (i >= 2) {
+                    sar = Math.max(sar, highs[i - 1]);
+                    if (i >= 3) sar = Math.max(sar, highs[i - 2]);
+                }
                 if (highs[i] > sar) {
                     isLong = true;
                     sar = ep;
@@ -307,9 +446,10 @@ class StrategyEngine {
     }
 
     findSupportResistance(highs, lows, closes, lookback = 20) {
-        if (closes.length < lookback) return [[], []];
-        const h = highs.slice(-lookback);
-        const l = lows.slice(-lookback);
+        if (closes.length < 5 || highs.length < 5 || lows.length < 5) return [[], []];
+        const actualLookback = Math.min(lookback, highs.length, lows.length, closes.length);
+        const h = highs.slice(-actualLookback);
+        const l = lows.slice(-actualLookback);
         const resistances = [], supports = [];
         for (let i = 2; i < h.length - 2; i++) {
             if (h[i] > h[i - 1] && h[i] > h[i - 2] && h[i] > h[i + 1] && h[i] > h[i + 2]) {
@@ -334,7 +474,7 @@ class StrategyEngine {
         return r;
     }
 
-    runAllStrategies(stockInfo, klines, holdings = 0) {
+    runAllStrategies(stockInfo, klines, holdings = 0, options = {}) {
         const results = [];
         const cp = stockInfo.current_price;
         const op = stockInfo.open_price;
@@ -346,6 +486,7 @@ class StrategyEngine {
         const amt = stockInfo.amount || 0;
         const name = stockInfo.name || '';
         const code = stockInfo.code || '';
+        const fixedPredHour = options.fixedPredictionHour != null ? options.fixedPredictionHour : 15;
 
         if (pc <= 0) return [results, {}];
 
@@ -384,6 +525,83 @@ class StrategyEngine {
             volumesWithToday = [vol];
         }
 
+        const _indCache = {};
+        const getRsi = (period = 14) => {
+            const key = `rsi_${period}`;
+            if (_indCache[key] === undefined) _indCache[key] = this.calcRsi(closesWithToday, period);
+            return _indCache[key];
+        };
+        const getKdj = (n = 9, m = 3, k = 3) => {
+            const key = `kdj_${n}_${m}_${k}`;
+            if (_indCache[key] === undefined) _indCache[key] = this.calcKdj(highsWithToday, lowsWithToday, closesWithToday, n, m, k);
+            return _indCache[key];
+        };
+        const getMacd = (fast = 12, slow = 26, signal = 9) => {
+            const key = `macd_${fast}_${slow}_${signal}`;
+            if (_indCache[key] === undefined) _indCache[key] = this.calcMacd(closesWithToday, fast, slow, signal);
+            return _indCache[key];
+        };
+        const getAtr = (period = 14) => {
+            const key = `atr_${period}`;
+            if (_indCache[key] === undefined) _indCache[key] = this.calcAtr(highsWithToday, lowsWithToday, closesWithToday, period);
+            return _indCache[key];
+        };
+        const getSma = (period) => {
+            const key = `sma_${period}`;
+            if (_indCache[key] === undefined) _indCache[key] = this.sma(closesWithToday, period);
+            return _indCache[key];
+        };
+        const getCci = (period = 14) => {
+            const key = `cci_${period}`;
+            if (_indCache[key] === undefined) _indCache[key] = this.calcCci(highsWithToday, lowsWithToday, closesWithToday, period);
+            return _indCache[key];
+        };
+        const getDmi = (period = 14) => {
+            const key = `dmi_${period}`;
+            if (_indCache[key] === undefined) _indCache[key] = this.calcDmi(highsWithToday, lowsWithToday, closesWithToday, period);
+            return _indCache[key];
+        };
+        const getBoll = (period = 20, k = 2) => {
+            const key = `boll_${period}_${k}`;
+            if (_indCache[key] === undefined) _indCache[key] = this.calcBollinger(closesWithToday, period, k);
+            return _indCache[key];
+        };
+        const getPsar = (afStart = 0.02, afStep = 0.02, afMax = 0.2) => {
+            const key = `psar_${afStart}_${afStep}_${afMax}`;
+            if (_indCache[key] === undefined) _indCache[key] = this.calcPsar(highsWithToday, lowsWithToday, afStart, afStep, afMax);
+            return _indCache[key];
+        };
+        const getObv = () => {
+            const key = 'obv';
+            if (_indCache[key] === undefined) _indCache[key] = this.calcObv(closesWithToday, volumesWithToday);
+            return _indCache[key];
+        };
+        const getObvSeries = () => {
+            const key = 'obv_series';
+            if (_indCache[key] === undefined) _indCache[key] = this.calcObvSeries(closesWithToday, volumesWithToday);
+            return _indCache[key];
+        };
+        const getWr = (period = 14) => {
+            const key = `wr_${period}`;
+            if (_indCache[key] === undefined) _indCache[key] = this.calcWilliamsR(highsWithToday, lowsWithToday, closesWithToday, period);
+            return _indCache[key];
+        };
+        const getPsy = (period = 12) => {
+            const key = `psy_${period}`;
+            if (_indCache[key] === undefined) _indCache[key] = this.calcPsy(closesWithToday, period);
+            return _indCache[key];
+        };
+        const getMfi = (period = 14) => {
+            const key = `mfi_${period}`;
+            if (_indCache[key] === undefined) _indCache[key] = this.calcMfi(highsWithToday, lowsWithToday, closesWithToday, volumesWithToday, period);
+            return _indCache[key];
+        };
+        const getMacdSeries = (fast = 12, slow = 26, signal = 9) => {
+            const key = `macd_series_${fast}_${slow}_${signal}`;
+            if (_indCache[key] === undefined) _indCache[key] = this.calcMacdSeries(closesWithToday, fast, slow, signal);
+            return _indCache[key];
+        };
+
         const now = new Date();
         const hour = now.getHours();
         const minute = now.getMinutes();
@@ -394,9 +612,9 @@ class StrategyEngine {
         // =================================================================
 
         if (hasKline && closes.length >= 30) {
-            const ma5 = this.sma(closesWithToday, 5);
-            const ma10 = this.sma(closesWithToday, 10);
-            const ma20 = this.sma(closesWithToday, 20);
+            const ma5 = getSma(5);
+            const ma10 = getSma(10);
+            const ma20 = getSma(20);
             const ma5Prev = this.sma(closesWithToday.slice(0, -1), 5);
             const ma10Prev = this.sma(closesWithToday.slice(0, -1), 10);
 
@@ -448,8 +666,8 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 35) {
-            const [difNow, deaNow, barNow] = this.calcMacd(closesWithToday);
-            const macdSeries = this.calcMacdSeries(closesWithToday);
+            const [difNow, deaNow] = getMacd();
+            const macdSeries = getMacdSeries();
             if (difNow !== null && macdSeries && macdSeries[0].length >= 2) {
                 const d1 = macdSeries[0][macdSeries[0].length - 1];
                 const e1 = macdSeries[1][macdSeries[1].length - 1];
@@ -520,14 +738,17 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 20) {
-            const [bollLower, bollMid, bollUpper] = this.calcBollinger(closesWithToday);
-            const ma5Boll = this.sma(closesWithToday, 5);
-            const ma10Boll = this.sma(closesWithToday, 10);
+            const [bollLower, bollMid, bollUpper] = getBoll();
+            const ma5Boll = getSma(5);
+            const ma10Boll = getSma(10);
             const isUptrend = ma5Boll && ma10Boll && ma5Boll > ma10Boll;
             const isDowntrend = ma5Boll && ma10Boll && ma5Boll < ma10Boll;
 
             if (bollLower !== null) {
-                if (cp <= bollLower) {
+                // 普通触及：仅当明显跌破/突破（偏离>0.5%）时触发，精准触碰（<0.5%）由精准触碰策略处理
+                const isPreciseLower = bollLower > 0 && Math.abs(cp - bollLower) / bollLower < 0.005;
+                const isPreciseUpper = bollUpper > 0 && Math.abs(cp - bollUpper) / bollUpper < 0.005;
+                if (cp <= bollLower && !isPreciseLower) {
                     if (isDowntrend) {
                         results.push(this._make(
                             '布林下轨-下跌趋势中', '⚠️', CATEGORY_TREND, '中', 2,
@@ -543,7 +764,7 @@ class StrategyEngine {
                             { target_price: bollMid, stop_loss: bollLower * 0.98 }
                         ));
                     }
-                } else if (cp >= bollUpper) {
+                } else if (cp >= bollUpper && !isPreciseUpper) {
                     if (isUptrend) {
                         results.push(this._make(
                             '布林上轨-上涨趋势中', '📈', CATEGORY_TREND, '中', 2,
@@ -573,7 +794,7 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 10) {
-            const [sarVal, sarDir] = this.calcPsar(highsWithToday, lowsWithToday);
+            const [sarVal, sarDir] = getPsar();
             if (sarVal !== null) {
                 if (sarDir === 'LONG' && cp > sarVal) {
                     results.push(this._make(
@@ -592,7 +813,7 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 15) {
-            const [pdi, mdi, adx] = this.calcDmi(highsWithToday, lowsWithToday, closesWithToday);
+            const [pdi, mdi, adx] = getDmi();
             if (pdi !== null) {
                 if (pdi > mdi && adx > 25) {
                     results.push(this._make(
@@ -611,10 +832,12 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 52) {
-            const tenkan = (Math.max(...highsWithToday.slice(-9)) + Math.min(...lowsWithToday.slice(-9))) / 2;
-            const kijun = (Math.max(...highsWithToday.slice(-26)) + Math.min(...lowsWithToday.slice(-26))) / 2;
+            const tenkan = (safeArrMax(highsWithToday.slice(-9)) + safeArrMin(lowsWithToday.slice(-9))) / 2;
+            const kijun = (safeArrMax(highsWithToday.slice(-26)) + safeArrMin(lowsWithToday.slice(-26))) / 2;
+            // 注意：标准一目均衡表中 Senkou Span A/B 应向前位移26个周期作为云层
+            // 当前实现未做位移，直接用当期值判断，可能影响云层位置准确性
             const senkouA = (tenkan + kijun) / 2;
-            const senkouB = (Math.max(...highsWithToday.slice(-52)) + Math.min(...lowsWithToday.slice(-52))) / 2;
+            const senkouB = (safeArrMax(highsWithToday.slice(-52)) + safeArrMin(lowsWithToday.slice(-52))) / 2;
             if (cp > Math.max(senkouA, senkouB) && tenkan > kijun) {
                 results.push(this._make(
                     '一目均衡表-强势', '☁️', CATEGORY_TREND, '中', 2,
@@ -630,7 +853,7 @@ class StrategyEngine {
             }
         }
 
-        const [vwap, vwapDev] = this.calcVwapDeviation(cp, hp, lp, vol, amt);
+        const [vwap, vwapDev] = this.calcVwapDeviation(cp, vol, amt);
         if (vwap > 0) {
             if (vwapDev > 2.5) {
                 results.push(this._make(
@@ -654,7 +877,7 @@ class StrategyEngine {
         // =================================================================
 
         if (hasKline && closes.length >= 15) {
-            const rsi = this.calcRsi(closesWithToday, 14);
+            const rsi = getRsi(14);
             if (rsi !== null) {
                 if (rsi < 30) {
                     results.push(this._make(
@@ -676,7 +899,7 @@ class StrategyEngine {
                         `RSI(14)=${rsi.toFixed(1)}，偏弱区域，可轻仓试探。`,
                         'WATCH', 'RSI 30-40区域可分批建仓'
                     ));
-                } else if (rsi > 60) {
+                } else if (rsi > 60 && rsi <= 70) {
                     results.push(this._make(
                         'RSI偏强', '📊', CATEGORY_OSCILLATOR, '中', 2,
                         `RSI(14)=${rsi.toFixed(1)}，偏强区域，已持有可继续。`,
@@ -687,7 +910,7 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 9) {
-            const [k, d, j] = this.calcKdj(highsWithToday, lowsWithToday, closesWithToday);
+            const [k, d, j] = getKdj();
             if (k !== null) {
                 if (j < 20) {
                     results.push(this._make(
@@ -731,7 +954,7 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 14) {
-            const wr = this.calcWilliamsR(highsWithToday, lowsWithToday, closesWithToday);
+            const wr = getWr();
             if (wr !== null) {
                 if (wr < -80) {
                     results.push(this._make(
@@ -750,7 +973,7 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 14) {
-            const cci = this.calcCci(highsWithToday, lowsWithToday, closesWithToday);
+            const cci = getCci();
             if (cci !== null) {
                 if (cci < -100) {
                     results.push(this._make(
@@ -768,7 +991,7 @@ class StrategyEngine {
             }
         }
 
-        const rsv = (hp !== lp) ? ((cp - pc) / (hp - lp) * 100) : 50;
+        const rsv = (hp !== lp) ? ((cp - lp) / (hp - lp) * 100) : 50;
         if (rsv < 20) {
             results.push(this._make(
                 'RSV超卖', '🎯', CATEGORY_OSCILLATOR, '高', 1,
@@ -850,8 +1073,9 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 10) {
-            const obvNow = this.calcObv(closesWithToday, volumesWithToday);
-            const obvPrev = this.calcObv(closesWithToday.slice(0, -1), volumesWithToday.slice(0, -1));
+            const obvSeries = getObvSeries();
+            const obvNow = obvSeries[obvSeries.length - 1];
+            const obvPrev = obvSeries.length >= 2 ? obvSeries[obvSeries.length - 2] : 0;
             if (obvNow > obvPrev && chg > 0) {
                 results.push(this._make(
                     'OBV上升趋势', '📈', CATEGORY_VOLUME, '中', 2,
@@ -899,7 +1123,7 @@ class StrategyEngine {
             if (supports.length > 0) {
                 const nearestSupport = supports.filter(s => s < cp);
                 if (nearestSupport.length > 0) {
-                    const ns = Math.max(...nearestSupport);
+                    const ns = safeArrMax(nearestSupport);
                     if ((cp - ns) / cp < 0.02) {
                         results.push(this._make(
                             `接近支撑位 (${ns.toFixed(2)})`, '🟢', CATEGORY_PATTERN, '中', 2,
@@ -912,7 +1136,7 @@ class StrategyEngine {
             if (resistances.length > 0) {
                 const nearestResist = resistances.filter(r => r > cp);
                 if (nearestResist.length > 0) {
-                    const nr = Math.min(...nearestResist);
+                    const nr = safeArrMin(nearestResist);
                     if ((nr - cp) / cp < 0.02) {
                         results.push(this._make(
                             `接近压力位 (${nr.toFixed(2)})`, '🔴', CATEGORY_PATTERN, '中', 2,
@@ -990,7 +1214,8 @@ class StrategyEngine {
                 const act = r.action || '';
                 if (['AVOID_BUY', 'NO_TRADE', 'WATCH', 'HOLD', 'OBSERVE',
                      'REDUCE_POSITION', 'WAIT', 'WAIT_NEXT_DAY',
-                     'SELL_BEFORE_CLOSE', 'TRADING_OPPORTUNITY'].includes(act)) {
+                     'SELL_BEFORE_CLOSE', 'TRADING_OPPORTUNITY',
+                     'SELL_THEN_BUY', 'BUY_THEN_SELL', 'BOX_TRADING'].includes(act)) {
                     continue;
                 }
                 if (act.includes('BUY')) trendSignals.buy++;
@@ -1108,7 +1333,8 @@ class StrategyEngine {
 
         if (hasKline && volumes.length >= 5) {
             const avgVol5 = volumes.slice(-5).reduce((a, b) => a + b, 0) / 5;
-            const priceChg = closes.length > 0 ? (cp - closes[closes.length - 1]) / closes[closes.length - 1] * 100 : 0;
+            const prevClose = closes[closes.length - 1];
+            const priceChg = prevClose > 0 ? (cp - prevClose) / prevClose * 100 : 0;
             const volChg = avgVol5 > 0 ? (vol - avgVol5) / avgVol5 * 100 : 0;
             const vpds = priceChg * 2 - volChg;
             if (vpds > 50) {
@@ -1165,7 +1391,7 @@ class StrategyEngine {
             const netProfit = spread * 100 - txFee;
             const netPct = buyAmount > 0 ? netProfit / buyAmount * 100 : 0;
             const feePct = buyAmount > 0 ? txFee / buyAmount * 100 : 0.3;
-            const arr = feePct > 0 ? amplitude / feePct : amplitude / 0.3;
+            const arr = amplitude / feePct;
             
             if (arr > 20) {
                 results.push(this._make(
@@ -1191,9 +1417,9 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 20) {
-            const ma5 = this.sma(closesWithToday, 5);
-            const ma10 = this.sma(closesWithToday, 10);
-            const ma20 = this.sma(closesWithToday, 20);
+            const ma5 = getSma(5);
+            const ma10 = getSma(10);
+            const ma20 = getSma(20);
             if (ma5 && ma10 && ma20) {
                 const above5 = cp > ma5;
                 const above10 = cp > ma10;
@@ -1219,8 +1445,8 @@ class StrategyEngine {
             const recentRanges = [];
             for (let i = -10; i < 0; i++) {
                 const idx = highs.length + i;
-                if (idx >= 0 && closes[idx] > 0) {
-                    recentRanges.push((highs[idx] - lows[idx]) / closes[idx] * 100);
+                if (idx - 1 >= 0 && closes[idx - 1] > 0) {
+                    recentRanges.push((highs[idx] - lows[idx]) / closes[idx - 1] * 100);
                 }
             }
             if (recentRanges.length > 0) {
@@ -1263,8 +1489,10 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 3) {
-            const chg1 = (closes[closes.length - 1] - closes[closes.length - 2]) / closes[closes.length - 2] * 100;
-            const chg2 = (closes[closes.length - 2] - closes[closes.length - 3]) / closes[closes.length - 3] * 100;
+            const prevClose1 = closes[closes.length - 2] || 0.01;
+            const prevClose2 = closes[closes.length - 3] || 0.01;
+            const chg1 = (closes[closes.length - 1] - prevClose1) / prevClose1 * 100;
+            const chg2 = (prevClose1 - prevClose2) / prevClose2 * 100;
             const pa = chg1 - chg2;
             if (chg1 > 0 && pa > 1) {
                 results.push(this._make(
@@ -1282,8 +1510,8 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 20) {
-            const lookbackHigh = Math.max(...highs.slice(-30));
-            const lookbackLow = Math.min(...lows.slice(-30));
+            const lookbackHigh = safeArrMax(highs.slice(-30));
+            const lookbackLow = safeArrMin(lows.slice(-30));
             const fibRange = lookbackHigh - lookbackLow;
             if (fibRange > 0) {
                 const fib382 = lookbackLow + fibRange * 0.382;
@@ -1334,8 +1562,25 @@ class StrategyEngine {
                     break;
                 }
             }
-            if (cp > closes[closes.length - 1] && downStreak === 0) upStreak++;
-            else if (cp < closes[closes.length - 1] && upStreak === 0) downStreak++;
+            if (cp > closes[closes.length - 1]) {
+                if (downStreak > 0) {
+                    upStreak = 1;
+                    downStreak = 0;
+                } else if (downStreak === 0) {
+                    upStreak++;
+                }
+            } else if (cp < closes[closes.length - 1]) {
+                if (upStreak > 0) {
+                    downStreak = 1;
+                    upStreak = 0;
+                } else if (upStreak === 0) {
+                    downStreak++;
+                }
+            } else {
+                // 平盘重置
+                upStreak = 0;
+                downStreak = 0;
+            }
 
             if (upStreak >= 5) {
                 results.push(this._make(
@@ -1429,8 +1674,8 @@ class StrategyEngine {
             ];
             for (const [fastP, slowP, label] of maCrosses) {
                 if (closesWithToday.length >= slowP) {
-                    const maF = this.sma(closesWithToday, fastP);
-                    const maS = this.sma(closesWithToday, slowP);
+                    const maF = getSma(fastP);
+                    const maS = getSma(slowP);
                     const maFP = this.sma(closesWithToday.slice(0, -1), fastP);
                     const maSP = this.sma(closesWithToday.slice(0, -1), slowP);
                     if (maF && maS && maFP && maSP) {
@@ -1477,7 +1722,7 @@ class StrategyEngine {
             }
 
             for (const rsiPeriod of [6, 9, 24]) {
-                const rsiVal = this.calcRsi(closesWithToday, rsiPeriod);
+                const rsiVal = getRsi(rsiPeriod);
                 if (rsiVal !== null) {
                     if (rsiVal < 20) {
                         results.push(this._make(
@@ -1497,7 +1742,8 @@ class StrategyEngine {
 
             for (const rocPeriod of [5, 10, 20]) {
                 if (closesWithToday.length > rocPeriod) {
-                    const roc = (closesWithToday[closesWithToday.length - 1] - closesWithToday[closesWithToday.length - 1 - rocPeriod]) / closesWithToday[closesWithToday.length - 1 - rocPeriod] * 100;
+                    const rocBase = closesWithToday[closesWithToday.length - 1 - rocPeriod];
+                    const roc = rocBase > 0 ? (closesWithToday[closesWithToday.length - 1] - rocBase) / rocBase * 100 : 0;
                     if (roc > 8) {
                         results.push(this._make(
                             `ROC(${rocPeriod})强势`, '🚀', CATEGORY_OSCILLATOR, '低', 3,
@@ -1515,7 +1761,7 @@ class StrategyEngine {
             }
 
             if (closes.length >= 15 && volumes.length >= 15) {
-                const mfiVal = this.calcMfi(highsWithToday, lowsWithToday, closesWithToday, volumesWithToday);
+                const mfiVal = getMfi();
                 if (mfiVal !== null) {
                     if (mfiVal < 20) {
                         results.push(this._make(
@@ -1534,8 +1780,8 @@ class StrategyEngine {
             }
 
             if (highs.length >= 20) {
-                const dcUpper = Math.max(...highs.slice(-20));
-                const dcLower = Math.min(...lows.slice(-20));
+                const dcUpper = safeArrMax(highs.slice(-20));
+                const dcLower = safeArrMin(lows.slice(-20));
                 if (cp >= dcUpper) {
                     results.push(this._make(
                         'Donchian上轨突破', '📐', CATEGORY_PATTERN, '中', 2,
@@ -1623,8 +1869,8 @@ class StrategyEngine {
         // =================================================================
 
         if (hasKline && closes.length >= 60) {
-            const ma30 = this.sma(closesWithToday, 30);
-            const ma60 = this.sma(closesWithToday, 60);
+            const ma30 = getSma(30);
+            const ma60 = getSma(60);
             if (ma30 && ma60) {
                 if (cp > ma30 && ma30 > ma60) {
                     results.push(this._make(
@@ -1649,7 +1895,7 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 20) {
-            const ma20 = this.sma(closesWithToday, 20);
+            const ma20 = getSma(20);
             if (ma20) {
                 const bias = (cp - ma20) / ma20 * 100;
                 if (bias > 10) {
@@ -1675,7 +1921,7 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 20) {
-            const [bollLower, bollMid, bollUpper] = this.calcBollinger(closesWithToday);
+            const [bollLower, bollMid, bollUpper] = getBoll();
             if (bollLower !== null && bollMid !== null && bollUpper !== null) {
                 if (Math.abs(cp - bollUpper) / bollUpper < 0.005) {
                     results.push(this._make(
@@ -1727,7 +1973,7 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 20) {
-            const psy = this.calcPsy(closesWithToday, 12);
+            const psy = getPsy(12);
             if (psy !== null) {
                 if (psy > 75) {
                     results.push(this._make(
@@ -1750,7 +1996,7 @@ class StrategyEngine {
         // =================================================================
 
         if (hasKline && closes.length >= 15) {
-            const rsi = this.calcRsi(closesWithToday, 14);
+            const rsi = getRsi(14);
             if (rsi !== null) {
                 if (rsi > 80) {
                     results.push(this._make(
@@ -1811,7 +2057,7 @@ class StrategyEngine {
         // =================================================================
 
         if (hasKline && closes.length >= 20) {
-            const [k, d, j] = this.calcKdj(highsWithToday, lowsWithToday, closesWithToday);
+            const [k, d, j] = getKdj();
             if (k !== null && d !== null && j !== null) {
                 if (j > 100 && k > 80 && d > 80) {
                     results.push(this._make(
@@ -1872,16 +2118,26 @@ class StrategyEngine {
                 }
 
                 if (closes.length >= 25) {
-                    if (cp > closes[closes.length - 10] * 1.05 && j < 80) {
+                    // 顶背离：价格创新高但J值未创新高
+                    const recentHigh = safeArrMax(closes.slice(-10));
+                    const prevHigh = safeArrMax(closes.slice(-20, -10));
+                    const [kPrev, dPrev, jPrev] = this.calcKdj(
+                        highsWithToday.slice(0, -1),
+                        lowsWithToday.slice(0, -1),
+                        closesWithToday.slice(0, -1)
+                    );
+                    const recentLow = safeArrMin(closes.slice(-10));
+                    const prevLow = safeArrMin(closes.slice(-20, -10));
+                    if (recentHigh > prevHigh && jPrev !== null && j < jPrev && j < 80) {
                         results.push(this._make(
                             'KDJ顶背离', '⚠️', CATEGORY_OSCILLATOR, '高', 1,
-                            `股价创新高但KDJ未跟随，J=${j.toFixed(1)}<80，KDJ顶背离预警！`,
+                            `股价创10日新高(${recentHigh.toFixed(2)})但J值未创新高(J=${j.toFixed(1)}<前值${jPrev.toFixed(1)})，KDJ顶背离预警！`,
                             'SELL', 'KDJ顶背离是重要卖出信号'
                         ));
-                    } else if (cp < closes[closes.length - 10] * 0.95 && j > 20) {
+                    } else if (recentLow < prevLow && jPrev !== null && j > jPrev && j > 20) {
                         results.push(this._make(
                             'KDJ底背离', '💎', CATEGORY_OSCILLATOR, '高', 1,
-                            `股价创新低但KDJ未跟随，J=${j.toFixed(1)}>20，KDJ底背离信号！`,
+                            `股价创10日新低(${recentLow.toFixed(2)})但J值未创新低(J=${j.toFixed(1)}>前值${jPrev.toFixed(1)})，KDJ底背离信号！`,
                             'BUY', 'KDJ底背离是重要买入信号'
                         ));
                     } else {
@@ -1900,14 +2156,23 @@ class StrategyEngine {
         // =================================================================
 
         if (hasKline && closes.length >= 60) {
-            const macdSeries = this.calcMacdSeries(closesWithToday);
+            const macdSeries = getMacdSeries();
             if (macdSeries && macdSeries[0].length >= 10) {
                 let divergenceCount = 0;
                 const difSeries = macdSeries[0];
+                // 背离：价格上涨但DIF下降（顶背离）或价格下跌但DIF上升（底背离）
+                // difSeries 与 closes 的对齐：difSeries 末尾对应 closes 末尾
+                const closesAligned = closesWithToday.slice(closesWithToday.length - difSeries.length);
                 for (let i = -1; i > -Math.min(6, difSeries.length); i--) {
                     const idx = difSeries.length + i;
-                    if (idx - 1 >= 0 && difSeries[idx] < difSeries[idx - 1]) {
-                        divergenceCount++;
+                    if (idx - 1 >= 0) {
+                        const priceUp = closesAligned[idx] > closesAligned[idx - 1];
+                        const priceDown = closesAligned[idx] < closesAligned[idx - 1];
+                        const difDown = difSeries[idx] < difSeries[idx - 1];
+                        const difUp = difSeries[idx] > difSeries[idx - 1];
+                        if ((priceUp && difDown) || (priceDown && difUp)) {
+                            divergenceCount++;
+                        }
                     }
                 }
                 if (divergenceCount >= 3 && cp > closes[closes.length - 1] * 1.02) {
@@ -1933,7 +2198,7 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 35) {
-            const macdSeries = this.calcMacdSeries(closesWithToday);
+            const macdSeries = getMacdSeries();
             if (macdSeries && macdSeries[2].length >= 3) {
                 const barSeries = macdSeries[2];
                 const barNow = barSeries[barSeries.length - 1];
@@ -1973,7 +2238,7 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 35) {
-            const [difNow, deaNow] = this.calcMacd(closesWithToday);
+            const [difNow, deaNow] = getMacd();
             if (difNow !== null && deaNow !== null) {
                 const gap = Math.abs(difNow - deaNow);
                 if (gap > 0.5) {
@@ -2011,7 +2276,7 @@ class StrategyEngine {
         // =================================================================
 
         if (hasKline && closes.length >= 25) {
-            const [bollLower, bollMid, bollUpper] = this.calcBollinger(closesWithToday);
+            const [bollLower, bollMid, bollUpper] = getBoll();
             if (bollLower !== null && bollMid !== null && bollUpper !== null && bollMid > 0) {
                 const bw = (bollUpper - bollLower) / bollMid * 100;
                 if (bw > 15) {
@@ -2126,11 +2391,25 @@ class StrategyEngine {
                     consecutiveDown++;
                 }
             }
-            results.push(this._make(
-                '成交量变化正常', '➡️', CATEGORY_VOLUME, '中', 4,
-                `连续放量${consecutiveUp}天，连续缩量${consecutiveDown}天，无异常。`,
-                'HOLD', '量能正常'
-            ));
+            if (consecutiveUp >= 3) {
+                results.push(this._make(
+                    '连续放量', '📈', CATEGORY_VOLUME, '中', 2,
+                    `连续放量${consecutiveUp}天，量能持续放大。`,
+                    'BUY', '连续放量是资金积极入场信号'
+                ));
+            } else if (consecutiveDown >= 3) {
+                results.push(this._make(
+                    '连续缩量', '📉', CATEGORY_VOLUME, '中', 2,
+                    `连续缩量${consecutiveDown}天，量能持续萎缩。`,
+                    'SELL', '连续缩量是资金撤退信号'
+                ));
+            } else {
+                results.push(this._make(
+                    '成交量变化正常', '➡️', CATEGORY_VOLUME, '中', 4,
+                    `连续放量${consecutiveUp}天，连续缩量${consecutiveDown}天，无异常。`,
+                    'HOLD', '量能正常'
+                ));
+            }
         }
 
         // =================================================================
@@ -2138,7 +2417,7 @@ class StrategyEngine {
         // =================================================================
 
         if (hasKline && closes.length >= 15) {
-            const mfiVal = this.calcMfi(highsWithToday, lowsWithToday, closesWithToday, volumesWithToday);
+            const mfiVal = getMfi();
             if (mfiVal !== null) {
                 if (mfiVal > 90) {
                     results.push(this._make(
@@ -2180,7 +2459,7 @@ class StrategyEngine {
 
         for (const wrPeriod of [6, 10, 20]) {
             if (hasKline && closes.length >= wrPeriod) {
-                const wrVal = this.calcWilliamsR(highsWithToday, lowsWithToday, closesWithToday, wrPeriod);
+                const wrVal = getWr(wrPeriod);
                 if (wrVal !== null) {
                     if (wrVal < -80) {
                         results.push(this._make(
@@ -2212,8 +2491,9 @@ class StrategyEngine {
         if (hasKline && closes.length >= 10) {
             for (const momPeriod of [5, 10]) {
                 if (closesWithToday.length > momPeriod) {
-                    const mom = closesWithToday[closesWithToday.length - 1] - closesWithToday[closesWithToday.length - 1 - momPeriod];
-                    const momPct = mom / closesWithToday[closesWithToday.length - 1 - momPeriod] * 100;
+                    const momBase = closesWithToday[closesWithToday.length - 1 - momPeriod];
+                    const mom = closesWithToday[closesWithToday.length - 1] - momBase;
+                    const momPct = momBase > 0 ? mom / momBase * 100 : 0;
                     if (mom > 0 && momPct > 5) {
                         results.push(this._make(
                             `MOM${momPeriod}正动量(+${momPct.toFixed(1)}%)`, '📈', CATEGORY_OSCILLATOR, '中', 2,
@@ -2240,7 +2520,8 @@ class StrategyEngine {
         if (hasKline && closes.length >= 15) {
             for (const rocPeriod of [3, 7, 14]) {
                 if (closesWithToday.length > rocPeriod) {
-                    const roc = (closesWithToday[closesWithToday.length - 1] - closesWithToday[closesWithToday.length - 1 - rocPeriod]) / closesWithToday[closesWithToday.length - 1 - rocPeriod] * 100;
+                    const rocBase = closesWithToday[closesWithToday.length - 1 - rocPeriod];
+                    const roc = rocBase > 0 ? (closesWithToday[closesWithToday.length - 1] - rocBase) / rocBase * 100 : 0;
                     if (roc > 15) {
                         results.push(this._make(
                             `ROC(${rocPeriod})强势上涨(${roc.toFixed(1)}%)`, '🚀', CATEGORY_OSCILLATOR, '中', 2,
@@ -2282,7 +2563,7 @@ class StrategyEngine {
 
         for (const biasPeriod of [5, 10, 20]) {
             if (hasKline && closes.length >= biasPeriod) {
-                const maBias = this.sma(closesWithToday, biasPeriod);
+                const maBias = getSma(biasPeriod);
                 if (maBias) {
                     const bias = (cp - maBias) / maBias * 100;
                     if (bias > 8) {
@@ -2291,7 +2572,7 @@ class StrategyEngine {
                             `BIAS${biasPeriod}=${bias.toFixed(1)}>8%，价格远离均线，超买预警！`,
                             'SELL', '正乖离过大需回落'
                         ));
-                    } else if (bias > 5) {
+                    } else if (bias > 5 && bias <= 8) {
                         results.push(this._make(
                             `BIAS${biasPeriod}正偏(${bias.toFixed(1)}%)`, '📊', CATEGORY_OSCILLATOR, '中', 2,
                             `BIAS${biasPeriod}=${bias.toFixed(1)}，价格偏高于均线。`,
@@ -2325,7 +2606,7 @@ class StrategyEngine {
         // =================================================================
 
         if (hasKline && closes.length >= 15) {
-            const [pdi, mdi, adx] = this.calcDmi(highsWithToday, lowsWithToday, closesWithToday);
+            const [pdi, mdi, adx] = getDmi();
             if (pdi !== null && mdi !== null && adx !== null) {
                 let trendStrength;
                 if (adx > 40) trendStrength = '极强';
@@ -2366,20 +2647,20 @@ class StrategyEngine {
         // =================================================================
 
         if (hasKline && closes.length >= 35) {
-            const [k, d, j] = this.calcKdj(highsWithToday, lowsWithToday, closesWithToday);
-            const rsi = this.calcRsi(closesWithToday, 14);
-            const [dif, dea] = this.calcMacd(closesWithToday);
+            const [k, d, j] = getKdj();
+            const rsi = getRsi(14);
+            const [dif, dea] = getMacd();
             if (k !== null && rsi !== null && dif !== null && dea !== null) {
                 if (j < 20 && rsi < 30 && dif < 0 && dif < dea) {
                     results.push(this._make(
                         '三指标共振超卖(KDJ+RSI+MACD)', '💎', CATEGORY_OSCILLATOR, '极高', 0,
-                        `KDJ J=${j.toFixed(1)}<20, RSI=${rsi.toFixed(1)}<30, MACD底背离，三重超卖共振！`,
+                        `KDJ J=${j.toFixed(1)}<20, RSI=${rsi.toFixed(1)}<30, MACD零轴下方空头，三重超卖共振！`,
                         'STRONG_BUY', '三指标共振是最强买入信号'
                     ));
                 } else if (j > 100 && rsi > 70 && dif > 0 && dif > dea) {
                     results.push(this._make(
                         '三指标共振超买(KDJ+RSI+MACD)', '🔥', CATEGORY_OSCILLATOR, '极高', 0,
-                        `KDJ J=${j.toFixed(1)}>100, RSI=${rsi.toFixed(1)}>70, MACD顶背离，三重超买共振！`,
+                        `KDJ J=${j.toFixed(1)}>100, RSI=${rsi.toFixed(1)}>70, MACD零轴上方多头，三重超买共振！`,
                         'STRONG_SELL', '三指标共振是最强卖出信号'
                     ));
                 } else if (j < 20 && rsi > 50) {
@@ -2400,21 +2681,21 @@ class StrategyEngine {
 
         if (hasKline && closes.length >= 20) {
             let trendScore = 0;
-            const ma5 = this.sma(closesWithToday, 5);
-            const ma20 = this.sma(closesWithToday, 20);
+            const ma5 = getSma(5);
+            const ma20 = getSma(20);
             if (ma5 && ma20) {
                 trendScore += ma5 > ma20 ? 2 : -2;
             }
-            const [difScore, deaScore] = this.calcMacd(closesWithToday);
+            const [difScore, deaScore] = getMacd();
             if (difScore !== null && deaScore !== null) {
                 trendScore += difScore > deaScore ? 2 : -2;
             }
-            const rsiScore = this.calcRsi(closesWithToday, 14);
+            const rsiScore = getRsi(14);
             if (rsiScore !== null) {
                 if (rsiScore > 55) trendScore += 2;
                 else if (rsiScore < 45) trendScore -= 2;
             }
-            const [kScore, dScore] = this.calcKdj(highsWithToday, lowsWithToday, closesWithToday);
+            const [kScore, dScore] = getKdj();
             if (kScore !== null && dScore !== null) {
                 trendScore += kScore > dScore ? 1 : -1;
             }
@@ -2422,31 +2703,31 @@ class StrategyEngine {
             if (trendScore >= 6) {
                 results.push(this._make(
                     `综合趋势评分TrendScore=${trendScore}`, '🟢', CATEGORY_TREND, '极高', 0,
-                    `TrendScore=${trendScore}/10，多指标全面看多！`,
+                    `TrendScore=${trendScore}/7，多指标全面看多！`,
                     'STRONG_BUY', '综合评分极度看多'
                 ));
             } else if (trendScore >= 3) {
                 results.push(this._make(
                     `综合趋势评分TrendScore=${trendScore}`, '📈', CATEGORY_TREND, '高', 1,
-                    `TrendScore=${trendScore}/10，多指标偏多。`,
+                    `TrendScore=${trendScore}/7，多指标偏多。`,
                     'BUY', '综合评分偏多'
                 ));
             } else if (trendScore <= -6) {
                 results.push(this._make(
                     `综合趋势评分TrendScore=${trendScore}`, '🔴', CATEGORY_TREND, '极高', 0,
-                    `TrendScore=${trendScore}/10，多指标全面看空！`,
+                    `TrendScore=${trendScore}/7，多指标全面看空！`,
                     'STRONG_SELL', '综合评分极度看空'
                 ));
             } else if (trendScore <= -3) {
                 results.push(this._make(
                     `综合趋势评分TrendScore=${trendScore}`, '📉', CATEGORY_TREND, '高', 1,
-                    `TrendScore=${trendScore}/10，多指标偏空。`,
+                    `TrendScore=${trendScore}/7，多指标偏空。`,
                     'SELL', '综合评分偏空'
                 ));
             } else {
                 results.push(this._make(
                     `综合趋势评分TrendScore=${trendScore}`, '⚡', CATEGORY_TREND, '中', 3,
-                    `TrendScore=${trendScore}/10，多空均衡。`,
+                    `TrendScore=${trendScore}/7，多空均衡。`,
                     'WATCH', '综合评分中性'
                 ));
             }
@@ -2454,21 +2735,21 @@ class StrategyEngine {
 
         if (hasKline && closes.length >= 20) {
             let oscScore = 0;
-            const rsiOsc = this.calcRsi(closesWithToday, 14);
+            const rsiOsc = getRsi(14);
             if (rsiOsc !== null) {
                 if (rsiOsc > 70) oscScore += 3;
                 else if (rsiOsc < 30) oscScore -= 3;
                 else if (rsiOsc > 60) oscScore += 1;
                 else if (rsiOsc < 40) oscScore -= 1;
             }
-            const [kOsc, dOsc, jOsc] = this.calcKdj(highsWithToday, lowsWithToday, closesWithToday);
+            const [kOsc, dOsc, jOsc] = getKdj();
             if (kOsc !== null && jOsc !== null) {
                 if (jOsc > 100) oscScore += 3;
                 else if (jOsc < 0) oscScore -= 3;
                 else if (jOsc > 80) oscScore += 1;
                 else if (jOsc < 20) oscScore -= 1;
             }
-            const wrOsc = this.calcWilliamsR(highsWithToday, lowsWithToday, closesWithToday);
+            const wrOsc = getWr();
             if (wrOsc !== null) {
                 if (wrOsc > -20) oscScore += 2;
                 else if (wrOsc < -80) oscScore -= 2;
@@ -2595,9 +2876,9 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 20) {
-            const ma5Short = this.sma(closesWithToday, 5);
-            const ma10Short = this.sma(closesWithToday, 10);
-            const ma20Short = this.sma(closesWithToday, 20);
+            const ma5Short = getSma(5);
+            const ma10Short = getSma(10);
+            const ma20Short = getSma(20);
             if (ma10Short && ma20Short) {
                 if (ma10Short > ma20Short) {
                     results.push(this._make(
@@ -2668,12 +2949,13 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 60) {
-            const ma5Tri = this.sma(closesWithToday, 5);
-            const ma20Tri = this.sma(closesWithToday, 20);
-            const ma60Tri = this.sma(closesWithToday, 60);
-            const ma120Tri = this.sma(closesWithToday, 120);
+            const ma5Tri = getSma(5);
+            const ma10Tri = getSma(10);
+            const ma20Tri = getSma(20);
+            const ma60Tri = getSma(60);
+            const ma120Tri = getSma(120);
             if (ma5Tri && ma20Tri && ma60Tri) {
-                const shortTrend = ma5Tri > closes[closes.length - 1] * 0.99 ? 'up' : 'down';
+                const shortTrend = ma10Tri ? (ma5Tri > ma10Tri ? 'up' : 'down') : (ma5Tri > ma20Tri ? 'up' : 'down');
                 const midTrend = ma20Tri > ma60Tri ? 'up' : 'down';
                 const longTrend = ma120Tri ? (ma60Tri > ma120Tri ? 'up' : 'down') : 'neutral';
                 if (shortTrend === 'up' && midTrend === 'up' && (longTrend === 'up' || longTrend === 'neutral')) {
@@ -2798,7 +3080,7 @@ class StrategyEngine {
 
         for (const cciPeriod of [12, 20]) {
             if (hasKline && closes.length >= cciPeriod) {
-                const cciVal = this.calcCci(highsWithToday, lowsWithToday, closesWithToday, cciPeriod);
+                const cciVal = getCci(cciPeriod);
                 if (cciVal !== null) {
                     if (cciVal > 200) {
                         results.push(this._make(
@@ -2853,7 +3135,10 @@ class StrategyEngine {
 
         if (hasKline && closes.length >= 30) {
             const atrList = [];
-            for (let i = 14; i < closesWithToday.length; i++) {
+            // 限制回看范围，避免 O(n²) 性能问题
+            const maxLookback = Math.min(60, closesWithToday.length - 14);
+            const startIdx = closesWithToday.length - maxLookback;
+            for (let i = Math.max(14, startIdx); i < closesWithToday.length; i++) {
                 const atrVal = this.calcAtr(highsWithToday.slice(0, i + 1), lowsWithToday.slice(0, i + 1), closesWithToday.slice(0, i + 1), 14);
                 if (atrVal !== null) atrList.push(atrVal);
             }
@@ -2935,17 +3220,20 @@ class StrategyEngine {
         // =================================================================
 
         if (hasKline && closes.length >= 10) {
-            const sarVal = this.calcPsar(highsWithToday, lowsWithToday, 0.02, 0.2);
-            if (sarVal !== null && sarVal.length >= 3) {
-                const curSar = sarVal[sarVal.length - 1];
-                const prevSar = sarVal[sarVal.length - 2];
-                if (cp > curSar && prevSar > closes[closes.length - 2]) {
+            const sarVal = getPsar(0.02, 0.02, 0.2);
+            if (sarVal && sarVal[0] !== null && sarVal.length >= 2) {
+                const curSar = sarVal[0];
+                const curDir = sarVal[1];
+                const prevSarVal = this.calcPsar(highsWithToday.slice(0, -1), lowsWithToday.slice(0, -1), 0.02, 0.02, 0.2);
+                const prevSar = (prevSarVal && prevSarVal.length >= 2) ? prevSarVal[0] : curSar;
+                const prevDir = (prevSarVal && prevSarVal.length >= 2) ? prevSarVal[1] : curDir;
+                if (curDir === 'LONG' && prevDir === 'SHORT') {
                     results.push(this._make(
                         'SAR转向(空转多)', '🟢', CATEGORY_TREND, '高', 1,
                         `SAR从${prevSar.toFixed(2)}转向${curSar.toFixed(2)}，空转多信号！`,
                         'BUY', 'SAR转向是重要趋势信号'
                     ));
-                } else if (cp < curSar && prevSar < closes[closes.length - 2]) {
+                } else if (curDir === 'SHORT' && prevDir === 'LONG') {
                     results.push(this._make(
                         'SAR转向(多转空)', '🔴', CATEGORY_TREND, '高', 1,
                         `SAR从${prevSar.toFixed(2)}转向${curSar.toFixed(2)}，多转空信号！`,
@@ -2968,7 +3256,7 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 30) {
-            const [bollLower, bollMid, bollUpper] = this.calcBollinger(closesWithToday);
+            const [bollLower, bollMid, bollUpper] = getBoll();
             if (bollLower !== null && bollMid !== null && bollUpper !== null && bollMid > 0) {
                 const bwNow = (bollUpper - bollLower) / bollMid * 100;
                 const prevCloses = closesWithToday.slice(0, -1);
@@ -3052,8 +3340,8 @@ class StrategyEngine {
         if (hasKline && highs.length >= 5 && lows.length >= 5) {
             const recentHighs = highs.slice(-5);
             const recentLows = lows.slice(-5);
-            const highest5 = Math.max(...recentHighs);
-            const lowest5 = Math.min(...recentLows);
+            const highest5 = safeArrMax(recentHighs);
+            const lowest5 = safeArrMin(recentLows);
             const range5 = (highest5 - lowest5) / lowest5 * 100;
             if (range5 > 10) {
                 results.push(this._make(
@@ -3077,7 +3365,7 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 20) {
-            const ma20Price = this.sma(closesWithToday, 20);
+            const ma20Price = getSma(20);
             if (ma20Price && ma20Price > 0) {
                 const distFromMa = (cp - ma20Price) / ma20Price * 100;
                 if (distFromMa > 10) {
@@ -3107,8 +3395,8 @@ class StrategyEngine {
         // =================================================================
 
         if (hasKline && closes.length >= 20) {
-            const rsiNovel = this.calcRsi(closesWithToday, 14);
-            const mfiNovel = this.calcMfi(highsWithToday, lowsWithToday, closesWithToday, volumesWithToday);
+            const rsiNovel = getRsi(14);
+            const mfiNovel = getMfi();
             if (rsiNovel !== null && mfiNovel !== null) {
                 if (rsiNovel < 30 && mfiNovel < 30) {
                     results.push(this._make(
@@ -3143,9 +3431,9 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 60) {
-            const ma5Novel = this.sma(closesWithToday, 5);
-            const ma20Novel = this.sma(closesWithToday, 20);
-            const ma60Novel = this.sma(closesWithToday, 60);
+            const ma5Novel = getSma(5);
+            const ma20Novel = getSma(20);
+            const ma60Novel = getSma(60);
             if (ma5Novel && ma20Novel && ma60Novel) {
                 let score = 0;
                 if (ma5Novel > ma20Novel) score += 2; else score -= 2;
@@ -3166,19 +3454,19 @@ class StrategyEngine {
 
         if (hasKline && closes.length >= 20) {
             let tForce = 0;
-            const rsiT = this.calcRsi(closesWithToday, 6);
+            const rsiT = getRsi(6);
             if (rsiT !== null) {
                 if (rsiT > 80) tForce += 3;
                 else if (rsiT > 60) tForce += 1;
                 else if (rsiT < 20) tForce -= 3;
                 else if (rsiT < 40) tForce -= 1;
             }
-            const ma5T = this.sma(closesWithToday, 5);
-            const ma10T = this.sma(closesWithToday, 10);
+            const ma5T = getSma(5);
+            const ma10T = getSma(10);
             if (ma5T && ma10T) {
                 if (ma5T > ma10T) tForce += 2; else tForce -= 2;
             }
-            const [kT, dT, jT] = this.calcKdj(highsWithToday, lowsWithToday, closesWithToday, 9, 3, 3);
+            const [kT, dT, jT] = getKdj(9, 3, 3);
             if (jT !== null) {
                 if (jT > 100) tForce += 2;
                 else if (jT > 80) tForce += 1;
@@ -3231,8 +3519,8 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 10) {
-            let maxPrice = Math.max(...closesWithToday.slice(-20));
-            let minPrice = Math.min(...closesWithToday.slice(-20));
+            let maxPrice = safeArrMax(closesWithToday.slice(-20));
+            let minPrice = safeArrMin(closesWithToday.slice(-20));
             if (maxPrice > minPrice) {
                 const position = (cp - minPrice) / (maxPrice - minPrice) * 100;
                 if (position > 90) {
@@ -3262,8 +3550,8 @@ class StrategyEngine {
         // =================================================================
 
         if (hasKline && closes.length >= 20) {
-            const ma5Final = this.sma(closesWithToday, 5);
-            const ma20Final = this.sma(closesWithToday, 20);
+            const ma5Final = getSma(5);
+            const ma20Final = getSma(20);
             if (ma5Final && ma20Final) {
                 const diffPct = (ma5Final - ma20Final) / ma20Final * 100;
                 if (diffPct > 3) {
@@ -3289,8 +3577,8 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 60) {
-            const ma20Final2 = this.sma(closesWithToday, 20);
-            const ma60Final = this.sma(closesWithToday, 60);
+            const ma20Final2 = getSma(20);
+            const ma60Final = getSma(60);
             if (ma20Final2 && ma60Final) {
                 const diffPct2 = (ma20Final2 - ma60Final) / ma60Final * 100;
                 if (diffPct2 > 5) {
@@ -3310,7 +3598,7 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 30) {
-            const [bollLower3, bollMid3, bollUpper3] = this.calcBollinger(closesWithToday);
+            const [bollLower3, bollMid3, bollUpper3] = getBoll();
             if (bollLower3 && bollMid3 && bollUpper3) {
                 const upperDist = (bollUpper3 - cp) / cp * 100;
                 const lowerDist = (cp - bollLower3) / cp * 100;
@@ -3339,7 +3627,7 @@ class StrategyEngine {
         if (hasKline && volumes.length >= 20) {
             const avgVol20Final = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
             const avgVol5Final = volumes.slice(-5).reduce((a, b) => a + b, 0) / 5;
-            if (avgVol20Final > 0 && avgVol5Final > avgVol20Final * 1.5 && chg > 0) {
+            if (avgVol20Final > 0 && avgVol5Final > avgVol20Final * 1.5 && chg > 0.5) {
                 results.push(this._make(
                     '量价齐升(放量上涨)', '📈', CATEGORY_VOLUME, '高', 1,
                     `5日均量是20日均量的${(avgVol5Final / avgVol20Final * 100 - 100).toFixed(0)}%，且股价上涨${chg.toFixed(2)}%，量价齐升！`,
@@ -3367,7 +3655,7 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 120) {
-            const ma120Final = this.sma(closesWithToday, 120);
+            const ma120Final = getSma(120);
             if (ma120Final && ma120Final > 0) {
                 const distFrom120 = (cp - ma120Final) / ma120Final * 100;
                 if (distFrom120 > 20) {
@@ -3393,7 +3681,7 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 60) {
-            const ma60Final2 = this.sma(closesWithToday, 60);
+            const ma60Final2 = getSma(60);
             if (ma60Final2 && ma60Final2 > 0) {
                 const distFrom60 = (cp - ma60Final2) / ma60Final2 * 100;
                 if (distFrom60 > 15) {
@@ -3406,7 +3694,7 @@ class StrategyEngine {
                     results.push(this._make(
                         `价格远低于季线(${distFrom60.toFixed(0)}%)`, '📉', CATEGORY_TREND, '中', 2,
                         `股价较MA60低${Math.abs(distFrom60).toFixed(0)}%，中期趋势弱势。`,
-                        'SELL', '远低于季线是中期弱势'
+                        'AVOID_BUY', '远低于季线是中期弱势'
                     ));
                 }
             }
@@ -3438,8 +3726,10 @@ class StrategyEngine {
         // =================================================================
 
         if (hasKline && closes.length >= 30) {
-            const roc10 = (closesWithToday[closesWithToday.length - 1] - closesWithToday[closesWithToday.length - 11]) / closesWithToday[closesWithToday.length - 11] * 100;
-            const roc20 = (closesWithToday[closesWithToday.length - 1] - closesWithToday[closesWithToday.length - 21]) / closesWithToday[closesWithToday.length - 21] * 100;
+            const roc10Base = closesWithToday[closesWithToday.length - 11];
+            const roc10 = roc10Base > 0 ? (closesWithToday[closesWithToday.length - 1] - roc10Base) / roc10Base * 100 : 0;
+            const roc20Base = closesWithToday[closesWithToday.length - 21];
+            const roc20 = roc20Base > 0 ? (closesWithToday[closesWithToday.length - 1] - roc20Base) / roc20Base * 100 : 0;
             if (roc10 > 0 && roc20 > 0) {
                 results.push(this._make(
                     '短期+中期动量向上', '📈', CATEGORY_TREND, '中', 2,
@@ -3492,24 +3782,24 @@ class StrategyEngine {
                 if (idx - 1 >= 0 && highs[idx] > highs[idx - 1]) higherHighs++;
                 if (idx - 1 >= 0 && lows[idx] < lows[idx - 1]) lowerLows++;
             }
-            if (higherHighs >= 2 && lowerLows >= 2) {
+            if (higherHighs >= 2 && lowerLows === 0) {
                 results.push(this._make(
                     '高低点同步抬升', '📈', CATEGORY_PATTERN, '中', 2,
-                    '连续创新高新低，上升趋势明显。',
+                    '连续创新高且不创新低，上升趋势明显。',
                     'BUY', '高低点同步抬升是强势'
                 ));
-            } else if (higherHighs === 0 && lowerLows === 0) {
+            } else if (higherHighs === 0 && lowerLows >= 2) {
                 results.push(this._make(
                     '高低点同步下降', '📉', CATEGORY_PATTERN, '中', 2,
-                    '连续降低高低点，下降趋势明显。',
+                    '连续创新低且不创新高，下降趋势明显。',
                     'SELL', '高低点同步下降是弱势'
                 ));
             }
         }
 
         if (hasKline && closes.length >= 60) {
-            const ma20Last = this.sma(closesWithToday, 20);
-            const ma60Last = this.sma(closesWithToday, 60);
+            const ma20Last = getSma(20);
+            const ma60Last = getSma(60);
             const prevMa20 = this.sma(closesWithToday.slice(0, -1), 20);
             const prevMa60 = this.sma(closesWithToday.slice(0, -1), 60);
             if (ma20Last && ma60Last && prevMa20 && prevMa60) {
@@ -3530,9 +3820,9 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 60) {
-            const ma5L = this.sma(closesWithToday, 5);
-            const ma10L = this.sma(closesWithToday, 10);
-            const ma20L = this.sma(closesWithToday, 20);
+            const ma5L = getSma(5);
+            const ma10L = getSma(10);
+            const ma20L = getSma(20);
             if (ma5L && ma10L && ma20L) {
                 if (ma5L > ma10L && ma10L > ma20L) {
                     results.push(this._make(
@@ -3604,8 +3894,8 @@ class StrategyEngine {
             }
         }
 
-        if (hasKline && closes.length >= 60) {
-            const ma60Trend = this.sma(closesWithToday, 60);
+        if (hasKline && closes.length >= 65) {
+            const ma60Trend = getSma(60);
             const ma60Prev = this.sma(closesWithToday.slice(0, -5), 60);
             if (ma60Trend && ma60Prev) {
                 const ma60Change = (ma60Trend - ma60Prev) / ma60Prev * 100;
@@ -3630,9 +3920,9 @@ class StrategyEngine {
         // =================================================================
 
         if (hasKline && closes.length >= 20) {
-            const ma20Ref = this.sma(closesWithToday, 20);
+            const ma20Ref = getSma(20);
             if (ma20Ref && ma20Ref > 0) {
-                const atrLocal = this.calcAtr(highsWithToday, lowsWithToday, closesWithToday, 14);
+                const atrLocal = getAtr(14);
                 if (atrLocal && atrLocal > 0) {
                     const atrMaRatio = atrLocal / ma20Ref * 100;
                     if (atrMaRatio > 5) {
@@ -3703,8 +3993,8 @@ class StrategyEngine {
         }
 
         if (hasKline && highs.length >= 10 && lows.length >= 10) {
-            const recentHigh = Math.max(...highs.slice(-10));
-            const recentLow = Math.min(...lows.slice(-10));
+            const recentHigh = safeArrMax(highs.slice(-10));
+            const recentLow = safeArrMin(lows.slice(-10));
             if (recentHigh > recentLow) {
                 const range = (recentHigh - recentLow) / recentLow * 100;
                 const positionPercent = (cp - recentLow) / (recentHigh - recentLow) * 100;
@@ -3738,8 +4028,8 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 60) {
-            const ma20S = this.sma(closesWithToday, 20);
-            const ma60S = this.sma(closesWithToday, 60);
+            const ma20S = getSma(20);
+            const ma60S = getSma(60);
             if (ma20S && ma60S && ma60S > 0) {
                 const spread20_60 = (ma20S - ma60S) / ma60S * 100;
                 results.push(this._make(
@@ -3764,8 +4054,8 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 10) {
-            let highestClose = Math.max(...closesWithToday.slice(-20));
-            let lowestClose = Math.min(...closesWithToday.slice(-20));
+            let highestClose = safeArrMax(closesWithToday.slice(-20));
+            let lowestClose = safeArrMin(closesWithToday.slice(-20));
             if (highestClose > lowestClose) {
                 const rangePct = (highestClose - lowestClose) / lowestClose * 100;
                 results.push(this._make(
@@ -3782,7 +4072,7 @@ class StrategyEngine {
 
         let atrVal = null;
         if (hasKline && closes.length >= 15) {
-            atrVal = this.calcAtr(highsWithToday, lowsWithToday, closesWithToday, 14);
+            atrVal = getAtr(14);
         }
         if (atrVal === null || atrVal <= 0) {
             atrVal = cp * 0.02;
@@ -3881,16 +4171,16 @@ class StrategyEngine {
         };
 
         if (hasKline && closes.length >= 60) {
-            const ma5 = this.sma(closesWithToday, 5) || 0;
-            const ma10 = this.sma(closesWithToday, 10) || 0;
-            const ma20 = this.sma(closesWithToday, 20) || 0;
-            const ma60 = this.sma(closesWithToday, 60) || 0;
+            const ma5 = getSma(5) || 0;
+            const ma10 = getSma(10) || 0;
+            const ma20 = getSma(20) || 0;
+            const ma60 = getSma(60) || 0;
             if (ma5 && ma10 && ma20 && ma60) {
                 addIfNew(
                     'MA5×MA10常态', '📊', CATEGORY_TREND, '中', 4,
                     `MA5(${ma5.toFixed(2)}) MA10(${ma10.toFixed(2)})，当前${ma5 > ma10 ? '多头排列' : '空头排列'}，差${(Math.abs(ma5 - ma10) / ma10 * 100).toFixed(2)}%。`,
                     Math.abs(ma5 - ma10) / ma10 < 0.02 ? 'HOLD' : (ma5 > ma10 ? 'BUY' : 'SELL'),
-                    `MA5与MA10偏离${(Math.abs(ma5 - ma10) / ma10 * 100).toFixed(1)}%，${Math.abs(ma5 - ma10) / ma10 * 100 < 1 ? '粘合震荡' : '有趋势'}`
+                    `MA5与MA10偏离${(Math.abs(ma5 - ma10) / ma10 * 100).toFixed(1)}%，${Math.abs(ma5 - ma10) / ma10 * 100 < 2 ? '粘合震荡' : '有趋势'}`
                 );
                 addIfNew(
                     'MA20×MA60趋势', '📈', CATEGORY_TREND, '中', 4,
@@ -3902,7 +4192,7 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 15) {
-            const rsi = this.calcRsi(closesWithToday, 14);
+            const rsi = getRsi(14);
             if (rsi !== null) {
                 const rsiStatus = rsi > 70 ? '超买区' : (rsi < 30 ? '超卖区' : '常态区');
                 addIfNew(
@@ -3915,7 +4205,7 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 9) {
-            const [k, d, j] = this.calcKdj(highsWithToday, lowsWithToday, closesWithToday);
+            const [k, d, j] = getKdj();
             if (k !== null && d !== null) {
                 const kdjStatus = j > 80 ? '超买' : (j < 20 ? '超卖' : '常态');
                 addIfNew(
@@ -3954,7 +4244,7 @@ class StrategyEngine {
             `偏离均价${Math.abs(devFromAvg).toFixed(1)}%，${Math.abs(devFromAvg) > 2 ? '极端偏离将回归' : '正常波动'}`
         );
 
-        const atrLocal = hasKline && closes.length >= 14 ? this.calcAtr(highsWithToday, lowsWithToday, closesWithToday, 14) : null;
+        const atrLocal = hasKline && closes.length >= 14 ? getAtr(14) : null;
         if (atrLocal) {
             const atrPctLocal = cp > 0 ? atrLocal / cp * 100 : 0;
             addIfNew(
@@ -3966,8 +4256,8 @@ class StrategyEngine {
         }
 
         if (hasKline && closes.length >= 20) {
-            const high20 = Math.max(...highs.slice(-20));
-            const low20 = Math.min(...lows.slice(-20));
+            const high20 = safeArrMax(highs.slice(-20));
+            const low20 = safeArrMin(lows.slice(-20));
             if (high20 > low20) {
                 const pos20 = (cp - low20) / (high20 - low20) * 100;
                 const posStatus = pos20 > 80 ? '高位区' : (pos20 < 20 ? '低位区' : '中位区');
@@ -4047,7 +4337,7 @@ class StrategyEngine {
             }
 
             if (hasKline && closes.length >= 20) {
-                const [bollLowerT, bollMidT, bollUpperT] = this.calcBollinger(closesWithToday);
+                const [bollLowerT, bollMidT, bollUpperT] = getBoll();
                 if (bollLowerT && bollLowerT < cp) {
                     supportLevels.push({ price: bollLowerT, weight: 2 });
                 }
@@ -4210,8 +4500,12 @@ class StrategyEngine {
                 reasonDetail = `多空信号均衡（买${buyScore}:卖${sellScore}），震荡行情，箱底买箱顶卖`;
             }
 
+            // 计算实际风险：做T失败时价格反向偏移的风险
+            const tLossRisk = cp > 0 ? Math.abs(tSellPrice - tBuyPrice) / cp * 100 * 0.3 + feeRate * 100 * 2 : 0;
+            const tRiskReward = tLossRisk > 0 ? Math.round((profitAfterFee / tLossRisk) * 100) / 100 : 0;
+
             results.unshift(this._make(
-                '⭐ 综合策略做T建议', '🏆', CATEGORY_MICRO, '极高', 0,
+                '⭐ 综合策略做T建议', '🏆', CATEGORY_MICRO, '高', 1,
                 `${actionDesc}。${reasonDetail}。预计盈利${profitAfterFee.toFixed(2)}%（扣除手续费）。`,
                 tAction,
                 `基于${results.length}个策略综合分析，加权计算支撑位与压力位，确保扣除手续费后盈利`,
@@ -4219,8 +4513,8 @@ class StrategyEngine {
                     buy_price: tBuyPrice,
                     sell_price: tSellPrice,
                     profit_potential: Math.round(profitAfterFee * 100) / 100,
-                    loss_risk: 0,
-                    risk_reward: 99,
+                    loss_risk: Math.round(tLossRisk * 100) / 100,
+                    risk_reward: tRiskReward,
                     buy_score: buyScore,
                     sell_score: sellScore,
                     bias: Math.round(bias * 100) / 100,
@@ -4243,11 +4537,25 @@ class StrategyEngine {
 
         // 综合趋势方向：基于买卖信号的优先级权重加权计算
         let _buyWeight = 0, _sellWeight = 0;
-        for (const s of buySignals) {
-            _buyWeight += s.priority === 0 ? 3 : s.priority === 1 ? 2 : 1;
-        }
-        for (const s of sellSignals) {
-            _sellWeight += s.priority === 0 ? 3 : s.priority === 1 ? 2 : 1;
+        for (const s of results) {
+            const w = s.priority === 0 ? 3 : s.priority === 1 ? 2 : 1;
+            if (BUY_ACTIONS.has(s.action)) {
+                _buyWeight += w;
+            } else if (SELL_ACTIONS.has(s.action)) {
+                _sellWeight += w;
+            } else if (s.action === 'BUY_THEN_SELL') {
+                // 正T偏多：买入意愿更强
+                _buyWeight += w * 0.7;
+                _sellWeight += w * 0.3;
+            } else if (s.action === 'SELL_THEN_BUY') {
+                // 反T偏空：卖出意愿更强
+                _buyWeight += w * 0.3;
+                _sellWeight += w * 0.7;
+            } else if (s.action === 'BOX_TRADING' || s.action === 'TRADING_OPPORTUNITY') {
+                // 箱体/机会：中性
+                _buyWeight += w * 0.5;
+                _sellWeight += w * 0.5;
+            }
         }
         const _totalWeight = _buyWeight + _sellWeight;
         const _bias = _totalWeight > 0 ? (_buyWeight - _sellWeight) / _totalWeight : 0;
@@ -4258,13 +4566,15 @@ class StrategyEngine {
         else if (_bias <= -0.15) _direction = 'SELL';
 
         const summary = {
+            stock_code: code,
+            stock_name: name,
             current_price: cp,
             atr: Math.round(atrVal * 100) / 100,
             atr_pct: cp > 0 ? Math.round((atrVal / cp * 100) * 100) / 100 : 0,
             total_signals: results.length,
-            buy_signals: results.filter(s => BUY_ACTIONS.has(s.action)).length,
-            sell_signals: results.filter(s => SELL_ACTIONS.has(s.action)).length,
-            t_signals: results.filter(s => T_ACTIONS.has(s.action)).length,
+            buy_signals: buySignals.length,
+            sell_signals: sellSignals.length,
+            t_signals: tSignals.length,
             direction: _direction,
             trend_bias: Math.round(_bias * 100) / 100,
             buy_weight: _buyWeight,
@@ -4276,11 +4586,11 @@ class StrategyEngine {
             summary.best_buy = {
                 name: bestBuy.name,
                 entry_price: cp,
-                target_price: bestBuy.target_price,
-                stop_loss: bestBuy.stop_loss,
-                profit_potential: bestBuy.profit_potential,
-                loss_risk: bestBuy.loss_risk,
-                risk_reward: bestBuy.risk_reward,
+                target_price: bestBuy.target_price ?? null,
+                stop_loss: bestBuy.stop_loss ?? null,
+                profit_potential: bestBuy.profit_potential ?? null,
+                loss_risk: bestBuy.loss_risk ?? null,
+                risk_reward: bestBuy.risk_reward ?? null,
             };
         }
 
@@ -4289,11 +4599,11 @@ class StrategyEngine {
             summary.best_sell = {
                 name: bestSell.name,
                 entry_price: cp,
-                target_price: bestSell.target_price,
-                stop_loss: bestSell.stop_loss,
-                profit_potential: bestSell.profit_potential,
-                loss_risk: bestSell.loss_risk,
-                risk_reward: bestSell.risk_reward,
+                target_price: bestSell.target_price ?? null,
+                stop_loss: bestSell.stop_loss ?? null,
+                profit_potential: bestSell.profit_potential ?? null,
+                loss_risk: bestSell.loss_risk ?? null,
+                risk_reward: bestSell.risk_reward ?? null,
             };
         }
 
@@ -4302,11 +4612,11 @@ class StrategyEngine {
             summary.best_t = {
                 name: bestT.name,
                 entry_price: cp,
-                buy_price: bestT.buy_price,
-                sell_price: bestT.sell_price,
-                profit_potential: bestT.profit_potential,
-                loss_risk: bestT.loss_risk,
-                risk_reward: bestT.risk_reward,
+                buy_price: bestT.buy_price ?? cp,
+                sell_price: bestT.sell_price ?? cp,
+                profit_potential: bestT.profit_potential ?? null,
+                loss_risk: bestT.loss_risk ?? null,
+                risk_reward: bestT.risk_reward ?? null,
                 action: bestT.action,
             };
         }
@@ -4315,32 +4625,52 @@ class StrategyEngine {
         // 逻辑：盘中（9:30-15:00）用昨收价固定预测，收盘后用今收价预测明天
         const marketHour = now.getHours();
         const isAfterClose = marketHour >= 15; // 下午3点后，用今收价预测明天
-        const isMarketTime = (marketHour >= 9 && marketHour < 15) || 
-                            (marketHour === 9 && now.getMinutes() >= 30);
-        
+
         if (hasKline && closes.length >= 5) {
             let amp5 = 0, amp10 = 0;
+            let validDays5 = 0, validDays10 = 0;
             const ampDays = Math.min(10, closes.length - 1);
             for (let i = 1; i <= ampDays; i++) {
                 const idx = closes.length - 1 - i;
-                if (idx >= 0 && closes[idx] > 0) {
-                    const dailyAmp = (highs[idx] - lows[idx]) / closes[idx] * 100;
-                    if (i <= 5) amp5 += dailyAmp;
-                    if (i <= 10) amp10 += dailyAmp;
+                if (idx - 1 >= 0 && closes[idx - 1] > 0) {
+                    const dailyAmp = (highs[idx] - lows[idx]) / closes[idx - 1] * 100;
+                    if (dailyAmp > 0 && dailyAmp < 30) {
+                        if (i <= 5) {
+                            amp5 += dailyAmp;
+                            validDays5++;
+                        }
+                        amp10 += dailyAmp;
+                        validDays10++;
+                    }
                 }
             }
-            amp5 = amp5 / Math.min(5, ampDays);
-            amp10 = amp10 / Math.min(10, ampDays);
+            amp5 = validDays5 > 0 ? amp5 / validDays5 : 3;
+            amp10 = validDays10 > 0 ? amp10 / validDays10 : 3;
             
             const avgAmplitude = (amp5 * 0.6 + amp10 * 0.4);
             const atrRange = atrVal > 0 ? atrVal : (pc * avgAmplitude / 100);
             
-            // 预测用趋势：盘中用均线排列（历史数据，全天固定），收盘后用当日趋势
+            // 预测用趋势：综合策略投票（60%）+ 历史趋势（40%）
+            // 策略投票趋势：基于所有策略的加权结果，映射到 -0.3~0.3
+            const strategyTrendBias = Math.max(-0.3, Math.min(0.3, _bias * 0.3));
+
+            // 历史趋势偏移（均线排列或当日趋势）
             let predictTrend = '横盘';
-            if (isAfterClose) {
+            if (isAfterClose && hasKline && closes.length >= 20) {
+                // 收盘后：用均线排列判断趋势（比单日涨跌更可靠）
+                const ma5 = this.sma(closes, 5);
+                const ma10 = this.sma(closes, 10);
+                const ma20 = this.sma(closes, 20);
+                if (ma5 && ma10 && ma20 && ma5 > ma10 && ma10 > ma20) {
+                    predictTrend = '上升';
+                } else if (ma5 && ma10 && ma20 && ma5 < ma10 && ma10 < ma20) {
+                    predictTrend = '下跌';
+                } else {
+                    predictTrend = trend; // 均线不明显时回退到涨跌判断
+                }
+            } else if (isAfterClose) {
                 predictTrend = trend;
             } else if (hasKline && closes.length >= 20) {
-                // 基于均线排列判断趋势（5日、10日、20日均线）
                 const ma5 = this.sma(closes, 5);
                 const ma10 = this.sma(closes, 10);
                 const ma20 = this.sma(closes, 20);
@@ -4350,18 +4680,20 @@ class StrategyEngine {
                     predictTrend = '下跌';
                 }
             } else if (hasKline && closes.length >= 2) {
-                // 数据不足时，用昨日涨跌判断
                 const prevChg = (closes[closes.length - 1] - closes[closes.length - 2]) / closes[closes.length - 2] * 100;
                 predictTrend = prevChg > 0.5 ? '上升' : (prevChg < -0.5 ? '下跌' : '横盘');
             }
-            const trendBias = predictTrend === '上升' ? 0.3 : (predictTrend === '下跌' ? -0.3 : 0);
+            const historyTrendBias = predictTrend === '上升' ? 0.3 : (predictTrend === '下跌' ? -0.3 : 0);
+
+            // 综合趋势 = 策略投票（60%）+ 历史趋势（40%）
+            const trendBias = strategyTrendBias * 0.6 + historyTrendBias * 0.4;
             
-            // 基准价：盘中用昨收价固定预测，收盘后用今收价预测明天
-            const basePrice = isAfterClose ? cp : pc;
+            // 基准价：动态预测始终用当前实时价，预测区间随当前价格波动；收盘后当前价即今收价，用于预测明天
+            const basePrice = cp;
             
             const halfRange = basePrice * avgAmplitude / 100 / 2;
-            let predictedHigh = basePrice + halfRange * (1 + trendBias * 0.3);
-            let predictedLow = basePrice - halfRange * (1 - trendBias * 0.3);
+            let predictedHigh = basePrice + halfRange * (1 + trendBias * 0.5);
+            let predictedLow = basePrice - halfRange * (1 - trendBias * 0.5);
             
             // 盘中不修正预测值，只在收盘后更新
             if (isAfterClose) {
@@ -4371,21 +4703,29 @@ class StrategyEngine {
             }
             
             // 支撑压力位修正（仅在有足够历史数据时）—— 基于历史K线，盘中固定
+            // 缓存支撑压力位结果，避免重复计算
+            let cachedSR = null, cachedRR = null;
             if (hasKline && closes.length >= 20) {
-                const [sR, rR] = this.findSupportResistance(highs, lows, closes);
-                if (rR && rR.length > 0) {
-                    const nearestResistance = rR[rR.length - 1];
-                    if (nearestResistance > basePrice && nearestResistance < predictedHigh * 1.05) {
-                        predictedHigh = Math.max(predictedHigh, nearestResistance);
+                [cachedSR, cachedRR] = this.findSupportResistance(highs, lows, closes);
+            }
+            if (cachedSR !== null) {
+                if (cachedRR && cachedRR.length > 0) {
+                    const aboveRes = cachedRR.filter(r => r > basePrice).sort((a, b) => a - b);
+                    const nearestResistance = aboveRes.length > 0 ? aboveRes[0] : null;
+                    if (nearestResistance !== null && nearestResistance < predictedHigh) {
+                        predictedHigh = Math.min(predictedHigh, nearestResistance);
                     }
                 }
-                if (sR && sR.length > 0) {
-                    const nearestSupport = sR[sR.length - 1];
-                    if (nearestSupport < basePrice && nearestSupport > predictedLow * 0.95) {
-                        predictedLow = Math.min(predictedLow, nearestSupport);
+                if (cachedSR && cachedSR.length > 0) {
+                    const belowSup = cachedSR.filter(s => s < basePrice).sort((a, b) => b - a);
+                    const nearestSupport = belowSup.length > 0 ? belowSup[0] : null;
+                    if (nearestSupport !== null && nearestSupport > predictedLow) {
+                        predictedLow = Math.max(predictedLow, nearestSupport);
                     }
                 }
             }
+            
+            if (predictedHigh < predictedLow) [predictedHigh, predictedLow] = [predictedLow, predictedHigh];
             
             // 当前位置：相对于固定预测区间的位置
             const pricePosition = predictedHigh > predictedLow 
@@ -4395,7 +4735,7 @@ class StrategyEngine {
             let confidence = 60;
             if (closes.length >= 20) confidence += 10;
             if (Math.abs(amp5 - amp10) < 1) confidence += 10;
-            if (confidence > 85) confidence = 85;
+            if (confidence > 80) confidence = 80;
             
             summary.price_prediction = {
                 predicted_high: Math.round(predictedHigh * 100) / 100,
@@ -4406,7 +4746,11 @@ class StrategyEngine {
                 trend: predictTrend,
                 atr: Math.round(atrVal * 100) / 100,
                 prediction_time: isAfterClose ? '收盘后预测' : '盘中预测',
-                predict_for: isAfterClose ? '明日' : '今日'
+                predict_for: isAfterClose ? '明日' : '今日',
+                target_date: isAfterClose
+                    ? getNextTradingDay(getLocalDateStr(now))
+                    : getLocalDateStr(now),
+                generated_at: now.getTime()
             };
             
             // ============ 固定预测（基于昨日数据，全天不变）============
@@ -4415,7 +4759,9 @@ class StrategyEngine {
             const fixedBase = yesterdayClose > 0 ? yesterdayClose : pc;
             const fixedHalfRange = fixedBase * avgAmplitude / 100 / 2;
             
-            // 固定预测趋势：基于前日均线排列（完全历史数据）
+            // 固定预测趋势：综合策略投票（60%）+ 前日均线排列（40%）
+            const fixedStrategyBias = Math.max(-0.3, Math.min(0.3, _bias * 0.3));
+
             let fixedTrend = '横盘';
             if (closes.length >= 22) {
                 const histCloses = closes.slice(0, -1); // 排除今日
@@ -4428,31 +4774,53 @@ class StrategyEngine {
                     fixedTrend = '下跌';
                 }
             }
-            const fixedTrendBias = fixedTrend === '上升' ? 0.3 : (fixedTrend === '下跌' ? -0.3 : 0);
+            const fixedHistoryBias = fixedTrend === '上升' ? 0.3 : (fixedTrend === '下跌' ? -0.3 : 0);
+
+            // 综合固定趋势 = 策略投票（60%）+ 历史均线（40%）
+            const fixedTrendBias = fixedStrategyBias * 0.6 + fixedHistoryBias * 0.4;
             
-            let fixedHigh = fixedBase + fixedHalfRange * (1 + fixedTrendBias * 0.3);
-            let fixedLow = fixedBase - fixedHalfRange * (1 - fixedTrendBias * 0.3);
+            let fixedHigh = fixedBase + fixedHalfRange * (1 + fixedTrendBias * 0.5);
+            let fixedLow = fixedBase - fixedHalfRange * (1 - fixedTrendBias * 0.5);
             
             // ATR 修正
             const fixedAtr = atrVal > 0 ? atrVal : (fixedBase * avgAmplitude / 100);
             fixedHigh = Math.max(fixedHigh, fixedBase + fixedAtr * 0.5);
             fixedLow = Math.min(fixedLow, fixedBase - fixedAtr * 0.5);
             
-            // 支撑压力位修正
-            if (hasKline && closes.length >= 20) {
-                const [sR, rR] = this.findSupportResistance(highs, lows, closes);
-                if (rR && rR.length > 0) {
-                    const nearestResistance = rR[rR.length - 1];
-                    if (nearestResistance > fixedBase && nearestResistance < fixedHigh * 1.05) {
-                        fixedHigh = Math.max(fixedHigh, nearestResistance);
+            // 支撑压力位修正（复用缓存）
+            if (cachedSR !== null) {
+                if (cachedRR && cachedRR.length > 0) {
+                    const aboveRes = cachedRR.filter(r => r > fixedBase).sort((a, b) => a - b);
+                    const nearestResistance = aboveRes.length > 0 ? aboveRes[0] : null;
+                    if (nearestResistance !== null && nearestResistance > fixedBase && nearestResistance < fixedHigh) {
+                        fixedHigh = Math.max(fixedHigh * 0.95, nearestResistance); // 不完全缩小到阻力位
                     }
                 }
-                if (sR && sR.length > 0) {
-                    const nearestSupport = sR[sR.length - 1];
-                    if (nearestSupport < fixedBase && nearestSupport > fixedLow * 0.95) {
-                        fixedLow = Math.min(fixedLow, nearestSupport);
+                if (cachedSR && cachedSR.length > 0) {
+                    const belowSup = cachedSR.filter(s => s < fixedBase).sort((a, b) => b - a);
+                    const nearestSupport = belowSup.length > 0 ? belowSup[0] : null;
+                    if (nearestSupport !== null && nearestSupport < fixedBase && nearestSupport > fixedLow) {
+                        fixedLow = Math.min(fixedLow * 1.05, nearestSupport);
                     }
                 }
+            }
+
+            if (fixedHigh < fixedLow) [fixedHigh, fixedLow] = [fixedLow, fixedHigh];
+
+            // 固定预测目标日：永远是今天（基于昨收）
+            const fixedTargetDate = getLocalDateStr(now);
+            // 固定预测生成时间：根据配置
+            let fixedGeneratedTime;
+            if (fixedPredHour === 0) {
+                // 凌晨0点：今天0点
+                fixedGeneratedTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0).getTime();
+            } else if (fixedPredHour === 9) {
+                // 早盘9点：今天9点
+                fixedGeneratedTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9, 0, 0).getTime();
+            } else {
+                // 默认：昨日收盘15:00
+                const yesterday = new Date(now.getTime() - 86400000);
+                fixedGeneratedTime = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 15, 0, 0).getTime();
             }
             
             summary.fixed_prediction = {
@@ -4463,7 +4831,9 @@ class StrategyEngine {
                 avg_amplitude: Math.round(avgAmplitude * 100) / 100,
                 atr: Math.round(fixedAtr * 100) / 100,
                 confidence: confidence,
-                predict_for: '今日'
+                predict_for: '今日',
+                target_date: fixedTargetDate,
+                generated_at: fixedGeneratedTime
             };
         }
 
@@ -4480,12 +4850,15 @@ class StrategyEngine {
         return [results, summary];
     }
 
-    analyzePanorama(klineData) {
+    analyzePanorama(klineData, stockInfo = {}) {
         const results = [];
 
         if (!klineData || !Array.isArray(klineData) || klineData.length < 5) {
             return [results, {}];
         }
+
+        const stockCode = stockInfo.code || (klineData[0] && klineData[0].code) || '';
+        const stockName = stockInfo.name || (klineData[0] && klineData[0].name) || '';
 
         const closes = klineData.map(k => k.close);
         const opens = klineData.map(k => k.open);
@@ -4518,7 +4891,8 @@ class StrategyEngine {
         const ma10 = n >= 10 ? this.sma(closes, 10) : null;
         const ma20 = n >= 20 ? this.sma(closes, 20) : null;
 
-        const atrVal = n >= 14 ? this.calcAtr(highs, lows, closes, 14) : (hp - lp);
+        const atrVal = n >= 14 ? this.calcAtr(highs, lows, closes, 14) : (prevClose > 0 ? hp - lp : 0);
+        if (!atrVal || atrVal < 0) atrVal = 0;
 
         if (avgVol5 && avgVol5 > 0) {
             if (volRatio5 > 1.5 && chgPct > 3) {
@@ -4563,8 +4937,8 @@ class StrategyEngine {
         }
 
         if (n >= 20 && avgVol20 && avgVol20 > 0) {
-            const maxVol20 = Math.max(...volumes.slice(-20));
-            const minVol20 = Math.min(...volumes.slice(-20));
+            const maxVol20 = safeArrMax(volumes.slice(-20));
+            const minVol20 = safeArrMin(volumes.slice(-20));
 
             if (vol >= maxVol20) {
                 const body = Math.abs(cp - op);
@@ -4584,7 +4958,7 @@ class StrategyEngine {
             }
 
             if (vol <= minVol20) {
-                const prev3Low = n >= 3 ? Math.min(...closes.slice(-4, -1)) : cp;
+                const prev3Low = n >= 3 ? safeArrMin(closes.slice(-4, -1)) : cp;
                 const isStopping = cp > prev3Low * 0.98;
                 if (isStopping) {
                     const target = cp * 1.1;
@@ -4599,24 +4973,24 @@ class StrategyEngine {
             }
         }
 
-        if (n >= 20) {
-            const prevHigh20Price = Math.max(...closes.slice(-21, -1));
-            const prevHigh20Vol = Math.max(...volumes.slice(-21, -1));
+        if (n >= 42) {
+            const prevHigh20Price = safeArrMax(closes.slice(-42, -22));
+            const prevHigh20Vol = safeArrMax(volumes.slice(-42, -22));
 
             if (cp > prevHigh20Price && vol < prevHigh20Vol * 0.9) {
                 const target = cp * 0.92;
                 const stop = cp * 1.03;
                 results.push(this._make(
                     '量价顶背离', '📛', CAT_VOL_PRICE, '高', 1,
-                    `价格创20日新高${cp.toFixed(2)}，但成交量未创新高，量价顶背离，卖出信号。`,
+                    `价格突破前20日高点${prevHigh20Price.toFixed(2)}，但成交量未创新高，量价顶背离，卖出信号。`,
                     'SELL', `顶背离说明上涨动能不足，价格新高但量能不济，回调风险大`,
                     { target_price: target, stop_loss: stop, price_new_high: true, volume_new_high: false }
                 ));
             }
 
-            if (n >= 21) {
-                const prevLow20Price = Math.min(...closes.slice(-21, -1));
-                const prevLowVol = Math.max(...volumes.slice(-21, -1));
+            if (n >= 42) {
+                const prevLow20Price = safeArrMin(closes.slice(-42, -22));
+                const prevLowVol = safeArrMin(volumes.slice(-42, -22));
                 if (cp < prevLow20Price && vol < prevLowVol * 0.9) {
                     const target = cp * 1.08;
                     const stop = cp * 0.95;
@@ -4649,8 +5023,8 @@ class StrategyEngine {
             }
         }
 
-        if (n >= 20) {
-            const prevHigh = Math.max(...highs.slice(-21, -1));
+        if (n >= 22) {
+            const prevHigh = safeArrMax(highs.slice(-22, -2));
             if (cp > prevHigh && volRatio5 > 1.3) {
                 const target = cp * 1.15;
                 const stop = prevHigh * 0.98;
@@ -4707,7 +5081,7 @@ class StrategyEngine {
         if (n >= 5) {
             let consecutiveInflow = 0;
             let consecutiveOutflow = 0;
-            for (let i = 2; i < n; i++) {
+            for (let i = 1; i < n; i++) {
                 const range = highs[i] - lows[i];
                 const pos = range > 0 ? (closes[i] - lows[i]) / range : 0.5;
                 const inflow = (pos - 0.5) * 2;
@@ -4781,7 +5155,7 @@ class StrategyEngine {
             const obvSeries = [];
             for (let i = 0; i < n; i++) {
                 if (i === 0) {
-                    obv = volumes[i];
+                    obv = 0;
                 } else {
                     if (closes[i] > closes[i - 1]) {
                         obv += volumes[i];
@@ -4791,8 +5165,8 @@ class StrategyEngine {
                 }
                 obvSeries.push(obv);
             }
-            const obv20High = Math.max(...obvSeries.slice(-20));
-            const obv20Low = Math.min(...obvSeries.slice(-20));
+            const obv20High = safeArrMax(obvSeries.slice(-20));
+            const obv20Low = safeArrMin(obvSeries.slice(-20));
             const currentObv = obvSeries[n - 1];
 
             if (currentObv >= obv20High) {
@@ -4987,7 +5361,7 @@ class StrategyEngine {
         }
 
         if (n >= 20 && ma20 && ma20 > 0) {
-            const priceRange20 = (Math.max(...highs.slice(-20)) - Math.min(...lows.slice(-20))) / ma20 * 100;
+            const priceRange20 = (safeArrMax(highs.slice(-20)) - safeArrMin(lows.slice(-20))) / ma20 * 100;
             const volRatio20 = avgVol20 > 0 ? vol / avgVol20 : 1;
 
             if (priceRange20 < 10 && volRatio20 < 0.8) {
@@ -5010,8 +5384,8 @@ class StrategyEngine {
         }
 
         if (n >= 20) {
-            const high20 = Math.max(...highs.slice(-20));
-            const low20 = Math.min(...lows.slice(-20));
+            const high20 = safeArrMax(highs.slice(-20));
+            const low20 = safeArrMin(lows.slice(-20));
             const range20 = high20 - low20;
             const posInRange = range20 > 0 ? (cp - low20) / range20 : 0.5;
 
@@ -5171,8 +5545,8 @@ class StrategyEngine {
         }
 
         if (body > 0 && upperShadow / body > 2 && avgVol5 && volRatio5 > 1.2 && n >= 20) {
-            const high20 = Math.max(...highs.slice(-20));
-            const low20 = Math.min(...lows.slice(-20));
+            const high20 = safeArrMax(highs.slice(-20));
+            const low20 = safeArrMin(lows.slice(-20));
             const pos20 = high20 > low20 ? (cp - low20) / (high20 - low20) : 0.5;
             if (pos20 < 0.6) {
                 results.push(this._make(
@@ -5185,8 +5559,8 @@ class StrategyEngine {
         }
 
         if (body > 0 && lowerShadow / body > 2 && avgVol5 && volRatio5 > 1.2 && n >= 20) {
-            const high20 = Math.max(...highs.slice(-20));
-            const low20 = Math.min(...lows.slice(-20));
+            const high20 = safeArrMax(highs.slice(-20));
+            const low20 = safeArrMin(lows.slice(-20));
             const pos20 = high20 > low20 ? (cp - low20) / (high20 - low20) : 0.5;
             if (pos20 < 0.6) {
                 results.push(this._make(
@@ -5198,8 +5572,8 @@ class StrategyEngine {
             }
         }
 
-        if (n >= 20) {
-            const prevHigh = Math.max(...highs.slice(-21, -1));
+        if (n >= 22) {
+            const prevHigh = safeArrMax(highs.slice(-22, -2));
             if (cp > prevHigh) {
                 results.push(this._make(
                     '突破前高（消息面配合预期）', '📈', CAT_NEWS, '中', 2,
@@ -5274,7 +5648,7 @@ class StrategyEngine {
 
         const BUY_ACTIONS = new Set(['BUY', 'STRONG_BUY']);
         const SELL_ACTIONS = new Set(['SELL', 'STRONG_SELL']);
-        const T_ACTIONS = new Set(['T_LONG', 'T_SHORT']);
+        const T_ACTIONS = new Set(['BUY_THEN_SELL', 'SELL_THEN_BUY', 'BOX_TRADING', 'TRADING_OPPORTUNITY']);
 
         const buySignals = results.filter(s => BUY_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
         const sellSignals = results.filter(s => SELL_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
@@ -5282,11 +5656,22 @@ class StrategyEngine {
 
         // 综合趋势方向：基于买卖信号的优先级权重加权计算
         let _buyWeight = 0, _sellWeight = 0;
-        for (const s of buySignals) {
-            _buyWeight += s.priority === 0 ? 3 : s.priority === 1 ? 2 : 1;
-        }
-        for (const s of sellSignals) {
-            _sellWeight += s.priority === 0 ? 3 : s.priority === 1 ? 2 : 1;
+        for (const s of results) {
+            const w = s.priority === 0 ? 3 : s.priority === 1 ? 2 : 1;
+            if (BUY_ACTIONS.has(s.action)) {
+                _buyWeight += w;
+            } else if (SELL_ACTIONS.has(s.action)) {
+                _sellWeight += w;
+            } else if (s.action === 'BUY_THEN_SELL') {
+                _buyWeight += w * 0.7;
+                _sellWeight += w * 0.3;
+            } else if (s.action === 'SELL_THEN_BUY') {
+                _buyWeight += w * 0.3;
+                _sellWeight += w * 0.7;
+            } else if (s.action === 'BOX_TRADING' || s.action === 'TRADING_OPPORTUNITY') {
+                _buyWeight += w * 0.5;
+                _sellWeight += w * 0.5;
+            }
         }
         const _totalWeight = _buyWeight + _sellWeight;
         const _bias = _totalWeight > 0 ? (_buyWeight - _sellWeight) / _totalWeight : 0;
@@ -5297,13 +5682,15 @@ class StrategyEngine {
         else if (_bias <= -0.15) _direction = 'SELL';
 
         const summary = {
+            stock_code: stockCode,
+            stock_name: stockName,
             current_price: cp,
             atr: Math.round(atrVal * 100) / 100,
             atr_pct: cp > 0 ? Math.round((atrVal / cp * 100) * 100) / 100 : 0,
             total_signals: results.length,
-            buy_signals: results.filter(s => BUY_ACTIONS.has(s.action)).length,
-            sell_signals: results.filter(s => SELL_ACTIONS.has(s.action)).length,
-            t_signals: results.filter(s => T_ACTIONS.has(s.action)).length,
+            buy_signals: buySignals.length,
+            sell_signals: sellSignals.length,
+            t_signals: tSignals.length,
             direction: _direction,
             trend_bias: Math.round(_bias * 100) / 100,
             buy_weight: _buyWeight,
@@ -5314,12 +5701,12 @@ class StrategyEngine {
             const bestBuy = buySignals[0];
             const profitPotential = bestBuy.target_price && cp > 0 ? (bestBuy.target_price - cp) / cp * 100 : null;
             const lossRisk = bestBuy.stop_loss && cp > 0 ? (cp - bestBuy.stop_loss) / cp * 100 : null;
-            const riskReward = profitPotential && lossRisk && lossRisk > 0 ? profitPotential / lossRisk : null;
+            const riskReward = profitPotential !== null && lossRisk !== null && lossRisk > 0 ? profitPotential / lossRisk : null;
             summary.best_buy = {
                 name: bestBuy.name,
                 entry_price: cp,
-                target_price: bestBuy.target_price,
-                stop_loss: bestBuy.stop_loss,
+                target_price: bestBuy.target_price ?? null,
+                stop_loss: bestBuy.stop_loss ?? null,
                 profit_potential: profitPotential !== null ? Math.round(profitPotential * 100) / 100 : null,
                 loss_risk: lossRisk !== null ? Math.round(lossRisk * 100) / 100 : null,
                 risk_reward: riskReward !== null ? Math.round(riskReward * 100) / 100 : null,
@@ -5330,7 +5717,7 @@ class StrategyEngine {
             const bestSell = sellSignals[0];
             const profitPotential = bestSell.target_price && cp > 0 ? (cp - bestSell.target_price) / cp * 100 : null;
             const lossRisk = bestSell.stop_loss && cp > 0 ? (bestSell.stop_loss - cp) / cp * 100 : null;
-            const riskReward = profitPotential && lossRisk && lossRisk > 0 ? profitPotential / lossRisk : null;
+            const riskReward = profitPotential !== null && lossRisk !== null && lossRisk > 0 ? profitPotential / lossRisk : null;
             summary.best_sell = {
                 name: bestSell.name,
                 entry_price: cp,
@@ -5344,23 +5731,32 @@ class StrategyEngine {
 
         if (tSignals.length > 0) {
             const bestT = tSignals[0];
+            const tProfitPotential = bestT.target_price && cp > 0 ? (bestT.target_price - cp) / cp * 100 : null;
+            const tLossRisk = bestT.stop_loss && cp > 0 ? (cp - bestT.stop_loss) / cp * 100 : null;
+            const tRiskReward = tProfitPotential !== null && tLossRisk !== null && tLossRisk > 0 ? tProfitPotential / tLossRisk : null;
             summary.best_t = {
                 name: bestT.name,
                 entry_price: cp,
                 buy_price: bestT.buy_price || cp,
                 sell_price: bestT.sell_price || cp,
                 action: bestT.action,
+                profit_potential: tProfitPotential !== null ? Math.round(tProfitPotential * 100) / 100 : null,
+                loss_risk: tLossRisk !== null ? Math.round(tLossRisk * 100) / 100 : null,
+                risk_reward: tRiskReward !== null ? Math.round(tRiskReward * 100) / 100 : null,
             };
         }
 
         const total = results.length;
         const watchCount = results.filter(r => ['WATCH', 'HOLD', 'OBSERVE'].includes(r.action)).length;
+        const activeSignals = total - watchCount;
+        const totalDefined = 107; // TARGET_TOTAL
         summary.strategy_coverage = {
-            total_defined: 58,
+            total_defined: totalDefined,
             triggered: total,
-            coverage_rate: Math.round(total / 58 * 10000) / 100,
+            active_signals: activeSignals,
+            coverage_rate: totalDefined > 0 ? Math.round((total / totalDefined) * 1000) / 10 : 0,
             watch_signals: watchCount,
-            message: `全景策略已分析6大分类58种策略，触发${total}个信号，其中${watchCount}个为观望状态`
+            message: `全景策略已分析6大分类${totalDefined}种策略，触发${total}个信号（其中${activeSignals}个活跃、${watchCount}个观望）`
         };
 
         return [results, summary];
