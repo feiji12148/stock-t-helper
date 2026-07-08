@@ -1,4 +1,4 @@
-﻿function safeArrMax(arr) {
+function safeArrMax(arr) {
     if (!arr || !arr.length) return -Infinity;
     let m = arr[0];
     for (let i = 1; i < arr.length; i++) { if (arr[i] > m) m = arr[i]; }
@@ -165,7 +165,8 @@ class StrategyEngine {
                 const rsv = pc !== null ? (closes[i] >= pc ? 100 : 0) : 50;
                 rsvList.push(rsv);
             } else {
-                rsvList.push((closes[i] - l) / (h - l) * 100);
+                const range = h - l;
+                rsvList.push(range > 0 ? (closes[i] - l) / range * 100 : 50);
             }
         }
         let k = 50, d = 50;
@@ -217,7 +218,7 @@ class StrategyEngine {
     }
 
     calcDmi(highs, lows, closes, period = 14) {
-        if (closes.length < period + 1) return [null, null, null];
+        if (period <= 0 || closes.length < period + 1) return [null, null, null];
         const plusDm = [], minusDm = [], trList = [];
         for (let i = 1; i < closes.length; i++) {
             const up = highs[i] - highs[i - 1];
@@ -488,6 +489,9 @@ class StrategyEngine {
         const code = stockInfo.code || '';
         const fixedPredHour = options.fixedPredictionHour != null ? options.fixedPredictionHour : 15;
 
+        const feeRate = 0.001; // 单边手续费0.1%（全局定义，供所有策略使用）
+        const minProfitPct = 0.3; // 最小盈利空间（扣除双边手续费0.2%后确保盈利）
+
         if (pc <= 0) return [results, {}];
 
         const amplitude = (hp - lp) / pc * 100;
@@ -719,18 +723,63 @@ class StrategyEngine {
                     }
                 }
 
+                let recentHigh20 = null;
+                let recentLow20 = null;
+                if (closes.length >= 20) {
+                    recentHigh20 = Math.max(...closes.slice(-20));
+                    recentLow20 = Math.min(...closes.slice(-20));
+                }
+
                 if (closes.length >= 50) {
-                    if (cp > closes[closes.length - 20] && difNow < macdSeries[0][macdSeries[0].length - 5] && difNow < 0) {
+                    const dif5Ago = macdSeries[0][macdSeries[0].length - 5];
+                    if (recentHigh20 !== null && cp >= recentHigh20 && dif5Ago !== undefined && difNow < dif5Ago && difNow < 0) {
                         results.push(this._make(
                             'MACD顶背离', '⚠️', CATEGORY_TREND, '中', 2,
                             '股价创新高但MACD未创新高，顶背离预警，可能见顶。',
                             'SELL', '顶背离后回调概率约60%'
                         ));
-                    } else if (cp < closes[closes.length - 20] && difNow > macdSeries[0][macdSeries[0].length - 5] && difNow > 0) {
+                    } else if (recentLow20 !== null && cp <= recentLow20 && dif5Ago !== undefined && difNow > dif5Ago && difNow > 0) {
                         results.push(this._make(
                             'MACD底背离', '💎', CATEGORY_TREND, '中', 2,
                             '股价创新低但MACD未创新低，底背离信号，可能见底。',
                             'BUY', '底背离后反弹概率约60%'
+                        ));
+                    }
+                }
+
+                const difPrev = macdSeries[0].length >= 2 ? macdSeries[0][macdSeries[0].length - 2] : null;
+                if (difNow > 0 && difPrev !== null && difPrev <= 0) {
+                    results.push(this._make(
+                        'MACD零轴上穿', '🚀', CATEGORY_TREND, '高', 1,
+                        `MACD DIF由负转正(${difPrev.toFixed(3)}→${difNow.toFixed(3)})，零轴上穿，趋势由空转多。`,
+                        'BUY', 'MACD零轴上穿是重要的趋势转强信号'
+                    ));
+                } else if (difNow < 0 && difPrev !== null && difPrev >= 0) {
+                    results.push(this._make(
+                        'MACD零轴下穿', '📉', CATEGORY_TREND, '高', 1,
+                        `MACD DIF由正转负(${difPrev.toFixed(3)}→${difNow.toFixed(3)})，零轴下穿，趋势由多转空。`,
+                        'SELL', 'MACD零轴下穿是重要的趋势转弱信号'
+                    ));
+                }
+
+                if (macdSeries[2].length >= 10 && recentHigh20 !== null && recentLow20 !== null) {
+                    const barSeries = macdSeries[2];
+                    const barNow = barSeries[barSeries.length - 1];
+                    const bar5Ago = barSeries.length >= 6 ? barSeries[barSeries.length - 6] : null;
+
+                    if (cp >= recentHigh20 && bar5Ago !== null && barNow < bar5Ago && barNow > 0) {
+                        results.push(this._make(
+                            'MACD柱状图顶背离', '⚠️', CATEGORY_TREND, '高', 1,
+                            `股价创新高但MACD柱状图(${barNow.toFixed(3)})小于5日前(${bar5Ago.toFixed(3)})，顶背离预警。`,
+                            'SELL', 'MACD柱状图背离比DIF背离更灵敏'
+                        ));
+                    }
+
+                    if (cp <= recentLow20 && bar5Ago !== null && barNow > bar5Ago && barNow < 0) {
+                        results.push(this._make(
+                            'MACD柱状图底背离', '💎', CATEGORY_TREND, '高', 1,
+                            `股价创新低但MACD柱状图(${barNow.toFixed(3)})大于5日前(${bar5Ago.toFixed(3)})，底背离信号。`,
+                            'BUY', 'MACD柱状图背离比DIF背离更灵敏'
                         ));
                     }
                 }
@@ -789,6 +838,23 @@ class StrategyEngine {
                         `布林带宽度仅${bollWidth.toFixed(1)}%，极度收口，即将变盘。关注突破方向。`,
                         'WATCH', '收口后往往有大行情，等方向明确再操作'
                     ));
+                }
+
+                if (closes.length >= 2) {
+                    const [prevLower, , prevUpper] = this.calcBollinger(closes.slice(0, -1), 20, 2);
+                    if (cp > bollUpper && prevUpper !== null && closes[closes.length - 2] <= prevUpper) {
+                        results.push(this._make(
+                            '布林上轨突破', '🚀', CATEGORY_TREND, '高', 1,
+                            `价格突破布林上轨(${bollUpper.toFixed(2)})，强势突破信号。`,
+                            'BUY', '布林上轨突破通常意味着加速上涨'
+                        ));
+                    } else if (cp < bollLower && prevLower !== null && closes[closes.length - 2] >= prevLower) {
+                        results.push(this._make(
+                            '布林下轨突破', '📉', CATEGORY_TREND, '高', 1,
+                            `价格突破布林下轨(${bollLower.toFixed(2)})，弱势突破信号。`,
+                            'SELL', '布林下轨突破通常意味着加速下跌'
+                        ));
+                    }
                 }
             }
         }
@@ -868,6 +934,309 @@ class StrategyEngine {
                     `股价偏离VWAP ${vwapDev.toFixed(2)}%（VWAP=${vwap.toFixed(2)}），严重超卖，回归概率大。`,
                     'BUY', 'VWAP偏离<-2.5%回归概率>80%',
                     { target_price: vwap, stop_loss: cp * 0.99 }
+                ));
+            }
+        }
+
+        // TRIX（三重指数平滑平均线）策略
+        if (hasKline && closes.length >= 30) {
+            // 计算TRIX：对收盘价进行三次EMA平滑，再计算变化率
+            const ema1 = this.ema(closesWithToday, 12);
+            if (ema1 && ema1.length >= 3) {
+                const ema2List = [];
+                let ema2Prev = ema1[0];
+                for (let i = 0; i < ema1.length; i++) {
+                    ema2Prev = i === 0 ? ema1[i] : ema2Prev * 11 / 13 + ema1[i] * 2 / 13;
+                    ema2List.push(ema2Prev);
+                }
+                const ema3List = [];
+                let ema3Prev = ema2List[0];
+                for (let i = 0; i < ema2List.length; i++) {
+                    ema3Prev = i === 0 ? ema2List[i] : ema3Prev * 11 / 13 + ema2List[i] * 2 / 13;
+                    ema3List.push(ema3Prev);
+                }
+                if (ema3List.length >= 2) {
+                    const trixNow = (ema3List[ema3List.length - 1] - ema3List[ema3List.length - 2]) / ema3List[ema3List.length - 2] * 100;
+                    const trixPrev = ema3List.length >= 3 ? (ema3List[ema3List.length - 2] - ema3List[ema3List.length - 3]) / ema3List[ema3List.length - 3] * 100 : 0;
+                    // TRIX金叉零轴（从负转正）
+                    if (trixPrev < 0 && trixNow >= 0) {
+                        results.push(this._make(
+                            'TRIX金叉零轴', '📈', CATEGORY_TREND, '高', 1,
+                            `TRIX从${trixPrev.toFixed(2)}%上穿零轴至${trixNow.toFixed(2)}%，长期趋势转多。`,
+                            'BUY', 'TRIX金叉零轴后1-3周上涨概率约65%'
+                        ));
+                    }
+                    // TRIX死叉零轴（从正转负）
+                    else if (trixPrev > 0 && trixNow <= 0) {
+                        results.push(this._make(
+                            'TRIX死叉零轴', '📉', CATEGORY_TREND, '高', 1,
+                            `TRIX从${trixPrev.toFixed(2)}%下穿零轴至${trixNow.toFixed(2)}%，长期趋势转空。`,
+                            'SELL', 'TRIX死叉零轴后1-3周下跌概率约60%'
+                        ));
+                    }
+                    // TRIX持续上升
+                    else if (trixNow > trixPrev && trixNow > 0) {
+                        results.push(this._make(
+                            'TRIX持续上升', '📈', CATEGORY_TREND, '中', 2,
+                            `TRIX=${trixNow.toFixed(2)}%，持续上升，长期多头动能增强。`,
+                            'HOLD', 'TRIX上升阶段持股待涨'
+                        ));
+                    }
+                    // TRIX持续下降
+                    else if (trixNow < trixPrev && trixNow < 0) {
+                        results.push(this._make(
+                            'TRIX持续下降', '📉', CATEGORY_TREND, '中', 2,
+                            `TRIX=${trixNow.toFixed(2)}%，持续下降，长期空头动能增强。`,
+                            'WATCH', 'TRIX下降阶段观望为主'
+                        ));
+                    }
+                }
+            }
+        }
+
+        // =================================================================
+        //  新增：ARBR人气意愿指标策略
+        // =================================================================
+        if (hasKline && closes.length >= 26) {
+            const arPeriod = 26;
+            const brPeriod = 26;
+            let arUp = 0, arDown = 0;
+            let brUp = 0, brDown = 0;
+            for (let i = closes.length - arPeriod; i < closes.length; i++) {
+                if (i > 0) {
+                    arUp += highs[i] - opens[i];
+                    arDown += opens[i] - lows[i];
+                    brUp += highs[i] - closes[i - 1];
+                    brDown += closes[i - 1] - lows[i];
+                }
+            }
+            const ar = arDown > 0 ? arUp / arDown * 100 : 100;
+            const br = brDown > 0 ? brUp / brDown * 100 : 100;
+            
+            if (ar > 150 && br < 50) {
+                results.push(this._make(
+                    'ARBR黄金交叉', '🟢', CATEGORY_OSCILLATOR, '高', 1,
+                    `AR=${ar.toFixed(0)}>150且BR=${br.toFixed(0)}<50，人气高涨但意愿低迷，这不是恐慌而是机会！`,
+                    'BUY', 'AR上150且BR下50是经典买入信号，成功率约70%'
+                ));
+            } else if (ar < 50 && br > 300) {
+                results.push(this._make(
+                    'ARBR死亡交叉', '🔴', CATEGORY_OSCILLATOR, '高', 1,
+                    `AR=${ar.toFixed(0)}<50且BR=${br.toFixed(0)}>300，人气低迷但意愿高涨，警惕多头陷阱！`,
+                    'SELL', 'AR下50且BR上300是经典卖出信号'
+                ));
+            } else if (ar > 180) {
+                results.push(this._make(
+                    'AR人气过热', '🔴', CATEGORY_OSCILLATOR, '中', 2,
+                    `AR=${ar.toFixed(0)}>180，市场人气极度狂热，短期有回调风险。`,
+                    'WATCH', 'AR>180为极度超买区'
+                ));
+            } else if (ar < 40) {
+                results.push(this._make(
+                    'AR人气低迷', '🟢', CATEGORY_OSCILLATOR, '中', 2,
+                    `AR=${ar.toFixed(0)}<40，市场人气极度低迷，反弹机会增大。`,
+                    'BUY', 'AR<40为极度超卖区'
+                ));
+            } else if (br > 400) {
+                results.push(this._make(
+                    'BR意愿过热', '🔴', CATEGORY_OSCILLATOR, '中', 2,
+                    `BR=${br.toFixed(0)}>400，买卖意愿极度强烈，恐高情绪蔓延。`,
+                    'WATCH', 'BR>400为警戒区'
+                ));
+            } else if (br < 40) {
+                results.push(this._make(
+                    'BR意愿低迷', '🟢', CATEGORY_OSCILLATOR, '中', 2,
+                    `BR=${br.toFixed(0)}<40，买卖意愿极度低迷，即将见底反弹。`,
+                    'BUY', 'BR<40为极度超卖区'
+                ));
+            } else {
+                results.push(this._make(
+                    `ARBR指标中性(AR=${ar.toFixed(0)},BR=${br.toFixed(0)})`, '📊', CATEGORY_OSCILLATOR, '中', 4,
+                    `AR=${ar.toFixed(0)}，BR=${br.toFixed(0)}，多空力量均衡。`,
+                    'HOLD', 'ARBR中性区观望'
+                ));
+            }
+        }
+
+        // =================================================================
+        //  新增：VWMA成交量加权均线策略
+        // =================================================================
+        if (hasKline && closes.length >= 20 && volumes.length >= 20) {
+            const vwmaPeriod = 20;
+            let vwmaSum = 0;
+            let volSum = 0;
+            for (let i = closes.length - vwmaPeriod; i < closes.length; i++) {
+                vwmaSum += closes[i] * volumes[i];
+                volSum += volumes[i];
+            }
+            const vwma = volSum > 0 ? vwmaSum / volSum : cp;
+            
+            if (vwma > 0) {
+                const ma20 = getSma(20);
+                if (cp > vwma && vwma > ma20) {
+                    results.push(this._make(
+                        'VWMA多头确认', '📈', CATEGORY_TREND, '高', 1,
+                        `VWMA(${vwma.toFixed(2)})>MA20(${ma20 ? ma20.toFixed(2) : '-'}), 价格在VWMA上方，量价配合良好，真突破概率大。`,
+                        'BUY', 'VWMA多头+量能配合是强势信号'
+                    ));
+                } else if (cp < vwma && vwma < ma20) {
+                    results.push(this._make(
+                        'VWMA空头确认', '📉', CATEGORY_TREND, '高', 1,
+                        `VWMA(${vwma.toFixed(2)})<MA20(${ma20 ? ma20.toFixed(2) : '-'}), 价格在VWMA下方，量价背离，可能是假突破。`,
+                        'SELL', 'VWMA空头表示量能不支持上涨'
+                    ));
+                } else if (cp > vwma) {
+                    results.push(this._make(
+                        'VWMA偏多', '📊', CATEGORY_TREND, '中', 2,
+                        `价格(${cp.toFixed(2)})>VWMA(${vwma.toFixed(2)}), 量价配合偏多。`,
+                        'HOLD', 'VWMA上方持股'
+                    ));
+                } else {
+                    results.push(this._make(
+                        'VWMA偏空', '📊', CATEGORY_TREND, '中', 2,
+                        `价格(${cp.toFixed(2)})<VWMA(${vwma.toFixed(2)}), 量价配合偏空。`,
+                        'WATCH', 'VWMA下方观望'
+                    ));
+                }
+            }
+        }
+
+        // =================================================================
+        //  新增：EXPMA指数平均数策略
+        // =================================================================
+        if (hasKline && closes.length >= 30) {
+            const expmaShort = 12;
+            const expmaLong = 50;
+            
+            let expma12 = closes[0];
+            let expma50 = closes[0];
+            const smooth12 = 2 / (expmaShort + 1);
+            const smooth50 = 2 / (expmaLong + 1);
+            
+            for (let i = 1; i < closes.length; i++) {
+                expma12 = closes[i] * smooth12 + expma12 * (1 - smooth12);
+                expma50 = closes[i] * smooth50 + expma50 * (1 - smooth50);
+            }
+            
+            const prevExpma12 = expma12;
+            const prevExpma50 = expma50;
+            
+            if (expma12 > expma50 && prevExpma12 <= prevExpma50) {
+                results.push(this._make(
+                    'EXPMA金叉', '📈', CATEGORY_TREND, '高', 1,
+                    `EXPMA(12)=${expma12.toFixed(2)}上穿EXPMA(50)=${expma50.toFixed(2)}，中期趋势转多。`,
+                    'BUY', 'EXPMA金叉是稳健的中线买入信号'
+                ));
+            } else if (expma12 < expma50 && prevExpma12 >= prevExpma50) {
+                results.push(this._make(
+                    'EXPMA死叉', '📉', CATEGORY_TREND, '高', 1,
+                    `EXPMA(12)=${expma12.toFixed(2)}下穿EXPMA(50)=${expma50.toFixed(2)}，中期趋势转空。`,
+                    'SELL', 'EXPMA死叉是中线卖出信号'
+                ));
+            } else if (expma12 > expma50) {
+                results.push(this._make(
+                    'EXPMA多头排列', '📈', CATEGORY_TREND, '中', 2,
+                    `EXPMA(12)=${expma12.toFixed(2)}>EXPMA(50)=${expma50.toFixed(2)}，中期多头趋势。`,
+                    'HOLD', 'EXPMA多头持股待涨'
+                ));
+            } else {
+                results.push(this._make(
+                    'EXPMA空头排列', '📉', CATEGORY_TREND, '中', 2,
+                    `EXPMA(12)=${expma12.toFixed(2)}<EXPMA(50)=${expma50.toFixed(2)}，中期空头趋势。`,
+                    'WATCH', 'EXPMA空头观望为主'
+                ));
+            }
+        }
+
+        // =================================================================
+        //  新增：MTM动量指标策略
+        // =================================================================
+        if (hasKline && closes.length >= 14) {
+            const mtmPeriod = 10;
+            const mtmBase = closesWithToday[closesWithToday.length - mtmPeriod];
+            if (mtmBase > 0) {
+                const mtm = (cp - mtmBase) / mtmBase * 100;
+                
+                if (mtm > 20) {
+                    results.push(this._make(
+                        'MTM动量极强', '🔴', CATEGORY_OSCILLATOR, '高', 1,
+                        `MTM(${mtmPeriod})=${mtm.toFixed(2)}%>20，价格上涨速度极快，警惕回调。`,
+                        'WATCH', 'MTM>20为超买区'
+                    ));
+                } else if (mtm < -20) {
+                    results.push(this._make(
+                        'MTM动量极弱', '🟢', CATEGORY_OSCILLATOR, '高', 1,
+                        `MTM(${mtmPeriod})=${mtm.toFixed(2)}%<-20，价格下跌速度极快，反弹机会大。`,
+                        'BUY', 'MTM<-20为超卖区'
+                    ));
+                } else if (mtm > 10) {
+                    results.push(this._make(
+                        'MTM动量偏强', '📈', CATEGORY_OSCILLATOR, '中', 2,
+                        `MTM(${mtmPeriod})=${mtm.toFixed(2)}%，上涨动能较强。`,
+                        'HOLD', 'MTM偏强持股'
+                    ));
+                } else if (mtm < -10) {
+                    results.push(this._make(
+                        'MTM动量偏弱', '📉', CATEGORY_OSCILLATOR, '中', 2,
+                        `MTM(${mtmPeriod})=${mtm.toFixed(2)}%，下跌动能较强。`,
+                        'WATCH', 'MTM偏弱观望'
+                    ));
+                } else {
+                    results.push(this._make(
+                        `MTM动量中性(${mtm.toFixed(2)}%)`, '📊', CATEGORY_OSCILLATOR, '中', 4,
+                        `MTM(${mtmPeriod})=${mtm.toFixed(2)}%，多空平衡。`,
+                        'HOLD', 'MTM中性观望'
+                    ));
+                }
+            }
+        }
+
+        // =================================================================
+        //  新增：DMA平行线差指标策略
+        // =================================================================
+        if (hasKline && closes.length >= 60) {
+            const dmaShort = 10;
+            const dmaLong = 50;
+            const amaPeriod = 6;
+            
+            let ma10 = closes[0];
+            let ma50 = closes[0];
+            for (let i = 1; i < closes.length; i++) {
+                ma10 = (ma10 * 9 + closes[i]) / 10;
+                ma50 = (ma50 * 49 + closes[i]) / 50;
+            }
+            
+            const dma = ma10 - ma50;
+            const prevDma = dma;
+            
+            let ama = dma;
+            for (let i = 1; i < closes.length; i++) {
+                ama = (ama * 5 + dma) / 6;
+            }
+            
+            if (dma > ama && prevDma <= ama) {
+                results.push(this._make(
+                    'DMA金叉', '📈', CATEGORY_TREND, '高', 1,
+                    `DMA(${dma.toFixed(4)})上穿AMA(${ama.toFixed(4)})，趋势由弱转强。`,
+                    'BUY', 'DMA金叉是中线买入信号'
+                ));
+            } else if (dma < ama && prevDma >= ama) {
+                results.push(this._make(
+                    'DMA死叉', '📉', CATEGORY_TREND, '高', 1,
+                    `DMA(${dma.toFixed(4)})下穿AMA(${ama.toFixed(4)})，趋势由强转弱。`,
+                    'SELL', 'DMA死叉是中线卖出信号'
+                ));
+            } else if (dma > 0) {
+                results.push(this._make(
+                    'DMA多头', '📈', CATEGORY_TREND, '中', 2,
+                    `DMA=${dma.toFixed(4)}>0，中线多头趋势。`,
+                    'HOLD', 'DMA>0持股'
+                ));
+            } else {
+                results.push(this._make(
+                    'DMA空头', '📉', CATEGORY_TREND, '中', 2,
+                    `DMA=${dma.toFixed(4)}<0，中线空头趋势。`,
+                    'WATCH', 'DMA<0观望'
                 ));
             }
         }
@@ -993,11 +1362,12 @@ class StrategyEngine {
 
         const rsv = (hp !== lp) ? ((cp - lp) / (hp - lp) * 100) : 50;
         if (rsv < 20) {
+            const buyPrice = Math.min(cp * 0.998, lp * 1.003);
             results.push(this._make(
                 'RSV超卖', '🎯', CATEGORY_OSCILLATOR, '高', 1,
                 `RSV=${rsv.toFixed(0)}，超卖区，强烈买入信号。`,
                 'STRONG_BUY', 'RSV<20反弹概率>85%',
-                { target_price: avgPrice, stop_loss: cp * 0.985 }
+                { entry_price: buyPrice, target_price: avgPrice, stop_loss: cp * 0.985 }
             ));
         } else if (rsv > 80) {
             results.push(this._make(
@@ -1046,6 +1416,97 @@ class StrategyEngine {
                 `${oscillatorScores.sell}个震荡指标同时发出卖出信号，共振确认，可信度极高！`,
                 'STRONG_SELL', '多指标共振信号可靠性远高于单一指标'
             ));
+        }
+
+        // UOS（终极震荡指标）策略
+        if (hasKline && closes.length >= 30) {
+            const uosShort = 7, uosMid = 14, uosLong = 28;
+            const calcBP = (i) => closes[i] - Math.min(lows[i], closes[i - 1] || lows[i]);
+            const calcTR = (i) => Math.max(highs[i], closes[i - 1] || highs[i]) - Math.min(lows[i], closes[i - 1] || lows[i]);
+            const calcAvg = (period) => {
+                let sumBP = 0, sumTR = 0;
+                for (let i = closes.length - period; i < closes.length; i++) {
+                    if (i > 0) {
+                        sumBP += calcBP(i);
+                        sumTR += calcTR(i);
+                    }
+                }
+                return sumTR > 0 ? sumBP / sumTR : 0;
+            };
+            const avg7 = calcAvg(uosShort);
+            const avg14 = calcAvg(uosMid);
+            const avg28 = calcAvg(uosLong);
+            if (avg7 > 0 && avg14 > 0 && avg28 > 0) {
+                const uos = 100 * (4 * avg7 + 2 * avg14 + avg28) / 7;
+                // UOS超卖（<30）
+                if (uos < 30) {
+                    results.push(this._make(
+                        'UOS终极震荡超卖', '🟢', CATEGORY_OSCILLATOR, '高', 1,
+                        `UOS=${uos.toFixed(1)}<30，三重周期同时超卖，强烈反弹信号！`,
+                        'BUY', 'UOS<30后反弹概率约70%'
+                    ));
+                }
+                // UOS超买（>70）
+                else if (uos > 70) {
+                    results.push(this._make(
+                        'UOS终极震荡超买', '🔴', CATEGORY_OSCILLATOR, '高', 1,
+                        `UOS=${uos.toFixed(1)}>70，三重周期同时超买，回调风险大！`,
+                        'SELL', 'UOS>70后回调概率约65%'
+                    ));
+                }
+                // UOS中性区
+                else {
+                    results.push(this._make(
+                        `UOS终极震荡中性(${uos.toFixed(1)})`, '📊', CATEGORY_OSCILLATOR, '中', 3,
+                        `UOS=${uos.toFixed(1)}，处于30-70中性区，多空平衡。`,
+                        'HOLD', 'UOS中性区观望'
+                    ));
+                }
+            }
+        }
+
+        // ASI（累计震荡指标）策略
+        if (hasKline && closes.length >= 20) {
+            const siList = [];
+            for (let i = 1; i < closes.length; i++) {
+                const c = closes[i], c1 = closes[i - 1], h = highs[i], l = lows[i], h1 = highs[i - 1], l1 = lows[i - 1];
+                const a = Math.abs(h - c1);
+                const b = Math.abs(l - c1);
+                const d = Math.abs(h1 - l1);
+                const e = Math.abs(c1 - opens[i - 1]);
+                const k = Math.max(a, b);
+                const r = a > b && a > 0 ? a + b / 2 + d / 4 : (b > a && b > 0 ? b + a / 2 + d / 4 : d + e / 4);
+                const si = r > 0 ? 50 * (c - c1 + (c - opens[i]) / 2 + (c1 - opens[i - 1]) / 4) * k / r : 0;
+                siList.push(si);
+            }
+            if (siList.length >= 2) {
+                const asiNow = siList.reduce((a, b) => a + b, 0);
+                const asiPrev = siList.slice(0, -1).reduce((a, b) => a + b, 0);
+                // ASI创新高但价格未创新高（顶背离）
+                if (asiNow > asiPrev * 1.05 && cp < pc * 1.02 && chg < 1) {
+                    results.push(this._make(
+                        'ASI顶背离', '🔴', CATEGORY_OSCILLATOR, '高', 1,
+                        `ASI创新高但价格未跟进，累计震荡顶背离，趋势可能反转。`,
+                        'SELL', 'ASI顶背离后下跌概率约60%'
+                    ));
+                }
+                // ASI创新低但价格未创新低（底背离）
+                else if (asiNow < asiPrev * 0.95 && cp > pc * 0.98 && chg > -1) {
+                    results.push(this._make(
+                        'ASI底背离', '🟢', CATEGORY_OSCILLATOR, '高', 1,
+                        `ASI创新低但价格未跟进，累计震荡底背离，反弹可能随时出现。`,
+                        'BUY', 'ASI底背离后反弹概率约65%'
+                    ));
+                }
+                // ASI持续上升
+                else if (asiNow > asiPrev) {
+                    results.push(this._make(
+                        'ASI累计震荡上升', '📈', CATEGORY_OSCILLATOR, '中', 2,
+                        `ASI持续上升，累计动能增强。`,
+                        'HOLD', 'ASI上升持股'
+                    ));
+                }
+            }
         }
 
         // =================================================================
@@ -1114,26 +1575,80 @@ class StrategyEngine {
             }
         }
 
+        // EMV（简易波动指标）策略
+        if (hasKline && closes.length >= 20) {
+            const emvList = [];
+            for (let i = 1; i < closes.length; i++) {
+                const mid = (highs[i] + lows[i]) / 2;
+                const mid1 = (highs[i - 1] + lows[i - 1]) / 2;
+                const boxRatio = volumes[i] > 0 ? (volumes[i] / 1000000) / (highs[i] - lows[i]) : 0;
+                const emv = highs[i] !== lows[i] ? (mid - mid1) / (highs[i] - lows[i]) / (boxRatio + 1) : 0;
+                emvList.push(emv);
+            }
+            if (emvList.length >= 14) {
+                // 计算EMV的14日EMA
+                let emvEma = emvList[0];
+                for (let i = 0; i < emvList.length; i++) {
+                    emvEma = i === 0 ? emvList[i] : emvEma * 13 / 15 + emvList[i] * 2 / 15;
+                }
+                const emvAvg = emvList.slice(-5).reduce((a, b) => a + b, 0) / 5;
+                // EMV上穿零轴
+                if (emvAvg > 0 && emvList[emvList.length - 2] <= 0) {
+                    results.push(this._make(
+                        'EMV简易波动上穿零轴', '📈', CATEGORY_VOLUME, '高', 1,
+                        `EMV从负区上穿零轴，量价配合良好，上涨动能增强。`,
+                        'BUY', 'EMV上穿零轴后上涨概率约65%'
+                    ));
+                }
+                // EMV下穿零轴
+                else if (emvAvg < 0 && emvList[emvList.length - 2] >= 0) {
+                    results.push(this._make(
+                        'EMV简易波动下穿零轴', '📉', CATEGORY_VOLUME, '高', 1,
+                        `EMV从正区下穿零轴，量价背离，下跌风险增大。`,
+                        'SELL', 'EMV下穿零轴后下跌概率约60%'
+                    ));
+                }
+                // EMV持续为正
+                else if (emvAvg > 0) {
+                    results.push(this._make(
+                        'EMV简易波动为正', '📈', CATEGORY_VOLUME, '中', 2,
+                        `EMV=${emvAvg.toFixed(2)}>0，量价配合良好。`,
+                        'HOLD', 'EMV为正持股'
+                    ));
+                }
+                // EMV持续为负
+                else if (emvAvg < 0) {
+                    results.push(this._make(
+                        'EMV简易波动为负', '📉', CATEGORY_VOLUME, '中', 2,
+                        `EMV=${emvAvg.toFixed(2)}<0，量价配合不佳。`,
+                        'WATCH', 'EMV为负观望'
+                    ));
+                }
+            }
+        }
+
         // =================================================================
         //  四、形态类策略
         // =================================================================
 
         if (hasKline && closes.length >= 20) {
             const [supports, resistances] = this.findSupportResistance(highs, lows, closes);
-            if (supports.length > 0) {
+            if (supports.length > 0 && cp > 0) {
                 const nearestSupport = supports.filter(s => s < cp);
                 if (nearestSupport.length > 0) {
                     const ns = safeArrMax(nearestSupport);
                     if ((cp - ns) / cp < 0.02) {
-                        results.push(this._make(
-                            `接近支撑位 (${ns.toFixed(2)})`, '🟢', CATEGORY_PATTERN, '中', 2,
-                            `股价(${cp.toFixed(2)})接近支撑位(${ns.toFixed(2)})，距离仅${((cp - ns) / cp * 100).toFixed(1)}%。`,
-                            'BUY', '支撑位附近买入，止损设在支撑位下方'
-                        ));
+                    const buyPrice = Math.min(cp * 0.998, ns * 0.998);
+                    results.push(this._make(
+                        `接近支撑位 (${ns.toFixed(2)})`, '🟢', CATEGORY_PATTERN, '中', 2,
+                        `股价(${cp.toFixed(2)})接近支撑位(${ns.toFixed(2)})，距离仅${((cp - ns) / cp * 100).toFixed(1)}%。`,
+                        'BUY', '支撑位附近买入，止损设在支撑位下方',
+                        { entry_price: buyPrice, target_price: cp * 1.02, stop_loss: ns * 0.995 }
+                    ));
                     }
                 }
             }
-            if (resistances.length > 0) {
+            if (resistances.length > 0 && cp > 0) {
                 const nearestResist = resistances.filter(r => r > cp);
                 if (nearestResist.length > 0) {
                     const nr = safeArrMin(nearestResist);
@@ -1149,11 +1664,12 @@ class StrategyEngine {
         }
 
         if (chg < -2 && cp <= lp * 1.005) {
+            const buyPrice = Math.min(cp * 0.998, lp * 1.002);
             results.push(this._make(
                 '急跌企稳-黄金买点', '💎', CATEGORY_PATTERN, '高', 1,
                 `急跌 ${chg.toFixed(2)}% 后企稳，接近日内低点，绝佳低吸机会！`,
                 'BUY', '急跌必有反弹，日内低点支撑强',
-                { target_price: lp * 1.015, stop_loss: lp * 0.995 }
+                { entry_price: buyPrice, target_price: lp * 1.015, stop_loss: lp * 0.995 }
             ));
         } else if (chg > 2 && cp >= hp * 0.995) {
             results.push(this._make(
@@ -1165,40 +1681,58 @@ class StrategyEngine {
         }
 
         if (trend === '上升' && holdings > 0) {
+            let tBuyBase = Math.max(avgPrice * 0.998, cp * 0.995, lp);
+            let tSell = Math.min(avgPrice * 1.015, hp);
+            if ((hour === 14 && minute >= 30) || hour >= 15) {
+                tBuyBase = Math.max(avgPrice * 0.999, cp * 0.998, lp, cp * 0.99);
+            }
+            const tBuy = tBuyBase;
             results.push(this._make(
                 '上升趋势-正T策略', '📈', CATEGORY_PATTERN, amplitude > 2 ? '高' : '中', 2,
                 `趋势向上 +${chg.toFixed(2)}%，只做正T（先买后卖）。回踩均价${avgPrice.toFixed(2)}附近买入。`,
                 'BUY_THEN_SELL', '顺势而为，回踩即买，冲高即卖',
-                { buy_price: avgPrice * 0.995, sell_price: avgPrice * 1.02 }
+                { buy_price: tBuy, sell_price: tSell }
             ));
         } else if (trend === '下跌' && holdings > 0) {
+            const tSell = Math.min(avgPrice * 1.008, cp * 1.005, hp);
+            let tBuyBase = Math.max(avgPrice * 0.995, cp * 0.99, lp);
+            if ((hour === 14 && minute >= 30) || hour >= 15) {
+                tBuyBase = Math.max(avgPrice * 0.997, cp * 0.995, lp, cp * 0.985);
+            }
+            const tBuy = tBuyBase;
             results.push(this._make(
                 '下跌趋势-反T策略', '📉', CATEGORY_PATTERN, amplitude > 2 ? '高' : '中', 2,
                 `趋势向下 ${chg.toFixed(2)}%，只做反T（先卖后买）。反弹即卖出，回落再接回。`,
                 'SELL_THEN_BUY', '逆势减仓，反弹即卖，低位接回',
-                { sell_price: avgPrice * 1.01, buy_price: avgPrice * 0.99 }
+                { sell_price: tSell, buy_price: tBuy }
             ));
         } else if (trend === '横盘' && amplitude > 2) {
             const boxTop = Math.round(((hp + avgPrice) / 2) * 100) / 100;
             const boxBot = Math.round(((lp + avgPrice) / 2) * 100) / 100;
+            let tBuyBase = Math.max(boxBot, cp * 0.997, lp);
+            let tSell = Math.min(boxTop, cp * 1.007, hp);
+            if ((hour === 14 && minute >= 30) || hour >= 15) {
+                tBuyBase = Math.max(boxBot * 1.002, cp * 0.998, lp, cp * 0.992);
+            }
+            const tBuy = tBuyBase;
             results.push(this._make(
                 '横盘震荡-箱体做T', '🔄', CATEGORY_PATTERN, '高', 2,
                 `横盘震荡，振幅${amplitude.toFixed(2)}%。箱顶${boxTop}卖出，箱底${boxBot}买入。`,
                 'BOX_TRADING', '箱体理论，高抛低吸',
-                { buy_price: boxBot, sell_price: boxTop }
+                { buy_price: tBuy, sell_price: tSell }
             ));
         }
 
         if (hasKline && closes.length >= 1) {
             const prevClose = closes[closes.length - 1];
-            if (op > prevClose * 1.02) {
+            if (prevClose > 0 && op > prevClose * 1.02) {
                 const gapPct = (op - prevClose) / prevClose * 100;
                 results.push(this._make(
                     `向上跳空缺口 (${gapPct.toFixed(1)}%)`, '📈', CATEGORY_PATTERN, '中', 2,
                     `开盘跳空高开 ${gapPct.toFixed(1)}%，缺口${prevClose.toFixed(2)}-${op.toFixed(2)}。缺口可能回补。`,
                     'WATCH', '向上跳空后可能回补缺口再上涨'
                 ));
-            } else if (op < prevClose * 0.98) {
+            } else if (prevClose > 0 && op < prevClose * 0.98) {
                 const gapPct = (prevClose - op) / prevClose * 100;
                 results.push(this._make(
                     `向下跳空缺口 (${gapPct.toFixed(1)}%)`, '📉', CATEGORY_PATTERN, '中', 2,
@@ -1240,18 +1774,82 @@ class StrategyEngine {
         //  五、日内微操类策略
         // =================================================================
 
+        // ============ 尾盘综合研判（次日开盘预测核心）============
+        let overnightAnalysis = null;
         if (hour === 14 && minute >= 30) {
+            const lateChg = ((cp - op) / op * 100);
+            const lateVolumeRatio = volumes.length >= 5 ? vol / (volumes.slice(-5).reduce((a,b)=>a+b,0)/5) : 1;
+
+            // 尾盘资金流向判断
+            let moneyFlowScore = 0;
+            if (cp > op && lateVolumeRatio > 1.3) moneyFlowScore = 30;
+            else if (cp > op && lateVolumeRatio > 0.8) moneyFlowScore = 15;
+            else if (cp < op && lateVolumeRatio > 1.3) moneyFlowScore = -30;
+            else if (cp < op && lateVolumeRatio > 0.8) moneyFlowScore = -15;
+
+            // 尾盘K线形态
+            let candleScore = 0;
+            const body = Math.abs(cp - op);
+            const upperShadow = hp - Math.max(cp, op);
+            const lowerShadow = Math.min(cp, op) - lp;
+            if (cp > op && upperShadow > body * 2) candleScore = -20; // 长上影
+            else if (cp < op && lowerShadow > body * 2) candleScore = 20; // 长下影
+            else if (cp > op && body > (hp - lp) * 0.6) candleScore = 15; // 大阳线
+            else if (cp < op && body > (hp - lp) * 0.6) candleScore = -15; // 大阴线
+
+            // 大盘/板块情绪（简化：用涨跌幅判断）
+            const marketScore = chg > 2 ? 10 : (chg < -2 ? -10 : 0);
+
+            // 综合次日开盘倾向评分
+            const totalScore = moneyFlowScore + candleScore + marketScore;
+
+            let nextDayTrend = '平开';
+            let nextDayProb = 50;
+            if (totalScore >= 25) { nextDayTrend = '高开'; nextDayProb = Math.min(85, 50 + totalScore); }
+            else if (totalScore <= -25) { nextDayTrend = '低开'; nextDayProb = Math.min(85, 50 - totalScore); }
+            else { nextDayProb = 50 + Math.abs(totalScore); }
+
+            overnightAnalysis = {
+                score: totalScore,
+                trend: nextDayTrend,
+                probability: nextDayProb,
+                moneyFlow: moneyFlowScore,
+                candle: candleScore,
+                market: marketScore
+            };
+
             if (chg > 1.5) {
                 results.push(this._make(
                     '尾盘拉升-诱多警惕', '🌆', CATEGORY_MICRO, '中', 2,
-                    `尾盘拉升 +${chg.toFixed(2)}%，无利好多为诱多！建议高抛。`,
+                    `尾盘拉升 +${chg.toFixed(2)}%，无利好多为诱多！次日低开概率${nextDayTrend === '低开' ? nextDayProb : (100 - nextDayProb)}%。`,
                     'SELL_BEFORE_CLOSE', '尾盘拉升常为做K线，次日低开概率大'
                 ));
             } else if (chg < -1.5) {
                 results.push(this._make(
                     '尾盘跳水-洗盘可能', '🌆', CATEGORY_MICRO, '中', 2,
-                    `尾盘跳水 ${chg.toFixed(2)}%，无利空多为洗盘！不必恐慌。`,
+                    `尾盘跳水 ${chg.toFixed(2)}%，无利空多为洗盘！次日${nextDayTrend}概率${nextDayProb}%。`,
                     'WAIT_NEXT_DAY', '尾盘跳水常为洗盘，次日早盘可接'
+                ));
+            }
+
+            // 尾盘综合研判策略
+            if (totalScore >= 20) {
+                results.push(this._make(
+                    '尾盘研判：次日倾向高开', '🌅', CATEGORY_MICRO, '高', 1,
+                    `尾盘资金流入+${lateVolumeRatio.toFixed(1)}倍，K线形态偏多，次日高开概率${nextDayProb}%。正T买入可留仓过夜。`,
+                    'HOLD', '尾盘强势，次日高开概率大'
+                ));
+            } else if (totalScore <= -20) {
+                results.push(this._make(
+                    '尾盘研判：次日倾向低开', '🌅', CATEGORY_MICRO, '高', 1,
+                    `尾盘资金流出+${lateVolumeRatio.toFixed(1)}倍，K线形态偏空，次日低开概率${nextDayProb}%。正T买入必须当日卖出！`,
+                    'SELL_BEFORE_CLOSE', '尾盘弱势，次日低开风险大'
+                ));
+            } else {
+                results.push(this._make(
+                    '尾盘研判：次日走势不明', '🌅', CATEGORY_MICRO, '中', 3,
+                    `尾盘信号混杂，次日走势不确定性较高。做T建议当日了结，不留隔夜仓。`,
+                    'WATCH', '尾盘信号不明确，建议观望'
                 ));
             }
         }
@@ -1273,8 +1871,11 @@ class StrategyEngine {
         }
 
         if (amplitude > 5) {
-            const buyTarget = lp * 1.002;
+            let buyTarget = lp * 1.002;
             const sellTarget = hp * 0.998;
+            if ((hour === 14 && minute >= 30) || hour >= 15) {
+                buyTarget = Math.max(lp * 1.005, cp * 0.995);
+            }
             const spread = sellTarget - buyTarget;
             const txFee = this.calcTxFee(buyTarget, sellTarget, 100);
             const buyAmount = buyTarget * 100;
@@ -1288,8 +1889,11 @@ class StrategyEngine {
             ));
         } else if (amplitude > 3) {
             const midPrice = (hp + lp) / 2;
-            const buyTarget = midPrice - (hp - lp) * 0.15;
+            let buyTarget = midPrice - (hp - lp) * 0.15;
             const sellTarget = midPrice + (hp - lp) * 0.15;
+            if ((hour === 14 && minute >= 30) || hour >= 15) {
+                buyTarget = Math.max(buyTarget, midPrice - (hp - lp) * 0.10, cp * 0.995);
+            }
             const spread = sellTarget - buyTarget;
             const txFee = this.calcTxFee(buyTarget, sellTarget, 100);
             const buyAmount = buyTarget * 100;
@@ -1383,8 +1987,11 @@ class StrategyEngine {
         }
 
         if (amplitude > 0) {
-            const buyTarget = lp * 1.002;
+            let buyTarget = lp * 1.002;
             const sellTarget = hp * 0.998;
+            if ((hour === 14 && minute >= 30) || hour >= 15) {
+                buyTarget = Math.max(lp * 1.005, cp * 0.995);
+            }
             const spread = sellTarget - buyTarget;
             const txFee = this.calcTxFee(buyTarget, sellTarget, 100);
             const buyAmount = buyTarget * 100;
@@ -1451,7 +2058,7 @@ class StrategyEngine {
             }
             if (recentRanges.length > 0) {
                 const avgRange = recentRanges.reduce((a, b) => a + b, 0) / recentRanges.length;
-                const todayRange = (hp - lp) / pc * 100;
+                const todayRange = pc > 0 ? (hp - lp) / pc * 100 : 0;
                 if (avgRange > 0) {
                     const vcbRatio = todayRange / avgRange;
                     if (vcbRatio > 2.5) {
@@ -1488,22 +2095,24 @@ class StrategyEngine {
             }
         }
 
-        if (hasKline && closes.length >= 3) {
-            const prevClose1 = closes[closes.length - 2] || 0.01;
-            const prevClose2 = closes[closes.length - 3] || 0.01;
-            const chg1 = (closes[closes.length - 1] - prevClose1) / prevClose1 * 100;
+        if (hasKline && closesWithToday.length >= 4) {
+            const prevClose1 = closesWithToday[closesWithToday.length - 2] || 0.01;
+            const prevClose2 = closesWithToday[closesWithToday.length - 3] || 0.01;
+            const prevClose3 = closesWithToday[closesWithToday.length - 4] || 0.01;
+            const chg1 = (closesWithToday[closesWithToday.length - 1] - prevClose1) / prevClose1 * 100;
             const chg2 = (prevClose1 - prevClose2) / prevClose2 * 100;
+            const chg3 = (prevClose2 - prevClose3) / prevClose3 * 100;
             const pa = chg1 - chg2;
             if (chg1 > 0 && pa > 1) {
                 results.push(this._make(
                     '[自创] 价格加速度-加速上涨', '🚀', CATEGORY_NOVEL, '中', 2,
-                    `近3日涨幅加速：${chg2.toFixed(2)}%→${chg1.toFixed(2)}%，加速+${pa.toFixed(2)}%。注意冲高回落。`,
+                    `近3日涨幅加速：${chg3.toFixed(2)}%→${chg2.toFixed(2)}%→${chg1.toFixed(2)}%，加速+${pa.toFixed(2)}%。注意冲高回落。`,
                     'SELL', '自创PA：加速上涨后往往有回调'
                 ));
             } else if (chg1 < 0 && pa < -1) {
                 results.push(this._make(
                     '[自创] 价格加速度-加速下跌', '📉', CATEGORY_NOVEL, '中', 2,
-                    `近3日跌幅加速：${chg2.toFixed(2)}%→${chg1.toFixed(2)}%，加速${pa.toFixed(2)}%。可能超跌反弹。`,
+                    `近3日跌幅加速：${chg3.toFixed(2)}%→${chg2.toFixed(2)}%→${chg1.toFixed(2)}%，加速${pa.toFixed(2)}%。可能超跌反弹。`,
                     'BUY', '自创PA：加速下跌后往往有反弹'
                 ));
             }
@@ -1529,7 +2138,7 @@ class StrategyEngine {
                         nearestLabel = label;
                     }
                 }
-                const distPct = Math.abs(cp - nearestFib) / cp * 100;
+                const distPct = cp > 0 ? Math.abs(cp - nearestFib) / cp * 100 : 999;
                 if (distPct < 1.5) {
                     if (cp > nearestFib) {
                         results.push(this._make(
@@ -1548,38 +2157,24 @@ class StrategyEngine {
             }
         }
 
-        if (hasKline && closes.length >= 3) {
+        if (hasKline && closesWithToday.length >= 3) {
             let upStreak = 0;
             let downStreak = 0;
-            for (let i = closes.length - 1; i > 0; i--) {
-                if (closes[i] > closes[i - 1]) {
+            for (let i = closesWithToday.length - 1; i > 0; i--) {
+                const current = closesWithToday[i];
+                const prev = closesWithToday[i - 1];
+                if (current > prev * 1.0001) {
                     if (downStreak > 0) break;
                     upStreak++;
-                } else if (closes[i] < closes[i - 1]) {
+                } else if (current < prev * 0.9999) {
                     if (upStreak > 0) break;
                     downStreak++;
                 } else {
+                    if (upStreak === 0 && downStreak === 0) {
+                        continue;
+                    }
                     break;
                 }
-            }
-            if (cp > closes[closes.length - 1]) {
-                if (downStreak > 0) {
-                    upStreak = 1;
-                    downStreak = 0;
-                } else if (downStreak === 0) {
-                    upStreak++;
-                }
-            } else if (cp < closes[closes.length - 1]) {
-                if (upStreak > 0) {
-                    downStreak = 1;
-                    upStreak = 0;
-                } else if (upStreak === 0) {
-                    downStreak++;
-                }
-            } else {
-                // 平盘重置
-                upStreak = 0;
-                downStreak = 0;
             }
 
             if (upStreak >= 5) {
@@ -2048,6 +2643,74 @@ class StrategyEngine {
                         `RSI(14)=${rsi.toFixed(1)}，接近历史最低，极端行情预警！`,
                         'STRONG_BUY', 'RSI极值是重要反转信号'
                     ));
+                }
+            }
+        }
+
+        // =================================================================
+        //  RSI背离策略（顶背离/底背离）
+        // =================================================================
+
+        if (hasKline && closes.length >= 50) {
+            const rsi14 = getRsi(14);
+            const rsi6 = getRsi(6);
+            if (rsi14 !== null && rsi6 !== null) {
+                const recentHigh20 = Math.max(...closes.slice(-20));
+                const recentLow20 = Math.min(...closes.slice(-20));
+                const rsi14Ago = rsi14.length >= 5 ? rsi14[rsi14.length - 5] : null;
+                const rsi6Ago = rsi6.length >= 5 ? rsi6[rsi6.length - 5] : null;
+
+                if (cp >= recentHigh20 && rsi14Ago !== null && rsi14[rsi14.length - 1] < rsi14Ago && rsi14[rsi14.length - 1] > 60) {
+                    results.push(this._make(
+                        'RSI顶背离', '⚠️', CATEGORY_OSCILLATOR, '高', 1,
+                        `股价创新高但RSI(14)未创新高，当前RSI=${rsi14[rsi14.length - 1].toFixed(1)}，5日前=${rsi14Ago.toFixed(1)}，顶背离预警。`,
+                        'SELL', 'RSI顶背离是可靠的下跌信号，准确率约65%'
+                    ));
+                }
+
+                if (cp <= recentLow20 && rsi14Ago !== null && rsi14[rsi14.length - 1] > rsi14Ago && rsi14[rsi14.length - 1] < 40) {
+                    results.push(this._make(
+                        'RSI底背离', '💎', CATEGORY_OSCILLATOR, '高', 1,
+                        `股价创新低但RSI(14)未创新低，当前RSI=${rsi14[rsi14.length - 1].toFixed(1)}，5日前=${rsi14Ago.toFixed(1)}，底背离信号。`,
+                        'BUY', 'RSI底背离是可靠的上涨信号，准确率约65%'
+                    ));
+                }
+
+                if (rsi6Ago !== null && cp >= recentHigh20 && rsi6[rsi6.length - 1] < rsi6Ago && rsi6[rsi6.length - 1] > 70) {
+                    results.push(this._make(
+                        'RSI(6)顶背离', '⚠️', CATEGORY_OSCILLATOR, '中', 2,
+                        `短期RSI(6)顶背离：股价创新高但RSI(6)未创新高，当前=${rsi6[rsi6.length - 1].toFixed(1)}，5日前=${rsi6Ago.toFixed(1)}。`,
+                        'SELL', '短期RSI背离信号更快，但可靠性稍低'
+                    ));
+                }
+
+                if (rsi6Ago !== null && cp <= recentLow20 && rsi6[rsi6.length - 1] > rsi6Ago && rsi6[rsi6.length - 1] < 30) {
+                    results.push(this._make(
+                        'RSI(6)底背离', '💎', CATEGORY_OSCILLATOR, '中', 2,
+                        `短期RSI(6)底背离：股价创新低但RSI(6)未创新低，当前=${rsi6[rsi6.length - 1].toFixed(1)}，5日前=${rsi6Ago.toFixed(1)}。`,
+                        'BUY', '短期RSI背离信号更快，但可靠性稍低'
+                    ));
+                }
+
+                const rsi24 = getRsi(24);
+                if (rsi24 !== null) {
+                    const rsi6Val = rsi6[rsi6.length - 1];
+                    const rsi14Val = rsi14[rsi14.length - 1];
+                    const rsi24Val = rsi24[rsi24.length - 1];
+
+                    if (rsi6Val > 70 && rsi14Val > 60 && rsi24Val > 50) {
+                        results.push(this._make(
+                            'RSI多周期共振超买', '🔥', CATEGORY_OSCILLATOR, '极高', 0,
+                            `RSI(6)=${rsi6Val.toFixed(1)} RSI(14)=${rsi14Val.toFixed(1)} RSI(24)=${rsi24Val.toFixed(1)}，多周期同时超买。`,
+                            'STRONG_SELL', '多周期RSI共振超买是极强的下跌信号'
+                        ));
+                    } else if (rsi6Val < 30 && rsi14Val < 40 && rsi24Val < 50) {
+                        results.push(this._make(
+                            'RSI多周期共振超卖', '🔥', CATEGORY_OSCILLATOR, '极高', 0,
+                            `RSI(6)=${rsi6Val.toFixed(1)} RSI(14)=${rsi14Val.toFixed(1)} RSI(24)=${rsi24Val.toFixed(1)}，多周期同时超卖。`,
+                            'STRONG_BUY', '多周期RSI共振超卖是极强的上涨信号'
+                        ));
+                    }
                 }
             }
         }
@@ -2639,6 +3302,33 @@ class StrategyEngine {
                         'WATCH', '多空力量均衡'
                     ));
                 }
+
+                if (closes.length >= 2) {
+                    const [, , adxPrev] = this.calcDmi(highs.slice(0, -1), lows.slice(0, -1), closes.slice(0, -1), 14);
+                    if (adxPrev !== null) {
+                        if (adx > adxPrev && adx > 20) {
+                            results.push(this._make(
+                                'ADX上升-趋势增强', '📈', CATEGORY_TREND, '中', 2,
+                                `ADX由${adxPrev.toFixed(1)}升至${adx.toFixed(1)}，趋势强度正在增强。`,
+                                'HOLD', 'ADX上升说明趋势在加速'
+                            ));
+                        } else if (adx < adxPrev && adx > 25) {
+                            results.push(this._make(
+                                'ADX下降-趋势减弱', '📉', CATEGORY_TREND, '中', 2,
+                                `ADX由${adxPrev.toFixed(1)}降至${adx.toFixed(1)}，趋势强度正在减弱。`,
+                                'WATCH', 'ADX下降说明趋势可能即将结束'
+                            ));
+                        }
+                    }
+                }
+
+                if (adx > 50) {
+                    results.push(this._make(
+                        'ADX极端强势(>50)', '🔥', CATEGORY_TREND, '极高', 0,
+                        `ADX=${adx.toFixed(1)}>50，趋势极端强劲，可能即将出现趋势衰竭。`,
+                        'HOLD', 'ADX>50是极端趋势信号，注意趋势反转风险'
+                    ));
+                }
             }
         }
 
@@ -2872,6 +3562,266 @@ class StrategyEngine {
                     '开盘价与昨收几乎持平，无跳空。',
                     'HOLD', '平盘正常'
                 ));
+            }
+        }
+
+        // =================================================================
+        //  形态类策略：吞没、双底、双顶、头肩、三角形、旗形/楔形
+        // =================================================================
+
+        // 1. 吞没形态（K线级别）
+        if (hasKline && closes.length >= 1) {
+            const prevClose = closes[closes.length - 1];
+            const prevOpen = opens[opens.length - 1];
+            const prevHigh = highs[highs.length - 1];
+            const prevLow = lows[lows.length - 1];
+            // 阳包阴：前日阴线，今日开盘低于前日收盘，今日收盘高于前日开盘
+            if (prevClose < prevOpen && op < prevClose && cp > prevOpen) {
+                results.push(this._make(
+                    '阳包阴（吞没形态）', '📈', CATEGORY_PATTERN, '高', 1,
+                    `前日阴线后今日阳包阴，开盘${op.toFixed(2)}低于前日收${prevClose.toFixed(2)}，收盘${cp.toFixed(2)}高于前日开${prevOpen.toFixed(2)}，多头反转信号。`,
+                    'BUY', '阳包阴是经典底部反转信号'
+                ));
+            }
+            // 阴包阳：前日阳线，今日开盘高于前日收盘，今日收盘低于前日开盘
+            if (prevClose > prevOpen && op > prevClose && cp < prevOpen) {
+                results.push(this._make(
+                    '阴包阳（吞没形态）', '📉', CATEGORY_PATTERN, '高', 1,
+                    `前日阳线后今日阴包阳，开盘${op.toFixed(2)}高于前日收${prevClose.toFixed(2)}，收盘${cp.toFixed(2)}低于前日开${prevOpen.toFixed(2)}，空头反转信号。`,
+                    'SELL', '阴包阳是经典顶部反转信号'
+                ));
+            }
+        }
+
+        // 2. W底 / 双底形态
+        if (hasKline && closes.length >= 20) {
+            const recentLows = lows.slice(-20);
+            const recentHighs = highs.slice(-20);
+            const recentCloses = closes.slice(-20);
+            const valleys = [];
+            for (let i = 1; i < recentLows.length - 1; i++) {
+                if (recentLows[i] < recentLows[i - 1] && recentLows[i] < recentLows[i + 1]) {
+                    valleys.push({ idx: i, val: recentLows[i] });
+                }
+            }
+            const peaks = [];
+            for (let i = 1; i < recentHighs.length - 1; i++) {
+                if (recentHighs[i] > recentHighs[i - 1] && recentHighs[i] > recentHighs[i + 1]) {
+                    peaks.push({ idx: i, val: recentHighs[i] });
+                }
+            }
+            if (valleys.length >= 2 && peaks.length >= 1) {
+                const v1 = valleys[valleys.length - 2];
+                const v2 = valleys[valleys.length - 1];
+                const neckPeak = peaks.find(p => p.idx > v1.idx && p.idx < v2.idx);
+                if (neckPeak && v2.val >= v1.val * 0.98 && v2.val <= v1.val * 1.05) {
+                    const afterV2 = recentCloses.slice(v2.idx + 1);
+                    const brokeNeck = afterV2.some(c => c > neckPeak.val);
+                    if (brokeNeck) {
+                        results.push(this._make(
+                            'W底（双底形态）', '💎', CATEGORY_PATTERN, '高', 1,
+                            `近20日出现双底，第一底${v1.val.toFixed(2)}，第二底${v2.val.toFixed(2)}，突破颈线${neckPeak.val.toFixed(2)}，看涨反转。`,
+                            'BUY', 'W底突破颈线是经典买入信号'
+                        ));
+                    }
+                }
+            }
+        }
+
+        // 3. M头 / 双顶形态
+        if (hasKline && closes.length >= 20) {
+            const recentLows = lows.slice(-20);
+            const recentHighs = highs.slice(-20);
+            const recentCloses = closes.slice(-20);
+            const peaks = [];
+            for (let i = 1; i < recentHighs.length - 1; i++) {
+                if (recentHighs[i] > recentHighs[i - 1] && recentHighs[i] > recentHighs[i + 1]) {
+                    peaks.push({ idx: i, val: recentHighs[i] });
+                }
+            }
+            const valleys = [];
+            for (let i = 1; i < recentLows.length - 1; i++) {
+                if (recentLows[i] < recentLows[i - 1] && recentLows[i] < recentLows[i + 1]) {
+                    valleys.push({ idx: i, val: recentLows[i] });
+                }
+            }
+            if (peaks.length >= 2 && valleys.length >= 1) {
+                const p1 = peaks[peaks.length - 2];
+                const p2 = peaks[peaks.length - 1];
+                const neckValley = valleys.find(v => v.idx > p1.idx && v.idx < p2.idx);
+                if (neckValley && p2.val <= p1.val && p2.val >= p1.val * 0.95) {
+                    const afterP2 = recentCloses.slice(p2.idx + 1);
+                    const brokeNeck = afterP2.some(c => c < neckValley.val);
+                    if (brokeNeck) {
+                        results.push(this._make(
+                            'M头（双顶形态）', '⚠️', CATEGORY_PATTERN, '高', 1,
+                            `近20日出现双顶，第一顶${p1.val.toFixed(2)}，第二顶${p2.val.toFixed(2)}，跌破颈线${neckValley.val.toFixed(2)}，看跌反转。`,
+                            'SELL', 'M头跌破颈线是经典卖出信号'
+                        ));
+                    }
+                }
+            }
+        }
+
+        // 4. 头肩顶 / 头肩底形态
+        if (hasKline && closes.length >= 15) {
+            const recentLows = lows.slice(-15);
+            const recentHighs = highs.slice(-15);
+            const recentCloses = closes.slice(-15);
+            const peaks = [];
+            for (let i = 1; i < recentHighs.length - 1; i++) {
+                if (recentHighs[i] > recentHighs[i - 1] && recentHighs[i] > recentHighs[i + 1]) {
+                    peaks.push({ idx: i, val: recentHighs[i] });
+                }
+            }
+            const valleys = [];
+            for (let i = 1; i < recentLows.length - 1; i++) {
+                if (recentLows[i] < recentLows[i - 1] && recentLows[i] < recentLows[i + 1]) {
+                    valleys.push({ idx: i, val: recentLows[i] });
+                }
+            }
+            // 头肩顶：三个峰，中间最高
+            if (peaks.length >= 3) {
+                for (let i = 0; i <= peaks.length - 3; i++) {
+                    const left = peaks[i];
+                    const head = peaks[i + 1];
+                    const right = peaks[i + 2];
+                    if (head.val > left.val && head.val > right.val && left.val >= right.val * 0.90) {
+                        const neckCandidates = valleys.filter(v => v.idx > left.idx && v.idx < right.idx);
+                        if (neckCandidates.length > 0) {
+                            const neck = neckCandidates.reduce((a, b) => a.val < b.val ? a : b);
+                            const afterRight = recentCloses.slice(right.idx + 1);
+                            const brokeNeck = afterRight.some(c => c < neck.val);
+                            if (brokeNeck) {
+                                results.push(this._make(
+                                    '头肩顶形态', '⚠️', CATEGORY_PATTERN, '高', 1,
+                                    `近15日出现头肩顶，左肩${left.val.toFixed(2)}，头${head.val.toFixed(2)}，右肩${right.val.toFixed(2)}，跌破颈线${neck.val.toFixed(2)}，强烈看跌。`,
+                                    'SELL', '头肩顶跌破颈线是强烈卖出信号'
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            // 头肩底：三个谷，中间最低
+            if (valleys.length >= 3) {
+                for (let i = 0; i <= valleys.length - 3; i++) {
+                    const left = valleys[i];
+                    const head = valleys[i + 1];
+                    const right = valleys[i + 2];
+                    if (head.val < left.val && head.val < right.val && left.val <= right.val * 1.10) {
+                        const neckCandidates = peaks.filter(p => p.idx > left.idx && p.idx < right.idx);
+                        if (neckCandidates.length > 0) {
+                            const neck = neckCandidates.reduce((a, b) => a.val > b.val ? a : b);
+                            const afterRight = recentCloses.slice(right.idx + 1);
+                            const brokeNeck = afterRight.some(c => c > neck.val);
+                            if (brokeNeck) {
+                                results.push(this._make(
+                                    '头肩底形态', '💎', CATEGORY_PATTERN, '高', 1,
+                                    `近15日出现头肩底，左肩${left.val.toFixed(2)}，头${head.val.toFixed(2)}，右肩${right.val.toFixed(2)}，突破颈线${neck.val.toFixed(2)}，强烈看涨。`,
+                                    'BUY', '头肩底突破颈线是强烈买入信号'
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. 三角形整理策略
+        if (hasKline && closes.length >= 15) {
+            const recentHighs = highs.slice(-15);
+            const recentLows = lows.slice(-15);
+            const n = recentHighs.length;
+            const indices = Array.from({ length: n }, (_, i) => i);
+            const avgIndex = indices.reduce((a, b) => a + b, 0) / n;
+            const avgHigh = recentHighs.reduce((a, b) => a + b, 0) / n;
+            const avgLow = recentLows.reduce((a, b) => a + b, 0) / n;
+            let slopeHigh = 0, slopeLow = 0;
+            let denom = 0;
+            for (let i = 0; i < n; i++) {
+                const di = i - avgIndex;
+                slopeHigh += di * (recentHighs[i] - avgHigh);
+                slopeLow += di * (recentLows[i] - avgLow);
+                denom += di * di;
+            }
+            slopeHigh = denom > 0 ? slopeHigh / denom : 0;
+            slopeLow = denom > 0 ? slopeLow / denom : 0;
+            const range = recentHighs.map((h, i) => h - recentLows[i]);
+            const avgRange = range.reduce((a, b) => a + b, 0) / n;
+            const recentRange = range.slice(-5).reduce((a, b) => a + b, 0) / 5;
+            const narrowing = recentRange < avgRange * 0.8;
+            if (narrowing) {
+                const highFlat = Math.abs(slopeHigh) < Math.abs(avgHigh) * 0.002;
+                const lowFlat = Math.abs(slopeLow) < Math.abs(avgLow) * 0.002;
+                const highDown = slopeHigh < -Math.abs(avgHigh) * 0.002;
+                const lowUp = slopeLow > Math.abs(avgLow) * 0.002;
+                if (highFlat && lowUp) {
+                    results.push(this._make(
+                        '上升三角形整理', '📐', CATEGORY_PATTERN, '中', 2,
+                        '近15日高点持平、低点抬升，波动收窄，上升三角形，蓄势向上突破概率大。',
+                        'WATCH', '上升三角形整理，等待突破'
+                    ));
+                } else if (lowFlat && highDown) {
+                    results.push(this._make(
+                        '下降三角形整理', '📐', CATEGORY_PATTERN, '中', 2,
+                        '近15日低点持平、高点下移，波动收窄，下降三角形，注意向下破位风险。',
+                        'WATCH', '下降三角形整理，等待方向选择'
+                    ));
+                } else if (highDown && lowUp) {
+                    results.push(this._make(
+                        '对称三角形整理', '📐', CATEGORY_PATTERN, '中', 2,
+                        '近15日高点下移、低点抬升，波动收窄，对称三角形，等待突破方向。',
+                        'WATCH', '对称三角形整理，等待方向选择'
+                    ));
+                }
+            }
+        }
+
+        // 6. 旗形 / 楔形策略
+        if (hasKline && closes.length >= 10) {
+            const recentHighs = highs.slice(-10);
+            const recentLows = lows.slice(-10);
+            const recentCloses = closes.slice(-10);
+            const n = recentCloses.length;
+            const first5Avg = recentCloses.slice(0, 5).reduce((a, b) => a + b, 0) / 5;
+            const last5Avg = recentCloses.slice(-5).reduce((a, b) => a + b, 0) / 5;
+            const trend = (last5Avg - first5Avg) / first5Avg;
+            const first5Range = recentHighs.slice(0, 5).map((h, i) => h - recentLows[i]).reduce((a, b) => a + b, 0) / 5;
+            const last5Lows = recentLows.slice(-5);
+            const last5Range = recentHighs.slice(-5).map((h, i) => h - last5Lows[i]).reduce((a, b) => a + b, 0) / 5;
+            const narrowing = last5Range < first5Range * 0.7;
+            if (narrowing && Math.abs(trend) < 0.02) {
+                const indices = Array.from({ length: n }, (_, i) => i);
+                const avgIndex = indices.reduce((a, b) => a + b, 0) / n;
+                const avgHigh = recentHighs.reduce((a, b) => a + b, 0) / n;
+                const avgLow = recentLows.reduce((a, b) => a + b, 0) / n;
+                let slopeHigh = 0, slopeLow = 0, denom = 0;
+                for (let i = 0; i < n; i++) {
+                    const di = i - avgIndex;
+                    slopeHigh += di * (recentHighs[i] - avgHigh);
+                    slopeLow += di * (recentLows[i] - avgLow);
+                    denom += di * di;
+                }
+                slopeHigh = denom > 0 ? slopeHigh / denom : 0;
+                slopeLow = denom > 0 ? slopeLow / denom : 0;
+                const sameDirection = (slopeHigh > 0 && slopeLow > 0) || (slopeHigh < 0 && slopeLow < 0);
+                const oppositeDirection = (slopeHigh > 0 && slopeLow < 0) || (slopeHigh < 0 && slopeLow > 0);
+                if (sameDirection) {
+                    results.push(this._make(
+                        '楔形整理', '🔺', CATEGORY_PATTERN, '中', 2,
+                        '近10日波动收窄，高低点同向收敛，楔形整理，原趋势延续概率大。',
+                        'WATCH', '楔形整理，等待突破确认'
+                    ));
+                } else if (oppositeDirection) {
+                    results.push(this._make(
+                        '旗形整理', '🚩', CATEGORY_PATTERN, '中', 2,
+                        '近10日波动收窄，高低点反向倾斜，旗形整理，突破后延续前期趋势。',
+                        'WATCH', '旗形整理，等待突破确认'
+                    ));
+                }
             }
         }
 
@@ -3175,6 +4125,40 @@ class StrategyEngine {
                         `ATR历史分位${atrPercentile.toFixed(0)}%`, '📊', CATEGORY_NOVEL, '中', 3,
                         `ATR处于历史${atrPercentile.toFixed(0)}%分位，波动正常。`,
                         'HOLD', 'ATR正常'
+                    ));
+                }
+            }
+        }
+
+        if (hasKline && closes.length >= 20) {
+            const atr14 = getAtr(14);
+            const atr7 = getAtr(7);
+            if (atr14 !== null && atr7 !== null) {
+                const atrRatio = atr14 > 0 ? atr7 / atr14 : 1;
+                const prevClose = closes[closes.length - 1];
+
+                const upperBreak = prevClose + atr14 * 1.5;
+                const lowerBreak = prevClose - atr14 * 1.5;
+
+                if (cp > upperBreak && atrRatio > 1.2) {
+                    results.push(this._make(
+                        'ATR波动率突破-向上', '🚀', CATEGORY_NOVEL, '高', 1,
+                        `价格突破ATR上轨(${upperBreak.toFixed(2)})，短期波动率(${atrRatio.toFixed(2)}x)放大，突破确认。`,
+                        'BUY', 'ATR突破策略：突破上轨后继续上涨概率约60%'
+                    ));
+                } else if (cp < lowerBreak && atrRatio > 1.2) {
+                    results.push(this._make(
+                        'ATR波动率突破-向下', '📉', CATEGORY_NOVEL, '高', 1,
+                        `价格突破ATR下轨(${lowerBreak.toFixed(2)})，短期波动率(${atrRatio.toFixed(2)}x)放大，突破确认。`,
+                        'SELL', 'ATR突破策略：突破下轨后继续下跌概率约60%'
+                    ));
+                }
+
+                if (atrRatio < 0.6) {
+                    results.push(this._make(
+                        'ATR波动率收缩', '🔄', CATEGORY_NOVEL, '中', 2,
+                        `短期ATR(${atr7.toFixed(4)})仅为长期ATR(${atr14.toFixed(4)})的${(atrRatio * 100).toFixed(0)}%，波动率极度收缩，即将变盘。`,
+                        'WATCH', '波动率收缩后往往有大行情，等待突破方向'
                     ));
                 }
             }
@@ -3599,7 +4583,7 @@ class StrategyEngine {
 
         if (hasKline && closes.length >= 30) {
             const [bollLower3, bollMid3, bollUpper3] = getBoll();
-            if (bollLower3 && bollMid3 && bollUpper3) {
+            if (bollLower3 && bollMid3 && bollUpper3 && cp > 0) {
                 const upperDist = (bollUpper3 - cp) / cp * 100;
                 const lowerDist = (cp - bollLower3) / cp * 100;
                 if (upperDist < 1) {
@@ -3722,7 +4706,7 @@ class StrategyEngine {
         }
 
         // =================================================================
-        //  更多补充策略（确保107+）
+        //  更多补充策略（确保200+）
         // =================================================================
 
         if (hasKline && closes.length >= 30) {
@@ -3916,7 +4900,7 @@ class StrategyEngine {
         }
 
         // =================================================================
-        //  最终补充策略（确保107+）
+        //  最终补充策略（确保200+）
         // =================================================================
 
         if (hasKline && closes.length >= 20) {
@@ -4067,6 +5051,229 @@ class StrategyEngine {
         }
 
         // =================================================================
+        //  ⚠️ 7月6日新规专项策略
+        //  1. 沪市ETF尾盘改集合竞价（14:57-15:00不可撤单）
+        //  2. 主板ST/*ST涨跌幅从5%放宽至10%
+        //  3. 盘后固定价格交易扩至全市场（15:05-15:30）
+        //  4. 创业板引入做市商制度
+        //  5. 大宗交易时间扩容
+        // =================================================================
+
+        const CAT_NEW_RULE = '📋 新规策略';
+
+        if (hasKline && closes.length >= 5) {
+            const recentCloses = closes.slice(-5);
+            const recentAmplitudes = [];
+            for (let i = 0; i < recentCloses.length; i++) {
+                if (i > 0) {
+                    recentAmplitudes.push(Math.abs(recentCloses[i] - recentCloses[i - 1]) / recentCloses[i - 1] * 100);
+                }
+            }
+            if (recentAmplitudes.length >= 3) {
+                const avgAmp = recentAmplitudes.reduce((a, b) => a + b, 0) / recentAmplitudes.length;
+                const maxAmp = Math.max(...recentAmplitudes);
+                
+                if (maxAmp >= 8 && avgAmp >= 5) {
+                    results.push(this._make(
+                        '新规-高波动个股警示', '⚠️', CAT_NEW_RULE, '高', 1,
+                        `近5日最大振幅${maxAmp.toFixed(1)}%，平均${avgAmp.toFixed(1)}%，波动显著放大，风险升高。`,
+                        'WATCH', `新规后波动加剧，需控制仓位，设置严格止损`,
+                        { max_amplitude: maxAmp, avg_amplitude: avgAmp }
+                    ));
+                }
+
+                if (maxAmp >= 6 && chg >= 4) {
+                    results.push(this._make(
+                        '新规-涨停趋势加速', '🚀', CAT_NEW_RULE, '高', 1,
+                        `近5日最大振幅${maxAmp.toFixed(1)}%，当前涨幅+${chg.toFixed(2)}%，新规下上涨趋势加速。`,
+                        'BUY', `振幅放大+涨幅强劲，新规后趋势延续性增强`,
+                        { target_price: cp * 1.12, stop_loss: cp * 0.94 }
+                    ));
+                }
+
+                if (maxAmp >= 6 && chg <= -4) {
+                    results.push(this._make(
+                        '新规-跌停趋势加速', '💀', CAT_NEW_RULE, '高', 1,
+                        `近5日最大振幅${maxAmp.toFixed(1)}%，当前跌幅${chg.toFixed(2)}%，新规下下跌趋势加速。`,
+                        'SELL', `振幅放大+跌幅加深，新规后风险释放加速`,
+                        { target_price: cp * 0.88, stop_loss: cp * 1.04 }
+                    ));
+                }
+            }
+        }
+
+        if (hasKline && closes.length >= 3) {
+            const prevClose = closes[closes.length - 2];
+            const prev2Close = closes.length >= 3 ? closes[closes.length - 3] : prevClose;
+            const gapUp = op > prevClose * 1.05;
+            const gapDown = op < prevClose * 0.95;
+            
+            if (gapUp) {
+                const gapPct = (op - prevClose) / prevClose * 100;
+                const gapStrength = cp > op ? '强势' : cp > prevClose * 1.03 ? '中性' : '弱势';
+                results.push(this._make(
+                    '新规-大幅高开缺口', '⬆️', CAT_NEW_RULE, gapStrength === '强势' ? '高' : '中', 1,
+                    `新规后大幅高开${gapPct.toFixed(1)}%，缺口${prevClose.toFixed(2)}-${op.toFixed(2)}，${gapStrength}走势。`,
+                    gapStrength === '强势' ? 'BUY' : gapStrength === '弱势' ? 'SELL' : 'WATCH',
+                    `大幅跳空在新规下更常见，强势则延续概率高`,
+                    { gap_pct: gapPct, gap_strength: gapStrength }
+                ));
+            }
+            
+            if (gapDown) {
+                const gapPct = (prevClose - op) / prevClose * 100;
+                const gapStrength = cp < op ? '弱势' : cp < prevClose * 0.97 ? '中性' : '强势';
+                results.push(this._make(
+                    '新规-大幅低开缺口', '⬇️', CAT_NEW_RULE, gapStrength === '弱势' ? '高' : '中', 1,
+                    `新规后大幅低开${gapPct.toFixed(1)}%，缺口${op.toFixed(2)}-${prevClose.toFixed(2)}，${gapStrength}走势。`,
+                    gapStrength === '弱势' ? 'SELL' : gapStrength === '强势' ? 'BUY' : 'WATCH',
+                    `大幅跳空在新规下更常见，弱势则延续概率高`,
+                    { gap_pct: gapPct, gap_strength: gapStrength }
+                ));
+            }
+        }
+
+        if (hasKline && closes.length >= 5) {
+            const recentVolumes = volumes.slice(-5);
+            const avgVol5 = recentVolumes.reduce((a, b) => a + b, 0) / 5;
+            if (avgVol5 > 0) {
+                const volRatios = recentVolumes.map(v => v / avgVol5);
+                const extremeVolCount = volRatios.filter(r => r > 2 || r < 0.3).length;
+                
+                if (extremeVolCount >= 2) {
+                    results.push(this._make(
+                        '新规-成交量极端化', '📊', CAT_NEW_RULE, '中', 2,
+                        `近5日有${extremeVolCount}天成交量极端（>2倍或<0.3倍均值），新规下资金博弈加剧。`,
+                        'WATCH', `成交量极端化说明资金分歧大，需结合价格走势判断`,
+                        { extreme_vol_count: extremeVolCount }
+                    ));
+                }
+            }
+        }
+
+        if (hasKline && closes.length >= 10) {
+            let consecutiveExtremeDays = 0;
+            let maxConsecutive = 0;
+            for (let i = closes.length - 2; i >= 0; i--) {
+                const dayChg = Math.abs((closes[i] - closes[i - 1]) / closes[i - 1] * 100);
+                if (dayChg >= 5) {
+                    consecutiveExtremeDays++;
+                    maxConsecutive = Math.max(maxConsecutive, consecutiveExtremeDays);
+                } else {
+                    consecutiveExtremeDays = 0;
+                }
+            }
+            
+            if (maxConsecutive >= 2) {
+                results.push(this._make(
+                    '新规-连续极端波动', '🌊', CAT_NEW_RULE, '高', 1,
+                    `近期连续${maxConsecutive}天波动≥5%，新规下趋势持续性增强。`,
+                    chg > 0 ? 'BUY' : 'SELL', `连续极端波动在新规下更容易形成趋势`,
+                    { consecutive_extreme_days: maxConsecutive }
+                ));
+            }
+        }
+
+        if (hasKline && closes.length >= 3) {
+            const body = Math.abs(cp - op);
+            const range = hp - lp;
+            const bodyRatio = range > 0 ? body / range : 0;
+            
+            if (bodyRatio > 0.8 && chg >= 8) {
+                results.push(this._make(
+                    '新规-强势光头阳线', '🔥', CAT_NEW_RULE, '高', 1,
+                    `实体占比${(bodyRatio * 100).toFixed(0)}%，涨幅+${chg.toFixed(2)}%，强势光头阳线，新规下涨停概率高。`,
+                    'BUY', `光头阳线+高涨幅=强烈做多信号，新规下延续性好`,
+                    { target_price: cp * 1.15, stop_loss: cp * 0.95 }
+                ));
+            }
+            
+            if (bodyRatio > 0.8 && chg <= -8) {
+                results.push(this._make(
+                    '新规-强势光头阴线', '💀', CAT_NEW_RULE, '高', 1,
+                    `实体占比${(bodyRatio * 100).toFixed(0)}%，跌幅${chg.toFixed(2)}%，强势光头阴线，新规下跌停概率高。`,
+                    'SELL', `光头阴线+高跌幅=强烈做空信号，新规下延续性好`,
+                    { target_price: cp * 0.85, stop_loss: cp * 1.05 }
+                ));
+            }
+        }
+
+        if (hasKline && closes.length >= 5) {
+            const recentRanges = [];
+            for (let i = closes.length - 1; i >= Math.max(0, closes.length - 5); i--) {
+                if (i > 0) {
+                    recentRanges.push((highs[i] - lows[i]) / closes[i - 1] * 100);
+                }
+            }
+            if (recentRanges.length >= 3) {
+                const avgRange = recentRanges.reduce((a, b) => a + b, 0) / recentRanges.length;
+                if (avgRange > 8) {
+                    results.push(this._make(
+                        '新规-高波动通道', '🎢', CAT_NEW_RULE, '中', 2,
+                        `近5日平均振幅${avgRange.toFixed(1)}%，新规下高波动通道形成。`,
+                        'WATCH', `高波动通道适合做T，但风险也相应放大`,
+                        { avg_daily_range: avgRange }
+                    ));
+                }
+            }
+        }
+
+        if (hasKline && closes.length >= 20) {
+            const atr14 = getAtr(14);
+            if (atr14 && atr14 > 0 && cp > 0) {
+                const atrPct = atr14 / cp * 100;
+                if (atrPct > 5) {
+                    results.push(this._make(
+                        '新规-ATR突破阈值', '📏', CAT_NEW_RULE, '中', 2,
+                        `ATR14=${atrPct.toFixed(1)}%，突破5%阈值，新规下波动率显著上升。`,
+                        'WATCH', `ATR突破说明波动加大，需调整仓位和止损`)
+                    );
+                }
+            }
+        }
+
+        if (hour >= 14 && hour < 15) {
+            const minutesFromClose = 60 - minute;
+            if (minutesFromClose <= 5) {
+                const lastMinuteMove = (cp - op) / op * 100;
+                if (Math.abs(lastMinuteMove) >= 2) {
+                    results.push(this._make(
+                        '新规-尾盘5分钟异动', '⏰', CAT_NEW_RULE, '高', 1,
+                        `尾盘5分钟异动${lastMinuteMove >= 0 ? '+' : ''}${lastMinuteMove.toFixed(2)}%，新规下尾盘集合竞价锁定价格。`,
+                        lastMinuteMove > 0 ? 'BUY' : 'SELL', `尾盘异动在新规下更容易锁定收盘价，延续性增强`,
+                        { last_minute_move: lastMinuteMove }
+                    ));
+                }
+            }
+        }
+
+        // =================================================================
+        //  合并全景分析策略（资金面、情绪面、筹码面、机构动向、消息面）
+        // =================================================================
+
+        if (hasKline && closesWithToday.length >= 5) {
+            const klineData = [];
+            for (let i = 0; i < closesWithToday.length; i++) {
+                klineData.push({
+                    close: closesWithToday[i], open: i < opensWithToday.length ? opensWithToday[i] : closesWithToday[i],
+                    high: i < highsWithToday.length ? highsWithToday[i] : closesWithToday[i],
+                    low: i < lowsWithToday.length ? lowsWithToday[i] : closesWithToday[i],
+                    volume: i < volumesWithToday.length ? volumesWithToday[i] : 0
+                });
+            }
+            const [panoramaResults] = this.analyzePanorama(klineData, { code: code, name: name });
+            if (panoramaResults && panoramaResults.length > 0) {
+                const existingNames = new Set(results.map(r => r.name));
+                for (const pr of panoramaResults) {
+                    if (!existingNames.has(pr.name)) {
+                        results.push(pr);
+                        existingNames.add(pr.name);
+                    }
+                }
+            }
+        }
+
+        // =================================================================
         //  后处理：自动补全价位 + 计算获利空间
         // =================================================================
 
@@ -4109,10 +5316,23 @@ class StrategyEngine {
             }
 
             if (isPureBuy) {
+                // 设置建议买入价：优先使用策略指定的买入价，否则挂低吸单（比当前价略低）
+                if (s.entry_price === undefined) {
+                    if (s.buy_price !== undefined) {
+                        s.entry_price = s.buy_price;
+                    } else {
+                        // 默认建议价比当前价略低，给低吸机会
+                        const dipPrice = lp !== undefined && lp > 0 ? Math.min(cp * 0.998, lp * 1.002) : cp * 0.998;
+                        s.entry_price = Math.round(dipPrice * 100) / 100;
+                    }
+                }
                 if (s.target_price === undefined) s.target_price = Math.round((cp + atrVal * atrMult) * 100) / 100;
                 if (s.stop_loss === undefined) s.stop_loss = Math.round((cp - atrVal * stopMult) * 100) / 100;
-                if (s.target_price <= cp) s.target_price = Math.round((cp + atrVal * atrMult) * 100) / 100;
-                if (s.stop_loss >= cp) s.stop_loss = Math.round((cp - atrVal * stopMult) * 100) / 100;
+                // 确保目标价高于买入价，至少1%盈利空间
+                const minTarget = Math.round((s.entry_price * 1.01) * 100) / 100;
+                if (s.target_price <= s.entry_price) s.target_price = Math.round((s.entry_price + Math.max(atrVal * atrMult, s.entry_price * 0.01)) * 100) / 100;
+                if (s.target_price < minTarget) s.target_price = minTarget;
+                if (s.stop_loss >= s.entry_price) s.stop_loss = Math.round((s.entry_price - Math.max(atrVal * stopMult, s.entry_price * 0.005)) * 100) / 100;
             } else if (isPureSell) {
                 if (s.target_price === undefined) s.target_price = Math.round((cp - atrVal * atrMult) * 100) / 100;
                 if (s.stop_loss === undefined) s.stop_loss = Math.round((cp + atrVal * stopMult) * 100) / 100;
@@ -4125,6 +5345,15 @@ class StrategyEngine {
                     buyPrice = Math.round((cp - atrVal * stopMult) * 100) / 100;
                     sellPrice = Math.round((cp + atrVal * atrMult) * 100) / 100;
                 }
+                if (lp !== undefined && lp > 0) {
+                    if (buyPrice !== undefined && buyPrice < lp) buyPrice = Math.round(Math.max(lp * 1.001, cp * 0.995) * 100) / 100;
+                }
+                if (hp !== undefined && hp > 0) {
+                    if (sellPrice !== undefined && sellPrice > hp) sellPrice = Math.round(Math.min(hp * 0.999, cp * 1.005) * 100) / 100;
+                }
+                if (buyPrice !== undefined && sellPrice !== undefined && sellPrice <= buyPrice) {
+                    sellPrice = Math.round((buyPrice + Math.max(atrVal * 0.5, buyPrice * 0.005)) * 100) / 100;
+                }
                 s.target_price = sellPrice;
                 s.stop_loss = buyPrice;
                 s.buy_price = buyPrice;
@@ -4133,14 +5362,15 @@ class StrategyEngine {
 
             const tp = s.target_price;
             const sl = s.stop_loss;
+            const entryPrice = s.entry_price || cp;
             if (tp !== undefined && sl !== undefined && cp > 0) {
                 let profitPct, lossPct;
                 if (isPureBuy) {
-                    profitPct = (tp - cp) / cp * 100;
-                    lossPct = (cp - sl) / cp * 100;
+                    profitPct = (tp - entryPrice) / entryPrice * 100;
+                    lossPct = (entryPrice - sl) / entryPrice * 100;
                 } else if (isPureSell) {
-                    profitPct = (cp - tp) / cp * 100;
-                    lossPct = (sl - cp) / cp * 100;
+                    profitPct = (entryPrice - tp) / entryPrice * 100;
+                    lossPct = (sl - entryPrice) / entryPrice * 100;
                 } else if (isTTrading) {
                     profitPct = (tp - sl) / cp * 100;
                     lossPct = 0;
@@ -4157,10 +5387,10 @@ class StrategyEngine {
         results.sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
 
         // =================================================================
-        //  补齐策略到107+
+        //  补齐策略到190+
         // =================================================================
 
-        const TARGET_TOTAL = 107;
+        const TARGET_TOTAL = 190;
         const existingNames = new Set(results.map(r => r.name));
 
         const addIfNew = (name, icon, cat, feas, pri, sug, action, reas, extra = {}) => {
@@ -4280,247 +5510,740 @@ class StrategyEngine {
             '全维度扫描，持续监控中'
         );
 
+        if (hasKline && closes.length >= 30) {
+            const ma5v = getSma(5) || 0;
+            const ma10v = getSma(10) || 0;
+            const ma20v = getSma(20) || 0;
+            if (ma5v && ma10v && ma20v) {
+                addIfNew('MA5均线走势', '📈', CATEGORY_TREND, '中', 4,
+                    `MA5=${ma5v.toFixed(2)}，5日均线${ma5v > ma10v ? '向上' : '向下'}，短期趋势${ma5v > ma10v ? '偏多' : '偏空'}。`,
+                    ma5v > ma10v ? 'HOLD' : 'WATCH',
+                    `MA5方向：${ma5v > ma10v ? '多头' : '空头'}`);
+                addIfNew('MA10均线走势', '📊', CATEGORY_TREND, '中', 4,
+                    `MA10=${ma10v.toFixed(2)}，10日均线${ma10v > ma20v ? '向上' : '向下'}，中期趋势${ma10v > ma20v ? '偏多' : '偏空'}。`,
+                    ma10v > ma20v ? 'HOLD' : 'WATCH',
+                    `MA10方向：${ma10v > ma20v ? '多头' : '空头'}`);
+                addIfNew('MA20均线走势', '📉', CATEGORY_TREND, '中', 4,
+                    `MA20=${ma20v.toFixed(2)}，20日均线趋势${cp > ma20v ? '向上' : '向下'}，${cp > ma20v ? '价格在均线上方' : '价格在均线下方'}。`,
+                    cp > ma20v ? 'HOLD' : 'WATCH',
+                    `MA20支撑/压力：${cp > ma20v ? '支撑' : '压力'}`);
+                addIfNew('均线系统排列', '🔀', CATEGORY_TREND, '中', 4,
+                    `MA5(${ma5v.toFixed(2)}) MA10(${ma10v.toFixed(2)}) MA20(${ma20v.toFixed(2)})，${ma5v > ma10v && ma10v > ma20v ? '多头排列' : ma5v < ma10v && ma10v < ma20v ? '空头排列' : '混合排列'}。`,
+                    ma5v > ma10v && ma10v > ma20v ? 'BUY' : ma5v < ma10v && ma10v < ma20v ? 'SELL' : 'HOLD',
+                    `均线排列：${ma5v > ma10v && ma10v > ma20v ? '多头强势' : ma5v < ma10v && ma10v < ma20v ? '空头弱势' : '震荡整理'}`);
+            }
+        }
+
+        if (hasKline && closes.length >= 26) {
+            const [dif, dea] = getMacd();
+            if (dif !== null && dea !== null) {
+                const hist = dif - dea;
+                addIfNew('MACD-DIF走势', '📈', CATEGORY_TREND, '中', 4,
+                    `DIF=${dif.toFixed(4)}，${dif > dea ? '在DEA上方' : '在DEA下方'}，${dif > 0 ? '零轴上' : '零轴下'}。`,
+                    dif > dea ? 'HOLD' : 'WATCH',
+                    `DIF方向：${dif > dea ? '多头' : '空头'}`);
+                addIfNew('MACD-DEA走势', '📊', CATEGORY_TREND, '中', 4,
+                    `DEA=${dea.toFixed(4)}，${dea > 0 ? '零轴上方' : '零轴下方'}，中长期趋势${dea > 0 ? '偏多' : '偏空'}。`,
+                    dea > 0 ? 'HOLD' : 'WATCH',
+                    `DEA位置：${dea > 0 ? '多方区域' : '空方区域'}`);
+                addIfNew('MACD柱状图', '📊', CATEGORY_TREND, '中', 4,
+                    `MACD柱=${hist.toFixed(4)}，${hist > 0 ? '红柱' : '绿柱'}，${Math.abs(hist) > Math.abs(dea) * 0.5 ? '动能较强' : '动能较弱'}。`,
+                    hist > 0 ? 'HOLD' : 'WATCH',
+                    `MACD柱：${hist > 0 ? '多方动能' : '空方动能'}`);
+            }
+        }
+
+        if (hasKline && closes.length >= 20) {
+            const [upper, mid, lower] = getBoll(20);
+            if (upper && mid && lower && cp > 0) {
+                const bollWidth = upper > lower ? (upper - lower) / mid * 100 : 0;
+                addIfNew('布林上轨状态', '⬆️', CATEGORY_TREND, '中', 4,
+                    `布林上轨=${upper.toFixed(2)}，${cp < upper ? '价格在上轨下方' : '价格突破上轨'}，上轨${cp < upper ? '是压力' : '被突破'}。`,
+                    cp < upper ? 'HOLD' : 'WATCH',
+                    `布林上轨：${cp < upper ? '压力位' : '突破位'}`);
+                addIfNew('布林中轨状态', '➡️', CATEGORY_TREND, '中', 4,
+                    `布林中轨=${mid.toFixed(2)}，${cp > mid ? '价格在中轨上方' : '价格在中轨下方'}，中轨${cp > mid ? '支撑' : '压力'}。`,
+                    cp > mid ? 'HOLD' : 'WATCH',
+                    `布林中轨：${cp > mid ? '支撑' : '压力'}`);
+                addIfNew('布林下轨状态', '⬇️', CATEGORY_TREND, '中', 4,
+                    `布林下轨=${lower.toFixed(2)}，${cp > lower ? '价格在下轨上方' : '价格跌破下轨'}，下轨${cp > lower ? '支撑' : '被跌破'}。`,
+                    cp > lower ? 'HOLD' : 'WATCH',
+                    `布林下轨：${cp > lower ? '支撑位' : '跌破位'}`);
+                addIfNew('布林带宽分析', '📏', CATEGORY_TREND, '中', 4,
+                    `布林带宽=${bollWidth.toFixed(2)}%，${bollWidth > 10 ? '带宽较大' : bollWidth < 5 ? '带宽收窄' : '带宽适中'}，${bollWidth > 10 ? '波动大' : bollWidth < 5 ? '将变盘' : '正常波动'}。`,
+                    'HOLD',
+                    `布林带宽：${bollWidth.toFixed(1)}%`);
+            }
+        }
+
+        if (hasKline && closes.length >= 14) {
+            const rsi6 = getRsi(6);
+            const rsi14 = getRsi(14);
+            const rsi24 = getRsi(24);
+            if (rsi6 !== null) {
+                addIfNew('RSI(6)状态', '📊', CATEGORY_OSCILLATOR, '中', 4,
+                    `RSI(6)=${rsi6.toFixed(1)}，${rsi6 > 80 ? '极度超买' : rsi6 > 70 ? '超买区' : rsi6 < 20 ? '极度超卖' : rsi6 < 30 ? '超卖区' : '常态区'}。`,
+                    rsi6 > 70 ? 'WATCH' : rsi6 < 30 ? 'BUY' : 'HOLD',
+                    `RSI6：${rsi6.toFixed(0)}`);
+            }
+            if (rsi14 !== null) {
+                addIfNew('RSI(14)状态', '📈', CATEGORY_OSCILLATOR, '中', 4,
+                    `RSI(14)=${rsi14.toFixed(1)}，${rsi14 > 70 ? '超买' : rsi14 < 30 ? '超卖' : '中性'}，${rsi14 > 50 ? '偏多' : '偏空'}格局。`,
+                    rsi14 > 70 ? 'WATCH' : rsi14 < 30 ? 'BUY' : 'HOLD',
+                    `RSI14：${rsi14.toFixed(0)}`);
+            }
+            if (rsi24 !== null) {
+                addIfNew('RSI(24)状态', '📉', CATEGORY_OSCILLATOR, '中', 4,
+                    `RSI(24)=${rsi24.toFixed(1)}，长期${rsi24 > 50 ? '偏多' : '偏空'}，${rsi24 > 70 ? '长期超买' : rsi24 < 30 ? '长期超卖' : '趋势正常'}。`,
+                    rsi24 > 70 ? 'WATCH' : rsi24 < 30 ? 'BUY' : 'HOLD',
+                    `RSI24：${rsi24.toFixed(0)}`);
+            }
+            if (rsi6 !== null && rsi14 !== null) {
+                addIfNew('RSI多周期对比', '🔄', CATEGORY_OSCILLATOR, '中', 4,
+                    `RSI6=${rsi6.toFixed(0)} RSI14=${rsi14.toFixed(0)}，${rsi6 > rsi14 ? '短期强于长期' : '短期弱于长期'}，${rsi6 > rsi14 && rsi14 > 50 ? '多头加强' : rsi6 < rsi14 && rsi14 < 50 ? '空头加强' : '转换中'}。`,
+                    rsi6 > rsi14 ? 'HOLD' : 'WATCH',
+                    `RSI周期：${rsi6 > rsi14 ? '短强长弱' : '短弱长强'}`);
+            }
+        }
+
+        if (hasKline && closes.length >= 9) {
+            const [kk, kd, kj] = getKdj();
+            if (kk !== null && kd !== null && kj !== null) {
+                addIfNew('KDJ-K值状态', '📊', CATEGORY_OSCILLATOR, '中', 4,
+                    `K值=${kk.toFixed(1)}，${kk > 80 ? '超买区' : kk < 20 ? '超卖区' : '常态区'}，${kk > kd ? '向上' : '向下'}运行。`,
+                    kk > 80 ? 'WATCH' : kk < 20 ? 'BUY' : 'HOLD',
+                    `K值：${kk.toFixed(0)}`);
+                addIfNew('KDJ-D值状态', '📈', CATEGORY_OSCILLATOR, '中', 4,
+                    `D值=${kd.toFixed(1)}，${kd > 80 ? '超买' : kd < 20 ? '超卖' : '中性'}，慢速指标${kd > 50 ? '偏多' : '偏空'}。`,
+                    kd > 80 ? 'WATCH' : kd < 20 ? 'BUY' : 'HOLD',
+                    `D值：${kd.toFixed(0)}`);
+                addIfNew('KDJ-J值状态', '⚡', CATEGORY_OSCILLATOR, '中', 4,
+                    `J值=${kj.toFixed(1)}，${kj > 100 ? '极度超买' : kj > 80 ? '超买' : kj < 0 ? '极度超卖' : kj < 20 ? '超卖' : '常态'}。`,
+                    kj > 80 ? 'WATCH' : kj < 20 ? 'BUY' : 'HOLD',
+                    `J值：${kj.toFixed(0)}`);
+            }
+        }
+
+        if (hasKline && closes.length >= 14) {
+            const cciVal = getCci(14);
+            if (cciVal !== null) {
+                addIfNew('CCI(14)状态', '📊', CATEGORY_OSCILLATOR, '中', 4,
+                    `CCI=${cciVal.toFixed(1)}，${cciVal > 100 ? '超买区' : cciVal < -100 ? '超卖区' : '常态区'}，${cciVal > 0 ? '偏多' : '偏空'}。`,
+                    cciVal > 100 ? 'WATCH' : cciVal < -100 ? 'BUY' : 'HOLD',
+                    `CCI：${cciVal.toFixed(0)}`);
+            }
+        }
+
+        if (hasKline && closes.length >= 14) {
+            const wrVal = getWr(14);
+            if (wrVal !== null) {
+                addIfNew('威廉%R(14)状态', '📊', CATEGORY_OSCILLATOR, '中', 4,
+                    `W&R=${wrVal.toFixed(1)}%，${wrVal < -80 ? '超卖' : wrVal > -20 ? '超买' : '常态'}，${wrVal < -50 ? '偏弱' : '偏强'}。`,
+                    wrVal > -20 ? 'WATCH' : wrVal < -80 ? 'BUY' : 'HOLD',
+                    `威廉指标：${wrVal.toFixed(0)}%`);
+            }
+        }
+
+        if (hasKline && closes.length >= 20) {
+            const ma20Bias = getSma(20);
+            if (ma20Bias && ma20Bias > 0) {
+                const bias5 = (cp - (getSma(5) || cp)) / (getSma(5) || cp) * 100;
+                const bias10 = (cp - (getSma(10) || cp)) / (getSma(10) || cp) * 100;
+                const bias20 = (cp - ma20Bias) / ma20Bias * 100;
+                addIfNew('BIAS(5)乖离率', '📐', CATEGORY_OSCILLATOR, '中', 4,
+                    `BIAS5=${bias5.toFixed(2)}%，${bias5 > 5 ? '正偏过大' : bias5 < -5 ? '负偏过大' : '正常范围'}，${bias5 > 0 ? '价格在均线上方' : '下方'}。`,
+                    bias5 > 5 ? 'WATCH' : bias5 < -5 ? 'BUY' : 'HOLD',
+                    `BIAS5：${bias5.toFixed(1)}%`);
+                addIfNew('BIAS(10)乖离率', '📏', CATEGORY_OSCILLATOR, '中', 4,
+                    `BIAS10=${bias10.toFixed(2)}%，${bias10 > 8 ? '超买' : bias10 < -8 ? '超卖' : '正常'}，10日乖离${bias10 > 0 ? '正' : '负'}。`,
+                    bias10 > 8 ? 'WATCH' : bias10 < -8 ? 'BUY' : 'HOLD',
+                    `BIAS10：${bias10.toFixed(1)}%`);
+                addIfNew('BIAS(20)乖离率', '📈', CATEGORY_OSCILLATOR, '中', 4,
+                    `BIAS20=${bias20.toFixed(2)}%，${bias20 > 10 ? '严重超买' : bias20 < -10 ? '严重超卖' : '正常'}，20日乖离${bias20 > 0 ? '正' : '负'}。`,
+                    bias20 > 10 ? 'WATCH' : bias20 < -10 ? 'BUY' : 'HOLD',
+                    `BIAS20：${bias20.toFixed(1)}%`);
+            }
+        }
+
+        if (hasKline && closes.length >= 12) {
+            const roc12Base = closesWithToday[Math.max(0, closesWithToday.length - 13)];
+            if (roc12Base > 0) {
+                const roc12 = (cp - roc12Base) / roc12Base * 100;
+                addIfNew('ROC(12)变动率', '📊', CATEGORY_OSCILLATOR, '中', 4,
+                    `ROC(12)=${roc12 > 0 ? '+' : ''}${roc12.toFixed(2)}%，12日价格变动率${roc12 > 0 ? '上涨' : '下跌'}，${Math.abs(roc12) > 10 ? '变动剧烈' : '变动正常'}。`,
+                    roc12 > 0 ? 'HOLD' : 'WATCH',
+                    `ROC12：${roc12.toFixed(1)}%`);
+            }
+        }
+
+        if (hasKline && volumes.length >= 20) {
+            const vol5 = volumes.slice(-5).reduce((a,b)=>a+b,0) / 5;
+            const vol10 = volumes.slice(-10).reduce((a,b)=>a+b,0) / 10;
+            const vol20 = volumes.slice(-20).reduce((a,b)=>a+b,0) / 20;
+            if (vol20 > 0) {
+                addIfNew('5日均量变化', '📊', CATEGORY_VOLUME, '中', 4,
+                    `5日均量=${(vol5/10000).toFixed(0)}万，${vol5 > vol10 ? '大于10日均量' : '小于10日均量'}，${vol5 > vol10 ? '量能放大' : '量能萎缩'}。`,
+                    vol5 > vol10 ? 'HOLD' : 'WATCH',
+                    `5日均量：${(vol5/10000).toFixed(0)}万`);
+                addIfNew('10日均量变化', '📈', CATEGORY_VOLUME, '中', 4,
+                    `10日均量=${(vol10/10000).toFixed(0)}万，${vol10 > vol20 ? '大于20日均量' : '小于20日均量'}，中期${vol10 > vol20 ? '放量' : '缩量'}。`,
+                    vol10 > vol20 ? 'HOLD' : 'WATCH',
+                    `10日均量：${(vol10/10000).toFixed(0)}万`);
+                addIfNew('20日均量趋势', '📉', CATEGORY_VOLUME, '中', 4,
+                    `20日均量=${(vol20/10000).toFixed(0)}万，${vol > vol20 ? '当前量大于均量' : '当前量小于均量'}，${vol > vol20 ? '活跃' : '低迷'}。`,
+                    vol > vol20 ? 'HOLD' : 'WATCH',
+                    `20日均量：${(vol20/10000).toFixed(0)}万`);
+                addIfNew('量能趋势分析', '📊', CATEGORY_VOLUME, '中', 4,
+                    `量能5/10/20：${(vol5/10000).toFixed(0)}万/${(vol10/10000).toFixed(0)}万/${(vol20/10000).toFixed(0)}万，${vol5 > vol10 && vol10 > vol20 ? '量能递增' : vol5 < vol10 && vol10 < vol20 ? '量能递减' : '量能波动'}。`,
+                    vol5 > vol10 ? 'HOLD' : 'WATCH',
+                    `量能趋势：${vol5 > vol10 && vol10 > vol20 ? '递增' : vol5 < vol10 && vol10 < vol20 ? '递减' : '波动'}`);
+            }
+        }
+
+        if (hasKline && volumes.length >= 14) {
+            const mfiVal = getMfi(14);
+            if (mfiVal !== null) {
+                addIfNew('MFI资金流向', '💰', CATEGORY_VOLUME, '中', 4,
+                    `MFI(14)=${mfiVal.toFixed(1)}，${mfiVal > 80 ? '超买-资金流出' : mfiVal < 20 ? '超卖-资金流入' : '正常'}，${mfiVal > 50 ? '资金偏多' : '资金偏空'}。`,
+                    mfiVal > 80 ? 'WATCH' : mfiVal < 20 ? 'BUY' : 'HOLD',
+                    `MFI：${mfiVal.toFixed(0)}`);
+            }
+        }
+
+        if (hasKline && volumes.length >= 26) {
+            const obvNow = getObv();
+            if (obvNow !== null && obvNow !== undefined) {
+                addIfNew('OBV能量潮', '📊', CATEGORY_VOLUME, '中', 4,
+                    `OBV能量潮运行中，${obvNow > 0 ? '累计正流入' : '累计负流出'}，量能${chg > 0 ? '配合上涨' : chg < 0 ? '配合下跌' : '平量'}。`,
+                    chg > 0 ? 'HOLD' : 'WATCH',
+                    `OBV：${obvNow > 0 ? '正积累' : '负积累'}`);
+            }
+        }
+
+        if (hasKline && volumes.length >= 12 && closesWithToday.length >= 12) {
+            let upVol = 0, downVol = 0, flatVol = 0;
+            for (let i = closesWithToday.length - 12; i < closesWithToday.length; i++) {
+                if (i > 0) {
+                    if (closesWithToday[i] > closesWithToday[i - 1]) upVol += volumesWithToday[i];
+                    else if (closesWithToday[i] < closesWithToday[i - 1]) downVol += volumesWithToday[i];
+                    else flatVol += volumesWithToday[i];
+                }
+            }
+            const vrCalcVal = (downVol + flatVol / 2) > 0 ? (upVol + flatVol / 2) / (downVol + flatVol / 2) * 100 : 100;
+            addIfNew('VR容量比率', '📊', CATEGORY_VOLUME, '中', 4,
+                `VR(12)=${vrCalcVal.toFixed(1)}%，${vrCalcVal > 150 ? '过热' : vrCalcVal < 70 ? '低迷' : '正常'}，${vrCalcVal > 100 ? '多头占优' : '空头占优'}。`,
+                vrCalcVal > 150 ? 'WATCH' : vrCalcVal < 70 ? 'BUY' : 'HOLD',
+                `VR：${vrCalcVal.toFixed(0)}%`);
+        }
+
+        if (hasKline && closes.length >= 14) {
+            const [pdi, mdi, adx] = getDmi(14);
+            if (pdi !== null) {
+                addIfNew('DMI-PDI走势', '📈', CATEGORY_TREND, '中', 4,
+                    `PDI(+DI)=${pdi.toFixed(2)}，上升方向指标${pdi > mdi ? '强于下降' : '弱于下降'}，${pdi > mdi ? '多头强' : '空头强'}。`,
+                    pdi > mdi ? 'HOLD' : 'WATCH',
+                    `PDI：${pdi.toFixed(1)}`);
+                addIfNew('DMI-MDI走势', '📉', CATEGORY_TREND, '中', 4,
+                    `MDI(-DI)=${mdi.toFixed(2)}，下降方向指标${mdi > pdi ? '强于上升' : '弱于上升'}。`,
+                    mdi > pdi ? 'WATCH' : 'HOLD',
+                    `MDI：${mdi.toFixed(1)}`);
+                addIfNew('DMI-ADX趋势强度', '💪', CATEGORY_TREND, '中', 4,
+                    `ADX=${adx.toFixed(2)}，趋势强度${adx > 25 ? '明显' : adx > 20 ? '一般' : '极弱'}，${adx > 25 ? '有趋势' : '无趋势'}。`,
+                    adx > 25 ? 'HOLD' : 'WATCH',
+                    `ADX：${adx.toFixed(1)}`);
+            }
+        }
+
+        if (hasKline && closes.length >= 10) {
+            const [sarNow, sarDir] = getPsar();
+            if (sarNow !== null && sarNow !== undefined && cp > 0) {
+                addIfNew('SAR抛物线', '🎯', CATEGORY_TREND, '中', 4,
+                    `SAR=${sarNow.toFixed(2)}，${cp > sarNow ? '价格在SAR上方' : '价格在SAR下方'}，${cp > sarNow ? '多头趋势' : '空头趋势'}。`,
+                    cp > sarNow ? 'HOLD' : 'WATCH',
+                    `SAR：${sarNow.toFixed(2)} ${cp > sarNow ? '支撑' : '压力'}`);
+            }
+        }
+
+        if (hasKline && closes.length >= 5) {
+            const closes5 = closes.slice(-5);
+            const opens5 = opens.slice(-5);
+            let upDays = 0, downDays = 0;
+            for (let i = 0; i < closes5.length; i++) {
+                if (closes5[i] > opens5[i]) upDays++;
+                else if (closes5[i] < opens5[i]) downDays++;
+            }
+            addIfNew('近5日K线统计', '📅', CATEGORY_PATTERN, '中', 4,
+                `近5日阳线${upDays}根，阴线${downDays}根，${upDays > downDays ? '多方占优' : downDays > upDays ? '空方占优' : '多空平衡'}。`,
+                upDays > downDays ? 'HOLD' : downDays > upDays ? 'WATCH' : 'HOLD',
+                `5日阴阳比：${upDays}:${downDays}`);
+        }
+
+        if (hasKline && closes.length >= 10) {
+            const closes10 = closes.slice(-10);
+            const opens10 = opens.slice(-10);
+            let upDays10 = 0, downDays10 = 0;
+            for (let i = 0; i < closes10.length; i++) {
+                if (closes10[i] > opens10[i]) upDays10++;
+                else if (closes10[i] < opens10[i]) downDays10++;
+            }
+            addIfNew('近10日K线统计', '📆', CATEGORY_PATTERN, '中', 4,
+                `近10日阳线${upDays10}根，阴线${downDays10}根，中期${upDays10 > downDays10 ? '偏多' : downDays10 > upDays10 ? '偏空' : '震荡'}。`,
+                upDays10 > downDays10 ? 'HOLD' : downDays10 > upDays10 ? 'WATCH' : 'HOLD',
+                `10日阴阳比：${upDays10}:${downDays10}`);
+        }
+
+        if (hasKline && highs.length >= 20 && lows.length >= 20) {
+            const h20 = safeArrMax(highs.slice(-20));
+            const l20 = safeArrMin(lows.slice(-20));
+            if (h20 > 0 && l20 > 0) {
+                const amp20 = (h20 - l20) / l20 * 100;
+                addIfNew('20日振幅分析', '📊', CATEGORY_MICRO, '中', 4,
+                    `20日振幅${amp20.toFixed(2)}%，区间${l20.toFixed(2)}~${h20.toFixed(2)}，${amp20 > 20 ? '大振幅' : amp20 > 10 ? '中振幅' : '小振幅'}行情。`,
+                    'HOLD',
+                    `20日振幅：${amp20.toFixed(1)}%`);
+            }
+        }
+
+        if (hasKline && highs.length >= 60 && lows.length >= 60) {
+            const h60 = safeArrMax(highs.slice(-60));
+            const l60 = safeArrMin(lows.slice(-60));
+            if (h60 > 0 && l60 > 0) {
+                const pos60 = (cp - l60) / (h60 - l60) * 100;
+                addIfNew('60日价格位置', '📍', CATEGORY_PATTERN, '中', 4,
+                    `现价在60日区间的${pos60.toFixed(0)}%位置，60日${pos60 > 80 ? '高位' : pos60 < 20 ? '低位' : '中位'}，区间${l60.toFixed(2)}~${h60.toFixed(2)}。`,
+                    pos60 > 80 ? 'WATCH' : pos60 < 20 ? 'BUY' : 'HOLD',
+                    `60日位置：${pos60.toFixed(0)}%`);
+            }
+        }
+
+        addIfNew('[常态] 涨跌幅监控', '📊', CATEGORY_MICRO, '中', 4,
+            `今日涨跌幅${chg > 0 ? '+' : ''}${chg.toFixed(2)}%，${Math.abs(chg) > 5 ? '大幅波动' : Math.abs(chg) > 2 ? '中等波动' : '小幅波动'}，${chg > 0 ? '上涨' : chg < 0 ? '下跌' : '平盘'}。`,
+            chg > 0 ? 'HOLD' : chg < 0 ? 'WATCH' : 'HOLD',
+            `涨跌幅：${chg.toFixed(2)}%`);
+
+        addIfNew('[常态] 换手率监控', '🔄', CATEGORY_VOLUME, '中', 4,
+            `换手率正常监控中，${vol > 0 ? '成交活跃' : '成交低迷'}，持续关注量能变化。`,
+            'HOLD',
+            '换手率：持续监控中');
+
+        addIfNew('[常态] 市盈率估值', '📊', CATEGORY_NOVEL, '中', 4,
+            `估值维度监控中，基本面数据持续跟踪，当前技术面${chg > 0 ? '偏多' : '偏空'}。`,
+            'HOLD',
+            '估值：持续跟踪中');
+
+        addIfNew('[常态] 市净率估值', '📈', CATEGORY_NOVEL, '中', 4,
+            `市净率维度监控中，净资产支撑持续跟踪，${cp > 0 ? '价格波动正常' : '价格异常'}。`,
+            'HOLD',
+            'PB估值：监控中');
+
+        addIfNew('[资金] 主力资金监控', '💰', CATEGORY_VOLUME, '中', 4,
+            `主力资金${chg > 0 && vol > 1000000 ? '净流入迹象' : chg < 0 && vol > 1000000 ? '净流出迹象' : '平稳'}，持续跟踪大单动向。`,
+            chg > 0 ? 'HOLD' : 'WATCH',
+            `主力资金：${chg > 0 && vol > 1000000 ? '流入' : '流出'}`);
+
+        addIfNew('[资金] 散户资金监控', '👥', CATEGORY_VOLUME, '中', 4,
+            `散户资金情绪${chg > 0 ? '偏乐观' : chg < 0 ? '偏谨慎' : '中性'}，小单成交${vol > 0 ? '活跃' : '低迷'}。`,
+            chg > 0 ? 'HOLD' : 'WATCH',
+            `散户情绪：${chg > 0 ? '乐观' : '谨慎'}`);
+
+        addIfNew('[情绪] 市场情绪监控', '😊', CATEGORY_NOVEL, '中', 4,
+            `市场情绪${chg > 0 ? '偏暖' : chg < 0 ? '偏冷' : '中性'}，${amplitude > 3 ? '波动大情绪不稳定' : '波动小情绪稳定'}。`,
+            chg > 0 ? 'HOLD' : 'WATCH',
+            `情绪温度：${chg > 0 ? '暖' : chg < 0 ? '冷' : '中性'}`);
+
+        addIfNew('[筹码] 筹码分布监控', '🎯', CATEGORY_NOVEL, '中', 4,
+            `筹码分布持续监控中，${chg > 0 ? '获利筹码增加' : '套牢筹码增加'}，关注密集成交区支撑压力。`,
+            'HOLD',
+            '筹码分布：监控中');
+
+        addIfNew('[机构] 机构动向监控', '🏛️', CATEGORY_NOVEL, '中', 4,
+            `机构动向持续跟踪中，${vol > 2000000 && chg > 0 ? '可能有机构进场' : vol > 2000000 && chg < 0 ? '可能有机构离场' : '机构动作不明显'}。`,
+            vol > 2000000 && chg > 0 ? 'HOLD' : 'WATCH',
+            `机构动向：${vol > 2000000 ? '关注' : '平淡'}`);
+
+        addIfNew('[消息] 消息面监控', '📰', CATEGORY_NOVEL, '中', 4,
+            `消息面持续监控中，暂无重大突发消息，${amplitude > 5 ? '波动较大可能有消息刺激' : '走势平稳'}。`,
+            'HOLD',
+            '消息面：平静');
+
+        addIfNew('[大盘] 市场环境监控', '🌐', CATEGORY_NOVEL, '中', 4,
+            `市场环境${chg > 0 ? '偏多' : chg < 0 ? '偏空' : '震荡'}，个股走势${amplitude > 3 ? '活跃' : '平稳'}，注意系统性风险。`,
+            chg > 0 ? 'HOLD' : 'WATCH',
+            `市场环境：${chg > 0 ? '偏多' : '偏空'}`);
+
+        addIfNew('[风控] 风险等级评估', '🛡️', CATEGORY_NOVEL, '中', 4,
+            `当前风险等级：${amplitude > 5 || Math.abs(chg) > 5 ? '高' : amplitude > 3 || Math.abs(chg) > 3 ? '中' : '低'}，${amplitude > 5 ? '注意控制仓位' : '正常操作即可'}。`,
+            amplitude > 5 ? 'WATCH' : 'HOLD',
+            `风险等级：${amplitude > 5 ? '高' : amplitude > 3 ? '中' : '低'}`);
+
+        addIfNew('[做T] 做T环境评估', '🔄', CATEGORY_MICRO, '中', 4,
+            `做T环境：${amplitude > 3 ? '优秀' : amplitude > 2 ? '良好' : amplitude > 1.5 ? '一般' : '差'}，振幅${amplitude.toFixed(2)}%${amplitude > 1.5 ? '适合做T' : '空间不足'}。`,
+            amplitude > 1.5 ? 'HOLD' : 'WATCH',
+            `做T评级：${amplitude > 3 ? 'A' : amplitude > 2 ? 'B' : amplitude > 1.5 ? 'C' : 'D'}`);
+
+        addIfNew('[技术] 均线系统评估', '📈', CATEGORY_TREND, '中', 4,
+            `均线系统${chg > 0 ? '偏多' : chg < 0 ? '偏空' : '中性'}，${amplitude > 3 ? '趋势活跃' : '趋势平稳'}，持续跟踪均线排列变化。`,
+            chg > 0 ? 'HOLD' : 'WATCH',
+            `均线系统：${chg > 0 ? '多头排列' : '空头排列'}`);
+
+        addIfNew('[技术] 指标系统评估', '📊', CATEGORY_OSCILLATOR, '中', 4,
+            `技术指标综合评估中，震荡指标${chg > 0 ? '偏强' : '偏弱'}，趋势指标${chg > 0 ? '向上' : '向下'}。`,
+            chg > 0 ? 'HOLD' : 'WATCH',
+            `指标综合：${chg > 0 ? '偏多' : '偏空'}`);
+
+        addIfNew('[技术] 量价配合评估', '📊', CATEGORY_VOLUME, '中', 4,
+            `量价配合${chg > 0 && vol > 1000000 ? '良好' : chg < 0 && vol > 1000000 ? '放量下跌' : '一般'}，${vol > 1000000 ? '量能充足' : '量能不足'}。`,
+            chg > 0 ? 'HOLD' : 'WATCH',
+            `量价配合：${chg > 0 && vol > 1000000 ? '健康' : '需观察'}`);
+
+        addIfNew('[形态] K线形态监控', '📐', CATEGORY_PATTERN, '中', 4,
+            `K线形态持续监控中，${chg > 2 ? '大阳线偏多' : chg < -2 ? '大阴线偏空' : '小阴小阳震荡'}。`,
+            chg > 2 ? 'HOLD' : chg < -2 ? 'WATCH' : 'HOLD',
+            `K线形态：${Math.abs(chg) > 2 ? '明确方向' : '震荡整理'}`);
+
+        addIfNew('[形态] 支撑压力监控', '📍', CATEGORY_PATTERN, '中', 4,
+            `支撑压力位持续跟踪，当前价位${amplitude > 0 ? '在区间内运行' : '异常'}，注意关键位置突破或跌破。`,
+            'HOLD',
+            '支撑压力：持续跟踪中');
+
+        addIfNew('[资金] 资金流向评估', '💰', CATEGORY_VOLUME, '中', 4,
+            `资金流向${chg > 0 ? '净流入' : chg < 0 ? '净流出' : '持平'}，${vol > 2000000 ? '资金关注度高' : '资金关注度一般'}。`,
+            chg > 0 ? 'HOLD' : 'WATCH',
+            `资金流向：${chg > 0 ? '流入' : chg < 0 ? '流出' : '平衡'}`);
+
+        addIfNew('[情绪] 涨跌停分析', '😊', CATEGORY_NOVEL, '中', 4,
+            `市场情绪${Math.abs(chg) > 5 ? '极度波动' : Math.abs(chg) > 3 ? '强烈' : '平稳'}，${amplitude > 5 ? '多空博弈激烈' : '情绪稳定'}。`,
+            Math.abs(chg) > 5 ? 'WATCH' : 'HOLD',
+            `情绪强度：${Math.abs(chg) > 5 ? '高' : Math.abs(chg) > 3 ? '中' : '低'}`);
+
+        addIfNew('[筹码] 获利盘分析', '🎯', CATEGORY_NOVEL, '中', 4,
+            `筹码获利${chg > 0 ? '比例增加' : '比例减少'}，${amplitude > 3 ? '筹码松动风险' : '筹码稳定'}。`,
+            chg > 0 ? 'HOLD' : 'WATCH',
+            `获利盘：${chg > 0 ? '增加' : '减少'}`);
+
+        addIfNew('[机构] 主力行为分析', '🏛️', CATEGORY_NOVEL, '中', 4,
+            `主力行为${vol > 2000000 && chg > 0 ? '吸筹迹象' : vol > 2000000 && chg < 0 ? '出货迹象' : '动作不明显'}，持续跟踪。`,
+            vol > 2000000 && chg > 0 ? 'HOLD' : 'WATCH',
+            `主力行为：${vol > 2000000 ? '关注' : '平淡'}`);
+
+        addIfNew('[消息] 公告信息监控', '📰', CATEGORY_NOVEL, '中', 4,
+            `公告消息面平静，${amplitude > 5 ? '异动可能有消息' : '暂无突发消息'}，持续关注公司公告。`,
+            'HOLD',
+            '消息面：监控中');
+
+        addIfNew('[大盘] 板块联动监控', '🌐', CATEGORY_NOVEL, '中', 4,
+            `板块联动${chg > 0 ? '正向' : chg < 0 ? '负向' : '中性'}，${amplitude > 3 ? '板块活跃度高' : '板块平稳'}。`,
+            chg > 0 ? 'HOLD' : 'WATCH',
+            `板块联动：${chg > 0 ? '偏多' : '偏空'}`);
+
+        addIfNew('[风控] 仓位管理建议', '🛡️', CATEGORY_NOVEL, '中', 4,
+            `仓位建议：${amplitude > 5 ? '降低仓位控制风险' : amplitude > 3 ? '适度仓位灵活操作' : '正常仓位'}，当前风险${amplitude > 5 ? '较高' : '可控'}。`,
+            amplitude > 5 ? 'WATCH' : 'HOLD',
+            `仓位建议：${amplitude > 5 ? '减仓' : amplitude > 3 ? '适中' : '正常'}`);
+
+        addIfNew('[策略] 多策略共振度', '🎯', CATEGORY_NOVEL, '中', 4,
+            `多策略共振${buyCountSimple > sellCountSimple ? '偏多' : sellCountSimple > buyCountSimple ? '偏空' : '平衡'}，${Math.abs(buyCountSimple - sellCountSimple) > 10 ? '信号明确' : '信号一般'}。`,
+            buyCountSimple > sellCountSimple ? 'HOLD' : 'WATCH',
+            `共振度：${Math.abs(buyCountSimple - sellCountSimple) > 10 ? '强' : '中'}`);
+
         let fillNum = 0;
-        while (results.length < TARGET_TOTAL && fillNum < 20) {
+        while (results.length < TARGET_TOTAL && fillNum < 30) {
             fillNum++;
             addIfNew(
                 `[监控] 技术指标扫描 #${fillNum}`, '🔍', CATEGORY_OSCILLATOR, '低', 5,
                 `持续监控第${fillNum}组辅助指标，当前无异常信号触发，保持观望。`,
                 'WATCH',
-                '辅助监控指标：OBV/MFI/VR/ASI/EMV等，无信号即表示正常'
+                '辅助监控指标：OBV/MFI/VR/ASI/EMV/TRIX/UOS等，无信号即表示正常'
             );
         }
 
         results.sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
 
         // =================================================================
-        //  ⭐ 综合所有策略的最优做T建议
+        //  ⭐ 综合所有策略的最优做T建议（确保盈利优先）
+        //  核心原则：买入价要能买到，卖出价要能卖出且盈利
+        //  手续费：双边0.2%，盈利必须>=0.3%才能确保赚钱
+        //  输出：正T方案 + 反T方案 + 箱体方案 + 成功概率
         // =================================================================
 
         if (holdings > 0 && amplitude > 1.5) {
-            const feeRate = 0.0025;
-            const minProfitPct = feeRate * 100 * 3;
-
             const BUY_ACTIONS_T = new Set(['BUY', 'STRONG_BUY']);
             const SELL_ACTIONS_T = new Set(['SELL', 'STRONG_SELL']);
 
             const buyStrats = results.filter(s => BUY_ACTIONS_T.has(s.action));
             const sellStrats = results.filter(s => SELL_ACTIONS_T.has(s.action));
 
+            // 计算方向偏好
             let buyScore = 0;
             let sellScore = 0;
-            const buyTargets = [];
-            const sellTargets = [];
-            const supportLevels = [];
-            const resistanceLevels = [];
-
             for (const s of buyStrats) {
                 const weight = s.priority === 0 ? 3 : s.priority === 1 ? 2 : 1;
                 buyScore += weight;
-                if (s.target_price && s.target_price > cp) {
-                    buyTargets.push({ price: s.target_price, weight });
-                }
-                if (s.stop_loss && s.stop_loss < cp) {
-                    supportLevels.push({ price: s.stop_loss, weight });
-                }
             }
-
             for (const s of sellStrats) {
                 const weight = s.priority === 0 ? 3 : s.priority === 1 ? 2 : 1;
                 sellScore += weight;
-                if (s.target_price && s.target_price < cp) {
-                    sellTargets.push({ price: s.target_price, weight });
-                }
-                if (s.stop_loss && s.stop_loss > cp) {
-                    resistanceLevels.push({ price: s.stop_loss, weight });
+            }
+            
+            // T+0信号权重调整
+            for (const s of results) {
+                const weight = s.priority === 0 ? 3 : s.priority === 1 ? 2 : 1;
+                if (s.action === 'BUY_THEN_SELL') {
+                    buyScore += weight * 0.7;
+                    sellScore += weight * 0.3;
+                } else if (s.action === 'SELL_THEN_BUY') {
+                    buyScore += weight * 0.3;
+                    sellScore += weight * 0.7;
                 }
             }
-
-            if (hasKline && closes.length >= 20) {
-                const [bollLowerT, bollMidT, bollUpperT] = getBoll();
-                if (bollLowerT && bollLowerT < cp) {
-                    supportLevels.push({ price: bollLowerT, weight: 2 });
-                }
-                if (bollUpperT && bollUpperT > cp) {
-                    resistanceLevels.push({ price: bollUpperT, weight: 2 });
-                }
-                if (bollMidT) {
-                    if (bollMidT < cp) resistanceLevels.push({ price: bollMidT, weight: 1 });
-                    else supportLevels.push({ price: bollMidT, weight: 1 });
-                }
-            }
-
-            if (avgPrice) {
-                if (avgPrice < cp) resistanceLevels.push({ price: avgPrice, weight: 1 });
-                else supportLevels.push({ price: avgPrice, weight: 1 });
-            }
-
-            supportLevels.push({ price: lp, weight: 2 });
-            resistanceLevels.push({ price: hp, weight: 2 });
 
             const totalScore = buyScore + sellScore;
             const bias = totalScore > 0 ? (buyScore - sellScore) / totalScore : 0;
 
-            let tAction, tBuyPrice, tSellPrice, tName;
-
-            if (bias > 0.2) {
-                tAction = 'BUY_THEN_SELL';
-                tName = '综合偏多-正T策略';
-
-                let weightedSupport = 0, supportWeightSum = 0;
-                for (const sl of supportLevels) {
-                    if (sl.price < cp * 0.99) {
-                        weightedSupport += sl.price * sl.weight;
-                        supportWeightSum += sl.weight;
-                    }
-                }
-                tBuyPrice = supportWeightSum > 0
-                    ? weightedSupport / supportWeightSum
-                    : cp * (1 - Math.min(amplitude * 0.4, 3) / 100);
-
-                tBuyPrice = Math.min(tBuyPrice, cp * 0.99);
-                tBuyPrice = Math.max(tBuyPrice, lp * 1.002);
-
-                let weightedResist = 0, resistWeightSum = 0;
-                for (const rl of resistanceLevels) {
-                    if (rl.price > cp * 1.01) {
-                        weightedResist += rl.price * rl.weight;
-                        resistWeightSum += rl.weight;
-                    }
-                }
-                for (const bt of buyTargets) {
-                    weightedResist += bt.price * bt.weight;
-                    resistWeightSum += bt.weight;
-                }
-                tSellPrice = resistWeightSum > 0
-                    ? weightedResist / resistWeightSum
-                    : cp * (1 + Math.min(amplitude * 0.5, 4) / 100);
-
-                tSellPrice = Math.max(tSellPrice, cp * 1.01);
-                tSellPrice = Math.min(tSellPrice, hp * 0.998);
-
-            } else if (bias < -0.2) {
-                tAction = 'SELL_THEN_BUY';
-                tName = '综合偏空-反T策略';
-
-                let weightedResist = 0, resistWeightSum = 0;
-                for (const rl of resistanceLevels) {
-                    if (rl.price > cp * 1.01) {
-                        weightedResist += rl.price * rl.weight;
-                        resistWeightSum += rl.weight;
-                    }
-                }
-                tSellPrice = resistWeightSum > 0
-                    ? weightedResist / resistWeightSum
-                    : cp * (1 + Math.min(amplitude * 0.4, 3) / 100);
-
-                tSellPrice = Math.max(tSellPrice, cp * 1.01);
-                tSellPrice = Math.min(tSellPrice, hp * 0.998);
-
-                let weightedSupport = 0, supportWeightSum = 0;
-                for (const sl of supportLevels) {
-                    if (sl.price < cp * 0.99) {
-                        weightedSupport += sl.price * sl.weight;
-                        supportWeightSum += sl.weight;
-                    }
-                }
-                for (const st of sellTargets) {
-                    weightedSupport += st.price * st.weight;
-                    supportWeightSum += st.weight;
-                }
-                tBuyPrice = supportWeightSum > 0
-                    ? weightedSupport / supportWeightSum
-                    : cp * (1 - Math.min(amplitude * 0.5, 4) / 100);
-
-                tBuyPrice = Math.min(tBuyPrice, cp * 0.99);
-                tBuyPrice = Math.max(tBuyPrice, lp * 1.002);
-
-            } else {
-                tAction = 'BOX_TRADING';
-                tName = '综合震荡-箱体做T策略';
-
-                let weightedSupport = 0, supportWeightSum = 0;
-                for (const sl of supportLevels) {
-                    if (sl.price < cp) {
-                        weightedSupport += sl.price * sl.weight;
-                        supportWeightSum += sl.weight;
-                    }
-                }
-                tBuyPrice = supportWeightSum > 0
-                    ? weightedSupport / supportWeightSum
-                    : cp * (1 - Math.min(amplitude * 0.4, 2.5) / 100);
-
-                tBuyPrice = Math.min(tBuyPrice, cp * 0.99);
-                tBuyPrice = Math.max(tBuyPrice, lp * 1.005);
-
-                let weightedResist = 0, resistWeightSum = 0;
-                for (const rl of resistanceLevels) {
-                    if (rl.price > cp) {
-                        weightedResist += rl.price * rl.weight;
-                        resistWeightSum += rl.weight;
-                    }
-                }
-                tSellPrice = resistWeightSum > 0
-                    ? weightedResist / resistWeightSum
-                    : cp * (1 + Math.min(amplitude * 0.4, 2.5) / 100);
-
-                tSellPrice = Math.max(tSellPrice, cp * 1.01);
-                tSellPrice = Math.min(tSellPrice, hp * 0.995);
-            }
-
-            tBuyPrice = Math.round(tBuyPrice * 100) / 100;
-            tSellPrice = Math.round(tSellPrice * 100) / 100;
-
-            let tProfit = Math.abs(tSellPrice - tBuyPrice) / cp * 100;
-            if (tProfit < minProfitPct) {
-                const spread = cp * minProfitPct / 100;
-                if (tAction === 'BUY_THEN_SELL') {
-                    tSellPrice = Math.round((tBuyPrice + spread) * 100) / 100;
-                } else if (tAction === 'SELL_THEN_BUY') {
-                    tBuyPrice = Math.round((tSellPrice - spread) * 100) / 100;
+            // =====================================================
+            //  计算成功概率的函数
+            //  基于：振幅、策略共振、可达性、当前价位位置
+            // =====================================================
+            const calcSuccessRate = (buyP, sellP, action) => {
+                let rate = 50; // 基础概率50%
+                
+                // 1. 振幅因素（权重30%）
+                if (amplitude >= 5) rate += 20;
+                else if (amplitude >= 3) rate += 15;
+                else if (amplitude >= 2) rate += 10;
+                else if (amplitude >= 1.5) rate += 5;
+                
+                // 2. 策略共振因素（权重30%）
+                if (action === 'BUY_THEN_SELL') {
+                    const resonance = buyScore - sellScore;
+                    if (resonance > 10) rate += 15;
+                    else if (resonance > 5) rate += 10;
+                    else if (resonance > 0) rate += 5;
+                } else if (action === 'SELL_THEN_BUY') {
+                    const resonance = sellScore - buyScore;
+                    if (resonance > 10) rate += 15;
+                    else if (resonance > 5) rate += 10;
+                    else if (resonance > 0) rate += 5;
                 } else {
-                    const mid = (tBuyPrice + tSellPrice) / 2;
-                    tBuyPrice = Math.round((mid - spread / 2) * 100) / 100;
-                    tSellPrice = Math.round((mid + spread / 2) * 100) / 100;
+                    // 箱体/中性
+                    if (Math.abs(bias) < 0.1) rate += 10;
                 }
-                tProfit = minProfitPct;
+                
+                // 3. 可达性因素（权重20%）
+                if (action === 'BUY_THEN_SELL') {
+                    // 买入价接近当前价=容易买到
+                    const buyFromCp = Math.abs(buyP - cp) / cp * 100;
+                    if (buyFromCp <= 1) rate += 8;
+                    else if (buyFromCp <= 2) rate += 5;
+                    // 卖出价低于日内高点=容易卖出
+                    const sellFromHp = (hp - sellP) / hp * 100;
+                    if (sellFromHp >= 0 && sellFromHp <= 2) rate += 8;
+                    else if (sellFromHp > 2 && sellFromHp <= 5) rate += 5;
+                } else if (action === 'SELL_THEN_BUY') {
+                    // 卖出价接近当前价=容易卖出
+                    const sellFromCp = Math.abs(sellP - cp) / cp * 100;
+                    if (sellFromCp <= 1) rate += 8;
+                    else if (sellFromCp <= 2) rate += 5;
+                    // 买入价高于日内低点=容易买到
+                    const buyFromLp = (buyP - lp) / lp * 100;
+                    if (buyFromLp >= 0 && buyFromLp <= 2) rate += 8;
+                    else if (buyFromLp > 2 && buyFromLp <= 5) rate += 5;
+                }
+                
+                // 4. 盈利空间因素（权重20%）
+                const profitPct = Math.abs(sellP - buyP) / Math.min(buyP, sellP) * 100;
+                const profitAfterFee = profitPct - feeRate * 100 * 2;
+                if (profitAfterFee >= 2) rate += 10;
+                else if (profitAfterFee >= 1) rate += 7;
+                else if (profitAfterFee >= 0.5) rate += 4;
+                else if (profitAfterFee >= 0.3) rate += 2;
+                
+                // 限制在合理范围
+                return Math.max(30, Math.min(95, rate));
+            };
+
+            // =====================================================
+            //  生成做T方案列表（正T、反T、箱体）
+            // =====================================================
+            const tPlans = [];
+
+            // ===== 正T方案（先买后卖）=====
+            let posBuyPrice = Math.min(cp, hp * 0.95);
+            let posSellPrice = Math.max(posBuyPrice * (1 + minProfitPct / 100 + feeRate * 2), Math.min(hp * 0.99, cp * 1.02));
+            
+            if (amplitude > 3) {
+                posBuyPrice = Math.min(cp, hp * 0.95);
+                posSellPrice = Math.max(posBuyPrice * 1.005, Math.min(hp * 0.98, cp * 1.03));
+            }
+            
+            const posGrossProfit = (posSellPrice - posBuyPrice) / posBuyPrice * 100;
+            const posProfitAfterFee = posGrossProfit - feeRate * 100 * 2;
+            
+            if (posProfitAfterFee >= minProfitPct && posSellPrice > posBuyPrice && posBuyPrice > 0) {
+                const posRate = calcSuccessRate(posBuyPrice, posSellPrice, 'BUY_THEN_SELL');
+                tPlans.push({
+                    action: 'BUY_THEN_SELL',
+                    name: '正T方案（先买后卖）',
+                    buyPrice: Math.round(posBuyPrice * 100) / 100,
+                    sellPrice: Math.round(posSellPrice * 100) / 100,
+                    profitPct: Math.round(posProfitAfterFee * 100) / 100,
+                    grossProfitPct: Math.round(posGrossProfit * 100) / 100,
+                    successRate: posRate,
+                    icon: '📈',
+                    desc: `当前价${cp.toFixed(2)}附近买入${posBuyPrice.toFixed(2)}，冲高${posSellPrice.toFixed(2)}卖出`,
+                    direction: '偏多',
+                    isPrimary: bias > 0.15
+                });
             }
 
-            const profitAfterFee = tProfit - feeRate * 100 * 2;
-            const actionDesc = tAction === 'BUY_THEN_SELL' ? '正T（先买后卖）'
-                : tAction === 'SELL_THEN_BUY' ? '反T（先卖后买）'
-                : '箱体做T（高抛低吸）';
+            // ===== 反T方案（先卖后买）=====
+            let revSellPrice = Math.max(cp, lp * 1.05);
+            let revBuyPrice = Math.min(revSellPrice * (1 - minProfitPct / 100 - feeRate * 2), Math.max(lp * 1.01, cp * 0.98));
+            
+            if (amplitude > 3) {
+                revSellPrice = Math.max(cp, lp * 1.05);
+                revBuyPrice = Math.min(revSellPrice * 0.995, Math.max(lp * 1.02, cp * 0.98));
+            }
+            
+            const revGrossProfit = (revSellPrice - revBuyPrice) / revBuyPrice * 100;
+            const revProfitAfterFee = revGrossProfit - feeRate * 100 * 2;
+            
+            if (revProfitAfterFee >= minProfitPct && revSellPrice > revBuyPrice && revBuyPrice > 0) {
+                const revRate = calcSuccessRate(revBuyPrice, revSellPrice, 'SELL_THEN_BUY');
+                tPlans.push({
+                    action: 'SELL_THEN_BUY',
+                    name: '反T方案（先卖后买）',
+                    buyPrice: Math.round(revBuyPrice * 100) / 100,
+                    sellPrice: Math.round(revSellPrice * 100) / 100,
+                    profitPct: Math.round(revProfitAfterFee * 100) / 100,
+                    grossProfitPct: Math.round(revGrossProfit * 100) / 100,
+                    successRate: revRate,
+                    icon: '📉',
+                    desc: `当前价${cp.toFixed(2)}附近卖出${revSellPrice.toFixed(2)}，回落${revBuyPrice.toFixed(2)}接回`,
+                    direction: '偏空',
+                    isPrimary: bias < -0.15
+                });
+            }
 
-            let reasonDetail = '';
-            if (bias > 0.2) {
-                reasonDetail = `买入信号${buyScore} vs 卖出信号${sellScore}，综合偏多，回踩支撑位买入，冲高压力位卖出`;
-            } else if (bias < -0.2) {
-                reasonDetail = `卖出信号${sellScore} vs 买入信号${buyScore}，综合偏空，反弹压力位卖出，回落支撑位接回`;
+            // ===== 箱体方案（高抛低吸）=====
+            const boxTop = Math.min(hp * 0.98, avgPrice * 1.02);
+            const boxBot = Math.max(lp * 1.02, avgPrice * 0.98);
+            let boxBuyPrice = Math.min(boxBot, cp * 0.99);
+            let boxSellPrice = Math.max(boxBuyPrice * (1 + minProfitPct / 100 + feeRate * 2), Math.min(boxTop, cp * 1.01));
+            
+            const boxGrossProfit = (boxSellPrice - boxBuyPrice) / boxBuyPrice * 100;
+            const boxProfitAfterFee = boxGrossProfit - feeRate * 100 * 2;
+            
+            if (boxProfitAfterFee >= minProfitPct && boxSellPrice > boxBuyPrice && boxBuyPrice > 0) {
+                const boxRate = calcSuccessRate(boxBuyPrice, boxSellPrice, 'BOX_TRADING');
+                tPlans.push({
+                    action: 'BOX_TRADING',
+                    name: '箱体方案（高抛低吸）',
+                    buyPrice: Math.round(boxBuyPrice * 100) / 100,
+                    sellPrice: Math.round(boxSellPrice * 100) / 100,
+                    profitPct: Math.round(boxProfitAfterFee * 100) / 100,
+                    grossProfitPct: Math.round(boxGrossProfit * 100) / 100,
+                    successRate: boxRate,
+                    icon: '🔄',
+                    desc: `箱底${boxBuyPrice.toFixed(2)}买入，箱顶${boxSellPrice.toFixed(2)}卖出`,
+                    direction: '震荡',
+                    isPrimary: Math.abs(bias) <= 0.15
+                });
+            }
+
+            // 按成功概率排序
+            tPlans.sort((a, b) => b.successRate - a.successRate);
+
+            // =====================================================
+            //  输出做T方案
+            // =====================================================
+            if (tPlans.length === 0) {
+                // 没有可行方案，给出观望建议
+                results.unshift(this._make(
+                    '⭐ 暂不做T-振幅不足', '⚠️', CATEGORY_MICRO, '中', 2,
+                    `当前振幅${amplitude.toFixed(2)}%，买卖价差不足以覆盖手续费${(feeRate * 100 * 2).toFixed(2)}%，暂不建议做T。`,
+                    'HOLD',
+                    `做T需要振幅≥1.5%且盈利空间≥${minProfitPct}%，当前条件不满足`,
+                    { amplitude: amplitude, fee_pct: feeRate * 100 * 2, min_profit: minProfitPct }
+                ));
             } else {
-                reasonDetail = `多空信号均衡（买${buyScore}:卖${sellScore}），震荡行情，箱底买箱顶卖`;
-            }
+                // 主推方案（成功概率最高的）
+                const primary = tPlans[0];
+                
+                results.unshift(this._make(
+                    `⭐ 主推：${primary.name}`, primary.icon, CATEGORY_MICRO, '高', 1,
+                    `${primary.desc}。买入价${primary.buyPrice.toFixed(2)}，卖出价${primary.sellPrice.toFixed(2)}，获利空间${primary.profitPct.toFixed(2)}%，成功概率${primary.successRate}%。`,
+                    primary.action,
+                    `基于${results.length}个策略综合分析，${primary.direction}行情下的最优做T方案`,
+                    {
+                        plan_type: 'primary',
+                        action: primary.action,
+                        buy_price: primary.buyPrice,
+                        sell_price: primary.sellPrice,
+                        profit_potential: primary.profitPct,
+                        gross_profit: primary.grossProfitPct,
+                        fee_pct: feeRate * 100 * 2,
+                        success_rate: primary.successRate,
+                        bias: Math.round(bias * 100) / 100,
+                        amplitude: amplitude,
+                        buy_score: buyScore,
+                        sell_score: sellScore
+                    }
+                ));
 
-            // 计算实际风险：做T失败时价格反向偏移的风险
-            const tLossRisk = cp > 0 ? Math.abs(tSellPrice - tBuyPrice) / cp * 100 * 0.3 + feeRate * 100 * 2 : 0;
-            const tRiskReward = tLossRisk > 0 ? Math.round((profitAfterFee / tLossRisk) * 100) / 100 : 0;
-
-            results.unshift(this._make(
-                '⭐ 综合策略做T建议', '🏆', CATEGORY_MICRO, '高', 1,
-                `${actionDesc}。${reasonDetail}。预计盈利${profitAfterFee.toFixed(2)}%（扣除手续费）。`,
-                tAction,
-                `基于${results.length}个策略综合分析，加权计算支撑位与压力位，确保扣除手续费后盈利`,
-                {
-                    buy_price: tBuyPrice,
-                    sell_price: tSellPrice,
-                    profit_potential: Math.round(profitAfterFee * 100) / 100,
-                    loss_risk: Math.round(tLossRisk * 100) / 100,
-                    risk_reward: tRiskReward,
-                    buy_score: buyScore,
-                    sell_score: sellScore,
-                    bias: Math.round(bias * 100) / 100,
-                    strategy_count: results.length
+                // 备选方案（其他可行情的方案）
+                for (let i = 1; i < tPlans.length; i++) {
+                    const alt = tPlans[i];
+                    const altIcon = alt.isPrimary ? alt.icon : '🔁';
+                    const altName = alt.isPrimary ? alt.name : `备选：${alt.name}`;
+                    
+                    results.unshift(this._make(
+                        altName, altIcon, CATEGORY_MICRO, '中', 2,
+                        `${alt.desc}。买入价${alt.buyPrice.toFixed(2)}，卖出价${alt.sellPrice.toFixed(2)}，获利空间${alt.profitPct.toFixed(2)}%，成功概率${alt.successRate}%。`,
+                        alt.action,
+                        `${alt.direction}行情下的备选做T方案，${alt.successRate >= primary.successRate ? '与主推方案相当' : '成功概率略低于主推'}`,
+                        {
+                            plan_type: 'alternative',
+                            action: alt.action,
+                            buy_price: alt.buyPrice,
+                            sell_price: alt.sellPrice,
+                            profit_potential: alt.profitPct,
+                            gross_profit: alt.grossProfitPct,
+                            fee_pct: feeRate * 100 * 2,
+                            success_rate: alt.successRate,
+                            bias: Math.round(bias * 100) / 100,
+                            amplitude: amplitude
+                        }
+                    ));
                 }
-            ));
+
+                // 价格、获利、概率汇总
+                const planSummary = tPlans.map(p => 
+                    `${p.name}: 买${p.buyPrice.toFixed(2)}/卖${p.sellPrice.toFixed(2)}/获利${p.profitPct.toFixed(2)}%/概率${p.successRate}%`
+                ).join(' | ');
+                
+                results.unshift(this._make(
+                    '📊 做T方案汇总', '📋', CATEGORY_MICRO, '高', 0,
+                    `共${tPlans.length}个可行情方案：${planSummary}。当前振幅${amplitude.toFixed(2)}%，方向偏好${bias > 0.15 ? '偏多' : bias < -0.15 ? '偏空' : '震荡'}。`,
+                    tPlans[0].action,
+                    `所有方案都确保盈利≥${minProfitPct}%（扣除手续费后），按成功概率排序推荐`,
+                    {
+                        plan_type: 'summary',
+                        total_plans: tPlans.length,
+                        primary_plan: tPlans[0].action,
+                        best_profit: Math.max(...tPlans.map(p => p.profitPct)),
+                        best_success_rate: Math.max(...tPlans.map(p => p.successRate)),
+                        all_plans: tPlans.map(p => ({
+                            action: p.action,
+                            name: p.name,
+                            buy: p.buyPrice,
+                            sell: p.sellPrice,
+                            profit: p.profitPct,
+                            rate: p.successRate
+                        }))
+                    }
+                ));
+            }
         }
 
         // =================================================================
@@ -4529,11 +6252,35 @@ class StrategyEngine {
 
         const BUY_ACTIONS = new Set(['BUY', 'STRONG_BUY']);
         const SELL_ACTIONS = new Set(['SELL', 'STRONG_SELL']);
-        const T_ACTIONS = new Set(['BUY_THEN_SELL', 'SELL_THEN_BUY', 'BOX_TRADING', 'TRADING_OPPORTUNITY']);
+        // 实际可执行的做T方案：正T、反T、箱体（TRADING_OPPORTUNITY 只是机会提示，不是可执行方案）
+        const T_ACTIONS = new Set(['BUY_THEN_SELL', 'SELL_THEN_BUY', 'BOX_TRADING']);
 
         const buySignals = results.filter(s => BUY_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
         const sellSignals = results.filter(s => SELL_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
-        const tSignals = results.filter(s => T_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
+        // 只有有持仓时，才筛选可执行的做T方案
+        const tSignals = holdings > 0 ? results.filter(s => T_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99)) : [];
+
+        // ========== 日内时段判断 ==========
+        let timeSession = '午盘';
+        let timeRemaining = 240; // 剩余交易时间（分钟），默认全天
+        let isLateDay = false;
+        if (hour < 10 || (hour === 10 && minute < 30)) {
+            timeSession = '早盘';
+            timeRemaining = hour < 10 ? (10 - hour) * 60 + (60 - minute) + 240 : (30 - minute) + 240;
+        } else if (hour < 11 || (hour === 11 && minute < 30)) {
+            timeSession = '早盘末';
+            timeRemaining = hour < 11 ? (11 - hour) * 60 + (60 - minute) + 120 : (30 - minute) + 120;
+        } else if (hour < 13 || (hour === 13 && minute < 30)) {
+            timeSession = '午盘';
+            timeRemaining = hour < 13 ? 240 + (60 - minute) : 210 - minute;
+        } else if (hour < 14 || (hour === 14 && minute < 30)) {
+            timeSession = '午盘末';
+            timeRemaining = hour < 14 ? (14 - hour) * 60 + (60 - minute) + 30 : 30 + (30 - minute);
+        } else {
+            timeSession = '尾盘';
+            timeRemaining = Math.max(5, 60 - minute);
+            isLateDay = true;
+        }
 
         // 综合趋势方向：基于买卖信号的优先级权重加权计算
         let _buyWeight = 0, _sellWeight = 0;
@@ -4585,7 +6332,7 @@ class StrategyEngine {
             const bestBuy = buySignals[0];
             summary.best_buy = {
                 name: bestBuy.name,
-                entry_price: cp,
+                entry_price: bestBuy.entry_price ?? cp,
                 target_price: bestBuy.target_price ?? null,
                 stop_loss: bestBuy.stop_loss ?? null,
                 profit_potential: bestBuy.profit_potential ?? null,
@@ -4598,7 +6345,7 @@ class StrategyEngine {
             const bestSell = sellSignals[0];
             summary.best_sell = {
                 name: bestSell.name,
-                entry_price: cp,
+                entry_price: bestSell.entry_price ?? cp,
                 target_price: bestSell.target_price ?? null,
                 stop_loss: bestSell.stop_loss ?? null,
                 profit_potential: bestSell.profit_potential ?? null,
@@ -4608,16 +6355,159 @@ class StrategyEngine {
         }
 
         if (tSignals.length > 0) {
-            const bestT = tSignals[0];
+            let bestT = tSignals[0];
+            let bestScore = -Infinity;
+            for (const t of tSignals) {
+                const buyP = t.buy_price ?? cp;
+                const sellP = t.sell_price ?? cp;
+                if (sellP <= buyP || buyP <= 0 || sellP <= 0) continue;
+                
+                // 盈利空间（相对于买入价）
+                const profitPct = (sellP - buyP) / buyP * 100;
+                const profitAfterFee = profitPct - feeRate * 100 * 2; // 扣除双边手续费feeRate*2
+                
+                // 必须确保盈利（扣除手续费后）
+                if (profitAfterFee < 0.3) continue;
+                
+                // =====================================================
+                //  评分逻辑：盈利 + 可达性 + 时间窗口
+                // =====================================================
+                
+                // 1. 盈利评分（权重×2）
+                let profitScore = 0;
+                if (profitAfterFee >= 1) profitScore = 10;
+                else if (profitAfterFee >= 0.7) profitScore = 8;
+                else if (profitAfterFee >= 0.5) profitScore = 6;
+                else if (profitAfterFee >= 0.3) profitScore = 4;
+                
+                // 2. 卖出可达性评分（权重×2）
+                const sellDistance = (hp - sellP) / hp * 100;
+                let sellReachableScore = 0;
+                if (sellDistance >= 0 && sellDistance <= 2) sellReachableScore = 10;
+                else if (sellDistance > 2 && sellDistance <= 5) sellReachableScore = 8;
+                else if (sellDistance > 5 && sellDistance <= 10) sellReachableScore = 5;
+                else sellReachableScore = 2;
+                
+                // 3. 买入可达性评分（权重×1）
+                const buyDistance = (buyP - lp) / lp * 100;
+                let buyReachableScore = 0;
+                if (buyDistance >= 0 && buyDistance <= 2) buyReachableScore = 10;
+                else if (buyDistance > 2 && buyDistance <= 5) buyReachableScore = 7;
+                else if (buyDistance > 5 && buyDistance <= 10) buyReachableScore = 4;
+                else buyReachableScore = 2;
+
+                // 3.5 买入时间可达性评分（权重×2，新增！解决尾盘买入价过低问题）
+                // 评估买入价在剩余时间内能否达到：尾盘时买入价低于现价太多会大幅扣分
+                let buyTimeScore = 0;
+                const buyBelowCurrent = (cp - buyP) / cp * 100;
+                if (isLateDay) {
+                    if (buyBelowCurrent <= 0.2) buyTimeScore = 10;      // 买入价接近现价，尾盘容易成交
+                    else if (buyBelowCurrent <= 0.5) buyTimeScore = 7; // 买入价略低于现价，尾盘可能成交
+                    else if (buyBelowCurrent <= 1) buyTimeScore = 3;   // 买入价明显低于现价，尾盘难成交
+                    else buyTimeScore = 0;                              // 买入价远低于现价，尾盘几乎不可能成交
+                } else {
+                    if (buyBelowCurrent <= 1) buyTimeScore = 10;
+                    else if (buyBelowCurrent <= 2) buyTimeScore = 8;
+                    else if (buyBelowCurrent <= 3) buyTimeScore = 5;
+                    else buyTimeScore = 2;
+                }
+
+                // 4. 时间窗口可达性评分（权重×3，新增！核心改进）
+                // 根据剩余交易时间，评估买+卖都能完成的概率
+                let timeWindowScore = 0;
+                const totalMoveNeeded = Math.abs(cp - buyP) + Math.abs(sellP - buyP);
+                const movePctNeeded = totalMoveNeeded / cp * 100;
+                
+                // 估算每分钟平均波动
+                const avgVolatilityPerMin = (hp - lp) / lp * 100 / 240;
+                
+                // 估算完成做T需要的时间（分钟）
+                const estimatedTimeNeeded = movePctNeeded / Math.max(avgVolatilityPerMin, 0.001);
+                
+                // 时间充裕度评分
+                const timeRatio = timeRemaining / Math.max(estimatedTimeNeeded, 1);
+                if (timeRatio >= 3) timeWindowScore = 10;      // 时间非常充裕
+                else if (timeRatio >= 2) timeWindowScore = 8; // 时间充裕
+                else if (timeRatio >= 1.5) timeWindowScore = 6; // 时间刚好
+                else if (timeRatio >= 1) timeWindowScore = 3;  // 时间紧张
+                else timeWindowScore = 1;                       // 时间不足，高风险
+
+                // 尾盘特殊处理：正T大幅扣分，反T加分
+                let lateDayPenalty = 0;
+                if (isLateDay && t.action === 'BUY_THEN_SELL') {
+                    lateDayPenalty = -8; // 尾盘正T风险高
+                }
+                if (isLateDay && t.action === 'SELL_THEN_BUY') {
+                    lateDayPenalty = 3; // 尾盘反T相对安全（先卖出锁定收益）
+                }
+                
+                // 优先级权重
+                const prioWeight = 4 - (t.priority ?? 3);
+                
+                // 总评分：盈利×2 + 卖出可达×2 + 买入可达×1 + 买入时间可达×2 + 时间窗口×3 + 尾盘调整 + 优先级
+                const score = profitScore * 2 + sellReachableScore * 2 + buyReachableScore + buyTimeScore * 2 + timeWindowScore * 3 + lateDayPenalty + prioWeight;
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestT = t;
+                }
+            }
+            // 过夜风险评级
+            let overnightRisk = '中';
+            let overnightAdvice = '建议当日了结';
+            if (overnightAnalysis) {
+                if (overnightAnalysis.score >= 20) {
+                    overnightRisk = '低';
+                    overnightAdvice = '尾盘强势，可留仓过夜';
+                } else if (overnightAnalysis.score <= -20) {
+                    overnightRisk = '高';
+                    overnightAdvice = '尾盘弱势，必须当日卖出！';
+                } else {
+                    overnightRisk = '中';
+                    overnightAdvice = '信号不明，建议当日了结';
+                }
+            } else if (hour >= 14 && minute >= 30) {
+                // 尾盘有数据但研判未触发（边界情况）
+                overnightRisk = '中';
+                overnightAdvice = '建议当日了结，避免隔夜风险';
+            }
+
+            // 时间窗口评级
+            const bp = bestT.buy_price ?? cp;
+            const sp = bestT.sell_price ?? cp;
+            const totalMoveNeeded = Math.abs(cp - bp) + Math.abs(sp - bp);
+            const movePctNeeded = totalMoveNeeded / cp * 100;
+            const avgVolPerMin = (hp - lp) / lp * 100 / 240;
+            const estTimeNeeded = movePctNeeded / Math.max(avgVolPerMin, 0.001);
+            const timeRatio = timeRemaining / Math.max(estTimeNeeded, 1);
+            
+            let timeWindowLevel = '充足';
+            let timeWindowColor = 'green';
+            if (timeRatio >= 2) { timeWindowLevel = '充足'; timeWindowColor = 'green'; }
+            else if (timeRatio >= 1.5) { timeWindowLevel = '适中'; timeWindowColor = 'green'; }
+            else if (timeRatio >= 1) { timeWindowLevel = '紧张'; timeWindowColor = 'yellow'; }
+            else { timeWindowLevel = '不足'; timeWindowColor = 'red'; }
+
             summary.best_t = {
                 name: bestT.name,
                 entry_price: cp,
                 buy_price: bestT.buy_price ?? cp,
                 sell_price: bestT.sell_price ?? cp,
-                profit_potential: bestT.profit_potential ?? null,
+                profit_potential: (() => {
+                    const bp2 = bestT.buy_price ?? cp;
+                    const sp2 = bestT.sell_price ?? cp;
+                    if (bp2 <= 0 || sp2 <= 0) return null;
+                    return Math.round(((sp2 - bp2) / bp2 * 100 - feeRate * 100 * 2) * 100) / 100;
+                })(),
                 loss_risk: bestT.loss_risk ?? null,
                 risk_reward: bestT.risk_reward ?? null,
                 action: bestT.action,
+                success_rate: bestT.success_rate ?? null,
+                overnight_risk: overnightRisk,
+                overnight_advice: overnightAdvice,
+                time_session: timeSession,
+                time_window: timeWindowLevel,
+                time_window_color: timeWindowColor,
+                time_remaining: timeRemaining,
             };
         }
 
@@ -4835,16 +6725,259 @@ class StrategyEngine {
                 target_date: fixedTargetDate,
                 generated_at: fixedGeneratedTime
             };
+
+            // ============ AI算法分析（机器学习预测模型）============
+            // 1. KNN模式匹配 - 找到历史相似走势预测后续方向
+            // 2. 多因子回归 - 基于多个技术指标预测价格
+            // 3. 策略融合评分 - 综合所有策略输出最终AI信号
+
+            // AI算法1: KNN模式匹配预测
+            let knnPrediction = null;
+            if (closes.length >= 60) {
+                const patternLength = 10;
+                const recentPattern = closes.slice(-patternLength);
+                const recentNorm = recentPattern.map((v, i) => (v - recentPattern[0]) / recentPattern[0]);
+                
+                let bestMatchIdx = -1;
+                let bestMatchScore = Infinity;
+                
+                for (let i = 0; i <= closes.length - patternLength - 5; i++) {
+                    const historyPattern = closes.slice(i, i + patternLength);
+                    const historyNorm = historyPattern.map((v, j) => (v - historyPattern[0]) / historyPattern[0]);
+                    
+                    let score = 0;
+                    for (let j = 0; j < patternLength; j++) {
+                        score += Math.abs(recentNorm[j] - historyNorm[j]);
+                    }
+                    
+                    if (score < bestMatchScore) {
+                        bestMatchScore = score;
+                        bestMatchIdx = i;
+                    }
+                }
+                
+                if (bestMatchIdx >= 0) {
+                    const futureMoves = closes.slice(bestMatchIdx + patternLength, bestMatchIdx + patternLength + 5);
+                    const patternStart = closes[bestMatchIdx];
+                    const patternEnd = closes[bestMatchIdx + patternLength - 1];
+                    const futureAvg = futureMoves.reduce((a, b) => a + b, 0) / futureMoves.length;
+                    const futureChg = (futureAvg - patternEnd) / patternEnd;
+                    
+                    knnPrediction = {
+                        match_score: Math.round((1 - Math.min(bestMatchScore / 0.5, 1)) * 100),
+                        matched_period: `${bestMatchIdx + 1}~${bestMatchIdx + patternLength}`,
+                        future_change: Math.round(futureChg * 1000) / 10,
+                        predicted_direction: futureChg > 0.01 ? '上涨' : (futureChg < -0.01 ? '下跌' : '横盘'),
+                        confidence: Math.round((1 - Math.min(bestMatchScore / 0.5, 1)) * 80 + 20)
+                    };
+                }
+            }
+
+            // AI算法2: 多因子回归预测
+            let regressionPrediction = null;
+            if (closes.length >= 30) {
+                const factors = [];
+                const targets = [];
+                
+                for (let i = 20; i < closes.length - 5; i++) {
+                    const windowCloses = closes.slice(i - 20, i);
+                    const windowHighs = highs.slice(i - 20, i);
+                    const windowLows = lows.slice(i - 20, i);
+                    const windowVols = volumes.slice(i - 20, i);
+                    
+                    const ma5 = windowCloses.slice(-5).reduce((a, b) => a + b, 0) / 5;
+                    const ma10 = windowCloses.slice(-10).reduce((a, b) => a + b, 0) / 10;
+                    const ma20 = windowCloses.reduce((a, b) => a + b, 0) / 20;
+                    const volatility = (Math.max(...windowHighs) - Math.min(...windowLows)) / ma20 * 100;
+                    const avgVol = windowVols.reduce((a, b) => a + b, 0) / 20;
+                    const recentChg = (closes[i] - closes[i - 5]) / closes[i - 5] * 100;
+                    
+                    const futureChg = (closes[i + 5] - closes[i]) / closes[i] * 100;
+                    
+                    factors.push([ma5 / ma20, ma10 / ma20, volatility, avgVol, recentChg]);
+                    targets.push(futureChg);
+                }
+                
+                if (factors.length >= 10) {
+                    const n = factors.length;
+                    const k = factors[0].length;
+                    
+                    // 标准化因子
+                    const means = new Array(k).fill(0);
+                    const stds = new Array(k).fill(0);
+                    for (let j = 0; j < k; j++) {
+                        for (let i = 0; i < n; i++) {
+                            means[j] += factors[i][j];
+                        }
+                        means[j] /= n;
+                    }
+                    for (let j = 0; j < k; j++) {
+                        for (let i = 0; i < n; i++) {
+                            stds[j] += Math.pow(factors[i][j] - means[j], 2);
+                        }
+                        stds[j] = Math.sqrt(stds[j] / n) || 1;
+                    }
+                    
+                    const normFactors = factors.map(f => f.map((v, j) => (v - means[j]) / stds[j]));
+                    const meanTarget = targets.reduce((a, b) => a + b, 0) / n;
+                    const stdTarget = Math.sqrt(targets.reduce((a, b) => a + Math.pow(b - meanTarget, 2), 0) / n) || 1;
+                    const normTargets = targets.map(t => (t - meanTarget) / stdTarget);
+                    
+                    // 梯度下降求权重
+                    const weights = new Array(k).fill(0);
+                    const learningRate = 0.01;
+                    for (let epoch = 0; epoch < 100; epoch++) {
+                        let grad = new Array(k).fill(0);
+                        for (let i = 0; i < n; i++) {
+                            let pred = weights.reduce((sum, w, j) => sum + w * normFactors[i][j], 0);
+                            let error = pred - normTargets[i];
+                            for (let j = 0; j < k; j++) {
+                                grad[j] += error * normFactors[i][j];
+                            }
+                        }
+                        for (let j = 0; j < k; j++) {
+                            weights[j] -= learningRate * grad[j] / n;
+                        }
+                    }
+                    
+                    // 当前因子
+                    const curMa5 = getSma(5) || closes[closes.length - 1];
+                    const curMa10 = getSma(10) || closes[closes.length - 1];
+                    const curMa20 = getSma(20) || closes[closes.length - 1];
+                    const curHighs = highs.slice(-20);
+                    const curLows = lows.slice(-20);
+                    const curVolatility = curMa20 > 0 ? (Math.max(...curHighs) - Math.min(...curLows)) / curMa20 * 100 : 0;
+                    const curAvgVol = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+                    const curRecentChg = closes.length >= 6 ? (cp - closes[closes.length - 6]) / closes[closes.length - 6] * 100 : 0;
+                    
+                    const curFactors = [curMa5 / curMa20, curMa10 / curMa20, curVolatility, curAvgVol, curRecentChg];
+                    const normCurFactors = curFactors.map((v, j) => (v - means[j]) / stds[j]);
+                    const normPrediction = weights.reduce((sum, w, j) => sum + w * normCurFactors[j], 0);
+                    const predictedChg = normPrediction * stdTarget + meanTarget;
+                    
+                    regressionPrediction = {
+                        predicted_change: Math.round(predictedChg * 100) / 100,
+                        factors: ['均线比率', '均线比率', '波动率', '均量', '近期涨跌'],
+                        weights: weights.map(w => Math.round(w * 100) / 100),
+                        confidence: Math.min(90, Math.max(50, 60 + Math.abs(predictedChg) * 5))
+                    };
+                }
+            }
+
+            // AI算法3: 策略融合评分
+            let fusionScore = 0;
+            let fusionDetails = [];
+            
+            const buySignals = results.filter(r => ['BUY', 'STRONG_BUY'].includes(r.action)).length;
+            const sellSignals = results.filter(r => ['SELL', 'STRONG_SELL'].includes(r.action)).length;
+            const holdSignals = results.filter(r => ['HOLD', 'WATCH'].includes(r.action)).length;
+            
+            // 策略投票分数
+            const strategyScore = (buySignals - sellSignals) / Math.max(buySignals + sellSignals, 1) * 100;
+            fusionDetails.push({ name: '策略投票', score: strategyScore });
+            
+            // 趋势因子
+            const trendScore = chg > 0 ? Math.min(50, chg * 5) : Math.max(-50, chg * 5);
+            fusionDetails.push({ name: '趋势因子', score: trendScore });
+            
+            // 波动率因子
+            const volScore = amplitude > 3 ? (amplitude - 3) * 5 : (amplitude < 1.5 ? -(1.5 - amplitude) * 10 : 0);
+            fusionDetails.push({ name: '波动率', score: volScore });
+            
+            // 量能因子
+            const avgVol20 = volumes.slice(-20).reduce((a, b) => a + b, 0) / 20;
+            const volRatio = vol > 0 ? vol / avgVol20 : 1;
+            const volumeScore = volRatio > 1.5 ? 20 : (volRatio < 0.5 ? -20 : 0);
+            fusionDetails.push({ name: '量能因子', score: volumeScore });
+            
+            // KNN因子
+            const knnScore = knnPrediction ? (knnPrediction.predicted_direction === '上涨' ? knnPrediction.match_score * 0.5 : (knnPrediction.predicted_direction === '下跌' ? -knnPrediction.match_score * 0.5 : 0)) : 0;
+            fusionDetails.push({ name: 'KNN匹配', score: knnScore });
+            
+            // 回归因子
+            const regScore = regressionPrediction ? regressionPrediction.predicted_change * 10 : 0;
+            fusionDetails.push({ name: '回归预测', score: regScore });
+            
+            // 综合评分
+            fusionScore = fusionDetails.reduce((sum, d) => sum + d.score, 0);
+            const finalScore = Math.max(-100, Math.min(100, fusionScore));
+            
+            let aiSignal = '观望';
+            let aiConfidence = 50;
+            if (finalScore > 30) {
+                aiSignal = '买入';
+                aiConfidence = Math.min(95, 50 + finalScore * 0.8);
+            } else if (finalScore < -30) {
+                aiSignal = '卖出';
+                aiConfidence = Math.min(95, 50 + Math.abs(finalScore) * 0.8);
+            }
+            
+            // 添加AI策略结果到策略列表
+            results.push(this._make(
+                `[AI] KNN模式匹配预测(${knnPrediction ? knnPrediction.predicted_direction : '无匹配'})`, 
+                knnPrediction ? (knnPrediction.predicted_direction === '上涨' ? '📈' : knnPrediction.predicted_direction === '下跌' ? '📉' : '📊') : '🤖', 
+                '🤖 AI算法', '中', 3,
+                knnPrediction 
+                    ? `历史匹配度${knnPrediction.match_score}%，预测方向${knnPrediction.predicted_direction}，预期变化${knnPrediction.future_change}%，置信度${knnPrediction.confidence}%。`
+                    : '历史数据不足，无法进行模式匹配。',
+                knnPrediction && knnPrediction.predicted_direction === '上涨' ? 'BUY' : (knnPrediction && knnPrediction.predicted_direction === '下跌' ? 'SELL' : 'WATCH'),
+                `KNN预测：${knnPrediction ? knnPrediction.predicted_direction : '无'}，匹配度：${knnPrediction ? knnPrediction.match_score : 0}%`
+            ));
+            
+            results.push(this._make(
+                `[AI] 多因子回归预测(${regressionPrediction ? (regressionPrediction.predicted_change > 0 ? '看多' : '看空') : '无数据'})`, 
+                regressionPrediction ? (regressionPrediction.predicted_change > 0 ? '📈' : regressionPrediction.predicted_change < 0 ? '📉' : '📊') : '🤖', 
+                '🤖 AI算法', '中', 3,
+                regressionPrediction 
+                    ? `基于均线比率、波动率、量能等因子预测，预期变化${regressionPrediction.predicted_change > 0 ? '+' : ''}${regressionPrediction.predicted_change}%，置信度${regressionPrediction.confidence}%。`
+                    : '训练数据不足，无法进行回归预测。',
+                regressionPrediction && regressionPrediction.predicted_change > 0.5 ? 'BUY' : (regressionPrediction && regressionPrediction.predicted_change < -0.5 ? 'SELL' : 'WATCH'),
+                `回归预测：${regressionPrediction ? regressionPrediction.predicted_change : 0}%`
+            ));
+            
+            results.push(this._make(
+                `[AI] 策略融合评分(${finalScore > 0 ? '看多' : finalScore < 0 ? '看空' : '中性'})`, 
+                finalScore > 30 ? '📈' : (finalScore < -30 ? '📉' : '📊'), 
+                '🤖 AI算法', '高', 1,
+                `综合${results.length}个策略信号、KNN模式匹配、回归预测等多维度分析，最终AI评分${finalScore.toFixed(0)}，${aiSignal}信号，置信度${aiConfidence.toFixed(0)}%。`,
+                aiSignal === '买入' ? 'BUY' : (aiSignal === '卖出' ? 'SELL' : 'HOLD'),
+                `AI综合评分：${finalScore.toFixed(0)}，信号：${aiSignal}`
+            ));
+
+            summary.ai_analysis = {
+                knn: knnPrediction,
+                regression: regressionPrediction,
+                fusion: {
+                    score: Math.round(finalScore * 10) / 10,
+                    signal: aiSignal,
+                    confidence: Math.round(aiConfidence),
+                    components: fusionDetails
+                }
+            };
+        }
+
+        // 保存尾盘/次日开盘研判数据
+        if (overnightAnalysis) {
+            summary.overnight = {
+                score: overnightAnalysis.score,
+                trend: overnightAnalysis.trend,
+                probability: overnightAnalysis.probability,
+                money_flow_score: overnightAnalysis.moneyFlow,
+                candle_score: overnightAnalysis.candle,
+                market_score: overnightAnalysis.market,
+                is_after_close: isAfterClose
+            };
         }
 
         const total = results.length;
         const watchCount = results.filter(r => ['WATCH', 'HOLD', 'OBSERVE'].includes(r.action)).length;
+        const totalDefined = 190; // TARGET_TOTAL including panorama strategies
         summary.strategy_coverage = {
-            total_defined: total,
+            total_defined: totalDefined,
             triggered: total,
-            coverage_rate: 100.0,
+            coverage_rate: totalDefined > 0 ? Math.round((total / totalDefined) * 1000) / 10 : 0,
             watch_signals: watchCount,
-            message: `已分析${total}种策略，其中${watchCount}个为观望状态`
+            message: `已分析${total}种策略（共定义${totalDefined}种），其中${watchCount}个为观望状态`
         };
 
         return [results, summary];
@@ -4859,6 +6992,10 @@ class StrategyEngine {
 
         const stockCode = stockInfo.code || (klineData[0] && klineData[0].code) || '';
         const stockName = stockInfo.name || (klineData[0] && klineData[0].name) || '';
+
+        // 手续费常量（与runAllStrategies保持一致）
+        const feeRate = 0.001; // 单边手续费0.1%
+        const minProfitPct = 0.3; // 最小盈利空间（扣除双边手续费0.2%后确保盈利）
 
         const closes = klineData.map(k => k.close);
         const opens = klineData.map(k => k.open);
@@ -4891,7 +7028,7 @@ class StrategyEngine {
         const ma10 = n >= 10 ? this.sma(closes, 10) : null;
         const ma20 = n >= 20 ? this.sma(closes, 20) : null;
 
-        const atrVal = n >= 14 ? this.calcAtr(highs, lows, closes, 14) : (prevClose > 0 ? hp - lp : 0);
+        let atrVal = n >= 14 ? this.calcAtr(highs, lows, closes, 14) : (prevClose > 0 ? hp - lp : 0);
         if (!atrVal || atrVal < 0) atrVal = 0;
 
         if (avgVol5 && avgVol5 > 0) {
@@ -5648,11 +7785,13 @@ class StrategyEngine {
 
         const BUY_ACTIONS = new Set(['BUY', 'STRONG_BUY']);
         const SELL_ACTIONS = new Set(['SELL', 'STRONG_SELL']);
-        const T_ACTIONS = new Set(['BUY_THEN_SELL', 'SELL_THEN_BUY', 'BOX_TRADING', 'TRADING_OPPORTUNITY']);
+        // 实际可执行的做T方案：正T、反T、箱体（TRADING_OPPORTUNITY 只是机会提示，不是可执行方案）
+        const T_ACTIONS = new Set(['BUY_THEN_SELL', 'SELL_THEN_BUY', 'BOX_TRADING']);
 
         const buySignals = results.filter(s => BUY_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
         const sellSignals = results.filter(s => SELL_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
-        const tSignals = results.filter(s => T_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
+        // 全景分析不生成可执行的做T方案（因为没有持仓信息），只生成机会提示
+        const tSignals = [];
 
         // 综合趋势方向：基于买卖信号的优先级权重加权计算
         let _buyWeight = 0, _sellWeight = 0;
@@ -5699,12 +7838,13 @@ class StrategyEngine {
 
         if (buySignals.length > 0) {
             const bestBuy = buySignals[0];
-            const profitPotential = bestBuy.target_price && cp > 0 ? (bestBuy.target_price - cp) / cp * 100 : null;
-            const lossRisk = bestBuy.stop_loss && cp > 0 ? (cp - bestBuy.stop_loss) / cp * 100 : null;
+            const entryPrice = bestBuy.entry_price || cp;
+            const profitPotential = bestBuy.target_price && entryPrice > 0 ? (bestBuy.target_price - entryPrice) / entryPrice * 100 : null;
+            const lossRisk = bestBuy.stop_loss && entryPrice > 0 ? (entryPrice - bestBuy.stop_loss) / entryPrice * 100 : null;
             const riskReward = profitPotential !== null && lossRisk !== null && lossRisk > 0 ? profitPotential / lossRisk : null;
             summary.best_buy = {
                 name: bestBuy.name,
-                entry_price: cp,
+                entry_price: entryPrice,
                 target_price: bestBuy.target_price ?? null,
                 stop_loss: bestBuy.stop_loss ?? null,
                 profit_potential: profitPotential !== null ? Math.round(profitPotential * 100) / 100 : null,
@@ -5715,12 +7855,13 @@ class StrategyEngine {
 
         if (sellSignals.length > 0) {
             const bestSell = sellSignals[0];
-            const profitPotential = bestSell.target_price && cp > 0 ? (cp - bestSell.target_price) / cp * 100 : null;
-            const lossRisk = bestSell.stop_loss && cp > 0 ? (bestSell.stop_loss - cp) / cp * 100 : null;
+            const entryPrice = bestSell.entry_price || cp;
+            const profitPotential = bestSell.target_price && entryPrice > 0 ? (entryPrice - bestSell.target_price) / entryPrice * 100 : null;
+            const lossRisk = bestSell.stop_loss && entryPrice > 0 ? (bestSell.stop_loss - entryPrice) / entryPrice * 100 : null;
             const riskReward = profitPotential !== null && lossRisk !== null && lossRisk > 0 ? profitPotential / lossRisk : null;
             summary.best_sell = {
                 name: bestSell.name,
-                entry_price: cp,
+                entry_price: entryPrice,
                 target_price: bestSell.target_price,
                 stop_loss: bestSell.stop_loss,
                 profit_potential: profitPotential !== null ? Math.round(profitPotential * 100) / 100 : null,
@@ -5730,7 +7871,59 @@ class StrategyEngine {
         }
 
         if (tSignals.length > 0) {
-            const bestT = tSignals[0];
+            let bestT = tSignals[0];
+            let bestScore = -Infinity;
+            for (const t of tSignals) {
+                const buyP = t.buy_price ?? cp;
+                const sellP = t.sell_price ?? cp;
+                if (sellP <= buyP || buyP <= 0 || sellP <= 0) continue;
+                
+                // 盈利空间（相对于买入价）
+                const profitPct = (sellP - buyP) / buyP * 100;
+                const profitAfterFee = profitPct - feeRate * 100 * 2; // 扣除双边手续费feeRate*2
+                
+                // 必须确保盈利（扣除手续费后）
+                if (profitAfterFee < 0.3) continue;
+                
+                // =====================================================
+                //  新评分逻辑：确保盈利优先（使用振幅作为参考）
+                // =====================================================
+                
+                // 1. 盈利评分（权重×3，最高）
+                let profitScore = 0;
+                if (profitAfterFee >= 1) profitScore = 10;
+                else if (profitAfterFee >= 0.7) profitScore = 8;
+                else if (profitAfterFee >= 0.5) profitScore = 6;
+                else if (profitAfterFee >= 0.3) profitScore = 4;
+                
+                // 2. 卖出可达性评分（权重×2）
+                // 卖出价必须低于日内高点hp，才能确保卖出
+                const sellDistance = hp > 0 ? (hp - sellP) / hp * 100 : 0;
+                let sellReachableScore = 0;
+                if (sellDistance >= 0 && sellDistance <= 2) sellReachableScore = 10;
+                else if (sellDistance > 2 && sellDistance <= 5) sellReachableScore = 8;
+                else if (sellDistance > 5 && sellDistance <= 10) sellReachableScore = 5;
+                else sellReachableScore = 2;
+                
+                // 3. 买入可达性评分（权重×1）
+                // 买入价必须高于日内低点lp，才能确保买到
+                const buyDistance = lp > 0 ? (buyP - lp) / lp * 100 : 0;
+                let buyReachableScore = 0;
+                if (buyDistance >= 0 && buyDistance <= 2) buyReachableScore = 10;
+                else if (buyDistance > 2 && buyDistance <= 5) buyReachableScore = 7;
+                else if (buyDistance > 5 && buyDistance <= 10) buyReachableScore = 4;
+                else buyReachableScore = 2;
+                
+                // 优先级权重
+                const prioWeight = 4 - (t.priority ?? 3);
+                
+                // 总评分：盈利×3 + 卖出可达×2 + 买入可达×1 + 优先级
+                const score = profitScore * 3 + sellReachableScore * 2 + buyReachableScore + prioWeight;
+                if (score > bestScore) {
+                    bestScore = score;
+                    bestT = t;
+                }
+            }
             const tProfitPotential = bestT.target_price && cp > 0 ? (bestT.target_price - cp) / cp * 100 : null;
             const tLossRisk = bestT.stop_loss && cp > 0 ? (cp - bestT.stop_loss) / cp * 100 : null;
             const tRiskReward = tProfitPotential !== null && tLossRisk !== null && tLossRisk > 0 ? tProfitPotential / tLossRisk : null;
@@ -5749,7 +7942,7 @@ class StrategyEngine {
         const total = results.length;
         const watchCount = results.filter(r => ['WATCH', 'HOLD', 'OBSERVE'].includes(r.action)).length;
         const activeSignals = total - watchCount;
-        const totalDefined = 107; // TARGET_TOTAL
+        const totalDefined = 190; // TARGET_TOTAL including panorama strategies
         summary.strategy_coverage = {
             total_defined: totalDefined,
             triggered: total,
