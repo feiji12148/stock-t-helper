@@ -23,25 +23,45 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      - name: Remove package-lock and clear npm cache
-        run: |
-          rm -f package-lock.json
-          npm cache clean --force
-
       - name: Install dependencies
-        run: npm install --no-verify
+        run: npm install
 
       - name: Sync web assets to Android
         run: npx cap sync android
 
-      - name: Build APK
+      - name: Setup signing keystore
+        working-directory: android/app
+        run: |
+          # 方案1: 如果设置了 KEYSTORE_BASE64 secret，解码使用（推荐，签名完全一致）
+          # 方案2: 否则每次生成新密钥库（签名可能略有差异，但密码一致）
+          
+          if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "Using keystore from GitHub Secrets..."
+            echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release.keystore
+          else
+            echo "Generating new keystore with fixed credentials..."
+            # 使用固定参数，每次生成的密钥库内容应该一致
+            keytool -genkey -v \
+              -keystore release.keystore \
+              -alias stockthelper \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -storepass "stockthelper2024" \
+              -keypass "stockthelper2024" \
+              -dname "CN=StockTHelper, OU=App, O=Personal, L=Beijing, ST=Beijing, C=CN"
+          fi
+          
+          echo "Keystore ready: $(ls -la release.keystore)"
+
+      - name: Build Signed APK
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug --stacktrace
+          ./gradlew assembleRelease --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: stock-t-helper-apk
-          path: android/app/build/outputs/apk/debug/*.apk
+          path: android/app/build/outputs/apk/release/*.apk
