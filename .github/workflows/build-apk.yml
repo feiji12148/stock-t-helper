@@ -24,7 +24,11 @@ jobs:
           distribution: 'temurin'
 
       - name: Install dependencies
-        run: npm install
+        run: |
+          # 清除npm缓存，避免校验和错误
+          npm cache clean --force
+          # 先尝试正常安装，失败则删除lockfile重新安装
+          npm install --legacy-peer-deps || (rm -f package-lock.json && npm install --legacy-peer-deps)
 
       - name: Sync web assets to Android
         run: npx cap sync android
