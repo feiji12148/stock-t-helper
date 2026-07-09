@@ -127,8 +127,10 @@
                         </div>
                     </div>
                 </div>
+            </div>
 
-                <!-- 做T信号总览 -->
+            <!-- 做T信号总览 -->
+            <div id="signalCard" class="card" style="display:none;">
                 <div class="signal-panel">
                     <div class="signal-panel-title">⚡ 做T信号总览</div>
                     <div class="signal-main" id="signalMainText">等待分析...</div>
@@ -158,12 +160,12 @@
             <!-- ⚡ 最优做T方案（确保盈利） -->
             <div id="planTSection" class="t-plan-card t-plan-box" style="display:none;">
                 <div class="t-plan-header">
-                    <div class="t-plan-title">⚡ 最优做T方案（确保盈利）</div>
+                    <div class="t-plan-title">⚡ 最优做T方案</div>
                     <div class="t-plan-badge" id="planTAction">--</div>
                 </div>
-                <div class="text-caption mb-2" id="planTName">--</div>
+                <div class="t-plan-name" id="planTName">--</div>
                 <div class="t-plan-prices">
-                    <div class="t-plan-price-item">
+                    <div class="t-plan-price-item" id="planTBuyItem">
                         <div class="t-plan-price-label">买入价</div>
                         <div class="t-plan-price-value" style="color:var(--green);" id="planTBuy">--</div>
                     </div>
@@ -177,16 +179,25 @@
                     </div>
                 </div>
                 <div class="t-plan-footer">
-                    <span class="text-caption">预计收益 <span style="color:var(--green); font-weight:700;" id="planTProfit">--</span></span>
-                    <span class="text-caption">成功率 <span style="color:var(--accent); font-weight:700;" id="planTSuccessRate">--</span></span>
+                    <span>预计收益 <span class="footer-value" style="color:var(--green);" id="planTProfit">--</span></span>
+                    <span>成功率 <span class="footer-value" style="color:var(--accent);" id="planTSuccessRate">--</span></span>
                 </div>
-                <div class="t-plan-footer" id="planTOvernight" style="display:none; margin-top:6px; padding-top:8px; border-top:1px dashed var(--border-glass);">
-                    <span class="text-caption">过夜风险 <span style="font-weight:700;" id="planTOvernightRisk">--</span></span>
-                    <span class="text-caption" id="planTOvernightAdvice" style="color:var(--yellow);">--</span>
+                <div class="t-plan-meta" id="planTMeta" style="display:none;">
+                    <div class="t-plan-meta-item">
+                        <div class="t-plan-meta-label">交易时段</div>
+                        <div class="t-plan-meta-value" id="planTSession">--</div>
+                    </div>
+                    <div class="t-plan-meta-item">
+                        <div class="t-plan-meta-label">时间窗口</div>
+                        <div class="t-plan-meta-value" id="planTWindow">--</div>
+                    </div>
+                    <div class="t-plan-meta-item">
+                        <div class="t-plan-meta-label">过夜风险</div>
+                        <div class="t-plan-meta-value" id="planTOvernightRisk">--</div>
+                    </div>
                 </div>
-                <div class="t-plan-footer" id="planTTimeWindow" style="display:none; margin-top:6px; padding-top:8px; border-top:1px dashed var(--border-glass);">
-                    <span class="text-caption">交易时段 <span style="font-weight:700;" id="planTSession">--</span></span>
-                    <span class="text-caption">时间窗口 <span style="font-weight:700;" id="planTWindow">--</span></span>
+                <div class="t-plan-footer" id="planTOvernight" style="display:none; border-top:1px dashed var(--border-glass);">
+                    <span style="color:var(--yellow); font-size:11px;" id="planTOvernightAdvice">--</span>
                 </div>
             </div>
 
@@ -250,24 +261,35 @@
                         <div class="profit-value" id="totalProfit">¥0.00</div>
                     </div>
                     <div class="profit-item" style="cursor:pointer;" tabindex="0" role="button" onclick="showProfitDetail('realized')" onkeypress="if(event.key==='Enter')showProfitDetail('realized')">
-                        <div class="profit-item-label">已实现</div>
+                        <div class="profit-item-label">落袋收益</div>
                         <div class="profit-value" id="realizedProfit">¥0.00</div>
                     </div>
                     <div class="profit-item" style="cursor:pointer;" tabindex="0" role="button" onclick="showProfitDetail('unrealized')" onkeypress="if(event.key==='Enter')showProfitDetail('unrealized')">
-                        <div class="profit-item-label">未实现</div>
+                        <div class="profit-item-label">持仓浮盈</div>
                         <div class="profit-value" id="unrealizedProfit">¥0.00</div>
                     </div>
+                    <div class="profit-item" style="cursor:pointer;" tabindex="0" role="button" onclick="showFeeDetailModal()" onkeypress="if(event.key==='Enter')showFeeDetailModal()">
+                        <div class="profit-item-label">手续费支出</div>
+                        <div class="profit-value" id="totalFees" style="color:var(--red);">¥0.00</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 做T收益统计 -->
+            <div class="card">
+                <div class="card-title"><span class="icon">⚡</span> 做T战绩</div>
+                <div class="profit-grid profit-grid-3col">
                     <div class="profit-item" style="cursor:pointer;" tabindex="0" role="button" onclick="showProfitDetail('t')" onkeypress="if(event.key==='Enter')showProfitDetail('t')">
                         <div class="profit-item-label">做T收益</div>
                         <div class="profit-value" id="tProfit">¥0.00</div>
                     </div>
                     <div class="profit-item" style="cursor:pointer;" tabindex="0" role="button" onclick="showProfitDetail('tcount')" onkeypress="if(event.key==='Enter')showProfitDetail('tcount')">
-                        <div class="profit-item-label">做T次数</div>
+                        <div class="profit-item-label">成功做T</div>
                         <div class="profit-value" id="tTradeCount" style="color:var(--accent);">0次</div>
                     </div>
-                    <div class="profit-item" style="cursor:pointer;" tabindex="0" role="button" onclick="showFeeDetailModal()" onkeypress="if(event.key==='Enter')showFeeDetailModal()">
-                        <div class="profit-item-label">扣除手续费</div>
-                        <div class="profit-value" id="totalFees" style="color:var(--red);">¥0.00</div>
+                    <div class="profit-item" style="cursor:pointer;" tabindex="0" role="button" onclick="showProfitDetail('tcount')" onkeypress="if(event.key==='Enter')showProfitDetail('tcount')">
+                        <div class="profit-item-label">胜率</div>
+                        <div class="profit-value" id="tWinRate" style="color:var(--yellow);">0%</div>
                     </div>
                 </div>
             </div>

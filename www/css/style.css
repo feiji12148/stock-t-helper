@@ -9,8 +9,8 @@
     --bg-secondary: #111827;
     --bg-card: rgba(17, 24, 39, 0.7);
     --bg-glass: rgba(255, 255, 255, 0.03);
-    --border-glass: rgba(255, 255, 255, 0.06);
-    --text-primary: #e5e7eb;
+    --border-glass: rgba(255, 255, 255, 0.08);
+    --text-primary: #f3f4f6;
     --text-secondary: #9ca3af;
     --text-muted: #6b7280;
     --accent: #818cf8;
@@ -23,25 +23,27 @@
     --yellow: #fbbf24;
     --yellow-glow: rgba(251, 191, 36, 0.12);
     --orange: #fb923c;
-    --radius: 14px;
+    --radius-md: 14px;
     --radius-sm: 10px;
+    --radius-xs: 6px;
     --shadow: 0 4px 24px rgba(0,0,0,0.3);
     --glass-blur: blur(12px);
-    --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    /* 内层表面色 - 用于卡片内的小区块、输入框等 */
+    --transition: all 0.2s ease;
     --surface-1: rgba(255, 255, 255, 0.02);
     --surface-2: rgba(255, 255, 255, 0.04);
     --surface-3: rgba(255, 255, 255, 0.06);
     --surface-hover: rgba(255, 255, 255, 0.08);
-    --surface-active: rgba(255, 255, 255, 0.1);
-    /* 内嵌色块 - 用于signal-prices等深色嵌入区 */
+    --surface-active: rgba(255, 255, 255, 0.12);
     --bg-inset: rgba(0, 0, 0, 0.2);
-    /* 浮层背景 - 用于搜索建议、Toast等 */
     --bg-overlay: rgba(17, 24, 39, 0.95);
-    /* 模态遮罩 */
     --bg-modal-mask: rgba(0, 0, 0, 0.6);
     --border-soft: rgba(255, 255, 255, 0.1);
     --border-active: rgba(255, 255, 255, 0.15);
+    --spacing-xs: 4px;
+    --spacing-sm: 8px;
+    --spacing-md: 12px;
+    --spacing-lg: 16px;
+    --spacing-xl: 20px;
 }
 
 /* 皮肤: 暗夜紫 (默认) */
@@ -163,17 +165,6 @@ body {
     transition: background-color 0.3s, color 0.3s;
 }
 
-body::before {
-    content: '';
-    position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
-    background:
-        radial-gradient(ellipse at 20% 0%, rgba(129, 140, 248, 0.08) 0%, transparent 50%),
-        radial-gradient(ellipse at 80% 100%, rgba(52, 211, 153, 0.05) 0%, transparent 50%);
-    pointer-events: none;
-    z-index: 0;
-}
-
 body.modal-open {
     overflow: hidden;
 }
@@ -204,10 +195,7 @@ body.modal-open {
 .header-title {
     font-size: 15px;
     font-weight: 700;
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+    color: var(--accent);
 }
 
 .header-badge {
@@ -478,62 +466,45 @@ body.modal-open {
 
 /* ==================== 卡片 (Glass) ==================== */
 .card {
-    background: linear-gradient(145deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%);
-    backdrop-filter: var(--glass-blur);
-    -webkit-backdrop-filter: var(--glass-blur);
+    background: var(--surface-1);
     border: 1px solid var(--border-glass);
-    border-radius: var(--radius);
-    padding: 14px;
-    margin-bottom: 12px;
+    border-radius: var(--radius-md);
+    padding: var(--spacing-lg);
+    margin-bottom: var(--spacing-md);
     transition: var(--transition);
-    position: relative;
-    overflow: hidden;
-}
-
-.card::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 1px;
-    background: linear-gradient(90deg, transparent, var(--accent-glow), transparent);
-    opacity: 0.5;
 }
 
 .card:hover {
     border-color: var(--surface-active);
-    box-shadow: 0 8px 32px rgba(0,0,0,0.15);
-    transform: translateY(-1px);
+    background: var(--surface-2);
 }
 
 .card-title {
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 700;
     color: var(--text-secondary);
     text-transform: uppercase;
-    letter-spacing: 0.8px;
-    margin-bottom: 12px;
+    letter-spacing: 0.6px;
+    margin-bottom: var(--spacing-md);
     display: flex;
     align-items: center;
-    gap: 8px;
-}
-
-.card-title .icon {
-    font-size: 14px;
+    gap: var(--spacing-sm);
 }
 
 /* ==================== 搜索框 ==================== */
-.search-wrapper { position: relative; margin-bottom: 14px; }
+.search-wrapper { position: relative; margin-bottom: var(--spacing-lg); }
 
 .search-input-wrap {
     position: relative;
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: var(--spacing-md);
 }
 
 .search-input-wrap input {
     flex: 1;
-    padding: 12px 16px 12px 40px;
+    width: 100%;
+    padding: var(--spacing-md) var(--spacing-lg) var(--spacing-md) 44px;
     background: var(--surface-2);
     border: 1px solid var(--border-glass);
     border-radius: var(--radius-sm);
@@ -545,6 +516,7 @@ body.modal-open {
 
 .search-input-wrap input::placeholder {
     color: var(--text-muted);
+    opacity: 1;
 }
 
 .search-input-wrap input:focus {
@@ -556,14 +528,17 @@ body.modal-open {
 .search-input-wrap .search-icon {
     position: absolute;
     left: 14px;
+    top: 50%;
+    transform: translateY(-50%);
     font-size: 16px;
     color: var(--text-muted);
     pointer-events: none;
+    z-index: 2;
 }
 
 .search-loading {
     position: absolute;
-    right: 12px;
+    right: var(--spacing-md);
     font-size: 14px;
     animation: spin 1s linear infinite;
 }
@@ -574,8 +549,8 @@ body.modal-open {
 }
 
 .search-btn {
-    padding: 12px 20px;
-    background: linear-gradient(135deg, var(--accent) 0%, var(--accent-2) 100%);
+    padding: var(--spacing-md) var(--spacing-lg);
+    background: var(--accent);
     color: white;
     border: none;
     border-radius: var(--radius-sm);
@@ -630,86 +605,58 @@ body.modal-open {
 /* ==================== 收益概览 ==================== */
 .profit-grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--spacing-sm);
     text-align: center;
 }
 
+.profit-grid-3col {
+    grid-template-columns: repeat(3, 1fr);
+}
+
 .profit-item {
-    padding: 12px 8px;
-    background: linear-gradient(145deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.01) 100%);
+    padding: var(--spacing-md) var(--spacing-sm);
+    background: var(--surface-1);
     border-radius: var(--radius-sm);
     border: 1px solid var(--border-glass);
     cursor: pointer;
-    transition: all 0.25s;
-    position: relative;
-    overflow: hidden;
-}
-
-.profit-item::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 2px;
-    background: var(--accent-glow);
-    opacity: 0;
-    transition: opacity 0.25s;
+    transition: var(--transition);
 }
 
 .profit-item:hover {
     border-color: var(--surface-active);
-    transform: translateY(-2px);
-    box-shadow: 0 4px 16px rgba(0,0,0,0.1);
-}
-
-.profit-item:hover::before {
-    opacity: 1;
-}
-
-.profit-item:active {
-    transform: scale(0.98);
-    background: var(--surface-hover);
+    background: var(--surface-2);
 }
 
 .profit-item-label {
     font-size: 10px;
     color: var(--text-muted);
-    margin-bottom: 6px;
+    margin-bottom: var(--spacing-xs);
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.4px;
+    font-weight: 600;
 }
 
 .profit-value {
     font-size: 16px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
-    background: linear-gradient(135deg, var(--text-primary), var(--text-secondary));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+    letter-spacing: -0.2px;
 }
 
-.profit-value.positive { 
-    color: var(--red); 
-    background: none;
-    -webkit-text-fill-color: var(--red);
-}
-.profit-value.negative { 
-    color: var(--green); 
-    background: none;
-    -webkit-text-fill-color: var(--green);
-}
+.profit-value.positive { color: var(--red); }
+.profit-value.negative { color: var(--green); }
 .profit-value.zero { color: var(--text-muted); }
 
 /* ==================== 统计网格 ==================== */
 .stat-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: 8px;
+    gap: var(--spacing-sm);
 }
 
 .stat-item {
-    padding: 10px 6px;
+    padding: var(--spacing-sm) var(--spacing-xs);
     background: var(--surface-1);
     border-radius: var(--radius-sm);
     border: 1px solid var(--border-glass);
@@ -719,7 +666,10 @@ body.modal-open {
 .stat-label {
     font-size: 10px;
     color: var(--text-muted);
-    margin-bottom: 4px;
+    margin-bottom: var(--spacing-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-weight: 600;
 }
 
 .stat-value {
@@ -727,74 +677,58 @@ body.modal-open {
     font-weight: 700;
     color: var(--text-primary);
     font-variant-numeric: tabular-nums;
+    letter-spacing: -0.2px;
 }
 
 /* ==================== 信号面板 ==================== */
 .signal-panel {
-    background: linear-gradient(135deg, rgba(129, 140, 248, 0.12) 0%, rgba(167, 139, 250, 0.08) 100%);
-    border: 1px solid rgba(129, 140, 248, 0.2);
-    border-radius: var(--radius);
-    padding: 18px;
-    margin-bottom: 14px;
-    position: relative;
-    overflow: hidden;
-}
-
-.signal-panel::before {
-    content: '';
-    position: absolute;
-    top: -50%; right: -50%;
-    width: 100%; height: 100%;
-    background: radial-gradient(circle, rgba(129, 140, 248, 0.06) 0%, transparent 70%);
-    pointer-events: none;
+    background: rgba(129, 140, 248, 0.05);
+    border: 1px solid rgba(129, 140, 248, 0.15);
+    border-radius: var(--radius-md);
+    padding: var(--spacing-lg);
+    margin-bottom: var(--spacing-md);
 }
 
 .signal-panel-title {
-    font-size: 13px;
-    font-weight: 600;
+    font-size: 12px;
+    font-weight: 700;
     color: var(--accent);
-    margin-bottom: 8px;
+    margin-bottom: var(--spacing-sm);
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--spacing-sm);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
 }
 
 /* 缩小版信号面板 */
 .signal-panel-mini {
-    background: linear-gradient(135deg, rgba(129, 140, 248, 0.08) 0%, rgba(167, 139, 250, 0.05) 100%);
-    border: 1px solid rgba(129, 140, 248, 0.15);
+    background: rgba(129, 140, 248, 0.04);
+    border: 1px solid rgba(129, 140, 248, 0.12);
     border-radius: var(--radius-sm);
-    padding: 10px 12px;
-    margin-bottom: 12px;
-    position: relative;
+    padding: var(--spacing-md);
+    margin-bottom: var(--spacing-md);
 }
 
 .signal-panel-mini .signal-panel-title {
-    font-size: 12px;
-    margin-bottom: 6px;
+    font-size: 11px;
+    margin-bottom: var(--spacing-xs);
 }
 
 /* 监控股票标签 */
 .watch-tag {
     display: inline-flex;
     align-items: center;
-    padding: 4px 8px;
-    background: rgba(129, 140, 248, 0.15);
-    border: 1px solid var(--accent-glow);
+    padding: var(--spacing-xs) var(--spacing-sm);
+    background: var(--accent-glow);
+    border: 1px solid rgba(129, 140, 248, 0.2);
     border-radius: 12px;
     font-size: 12px;
     font-weight: 500;
     color: var(--accent);
     cursor: pointer;
-    transition: all 0.2s ease;
-    margin-right: 6px;
-    margin-bottom: 4px;
-}
-
-.watch-tag:hover {
-    background: var(--accent-glow);
-    border-color: rgba(129, 140, 248, 0.5);
-    transform: translateY(-1px);
+    margin-right: var(--spacing-xs);
+    margin-bottom: var(--spacing-xs);
 }
 
 .watch-tag button {
@@ -802,7 +736,7 @@ body.modal-open {
     border: none;
     color: var(--text-muted);
     cursor: pointer;
-    margin-left: 4px;
+    margin-left: var(--spacing-xs);
     font-size: 12px;
     padding: 0;
     line-height: 1;
@@ -811,7 +745,7 @@ body.modal-open {
 .signal-main {
     font-size: 18px;
     font-weight: 800;
-    margin-bottom: 8px;
+    margin-bottom: var(--spacing-sm);
 }
 
 .signal-detail {
@@ -823,18 +757,18 @@ body.modal-open {
 .signal-prices {
     display: flex;
     justify-content: space-around;
-    margin-top: 14px;
-    padding: 12px;
+    margin-top: var(--spacing-md);
+    padding: var(--spacing-md);
     background: var(--bg-inset);
     border-radius: var(--radius-sm);
 }
 
 .signal-price-item { text-align: center; }
-.signal-price-label { font-size: 10px; color: var(--text-muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
-.signal-price-value { font-size: 18px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.signal-price-label { font-size: 10px; color: var(--text-muted); margin-bottom: var(--spacing-xs); text-transform: uppercase; letter-spacing: 0.4px; }
+.signal-price-value { font-size: 17px; font-weight: 800; font-variant-numeric: tabular-nums; }
 
 .signal-reasoning {
-    margin-top: 12px;
+    margin-top: var(--spacing-md);
     font-size: 11px;
     color: var(--text-muted);
     text-align: center;
@@ -843,20 +777,20 @@ body.modal-open {
 /* ==================== 行情显示 ==================== */
 .market-hero {
     text-align: center;
-    padding: 20px 0;
+    padding: var(--spacing-xl) 0;
 }
 
 .market-hero-name {
     font-size: 15px;
     font-weight: 600;
     color: var(--text-secondary);
-    margin-bottom: 8px;
+    margin-bottom: var(--spacing-sm);
 }
 
 .market-hero-code {
     font-size: 12px;
     color: var(--text-muted);
-    margin-left: 8px;
+    margin-left: var(--spacing-sm);
     font-weight: 400;
 }
 
@@ -867,7 +801,7 @@ body.modal-open {
 }
 
 .market-hero-change {
-    margin-top: 8px;
+    margin-top: var(--spacing-sm);
     font-size: 15px;
     font-weight: 600;
 }
@@ -878,13 +812,13 @@ body.modal-open {
 .market-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
-    margin-top: 16px;
+    gap: var(--spacing-sm);
+    margin-top: var(--spacing-lg);
 }
 
 .market-detail-item {
     text-align: center;
-    padding: 10px 4px;
+    padding: var(--spacing-sm) var(--spacing-xs);
     background: var(--surface-1);
     border-radius: var(--radius-sm);
     border: 1px solid var(--border-glass);
@@ -893,7 +827,7 @@ body.modal-open {
 .market-detail-label {
     font-size: 10px;
     color: var(--text-muted);
-    margin-bottom: 4px;
+    margin-bottom: var(--spacing-xs);
     text-transform: uppercase;
     letter-spacing: 0.3px;
 }
@@ -1069,37 +1003,22 @@ body.modal-open {
 
 /* ==================== AI算法分析卡片 ==================== */
 .ai-summary-card {
-    background: linear-gradient(145deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%);
+    background: rgba(255,255,255,0.02);
     border: 1px solid var(--border-glass);
     border-radius: 14px;
-    padding: 18px;
-    margin-bottom: 14px;
-    position: relative;
-    overflow: hidden;
-}
-
-.ai-summary-card::after {
-    content: '';
-    position: absolute;
-    top: -50%; right: -20%;
-    width: 100px; height: 100px;
-    border-radius: 50%;
-    background: var(--accent-glow);
-    opacity: 0.3;
-    filter: blur(20px);
+    padding: 16px;
+    margin-bottom: 12px;
 }
 
 .ai-score-main {
     display: flex;
     align-items: center;
-    gap: 24px;
-    position: relative;
-    z-index: 1;
+    gap: 20px;
 }
 
 .ai-score-ring {
-    width: 96px;
-    height: 96px;
+    width: 80px;
+    height: 80px;
     border-radius: 50%;
     background: conic-gradient(var(--accent) 0deg, var(--surface-3) 0deg);
     display: flex;
@@ -1107,8 +1026,6 @@ body.modal-open {
     justify-content: center;
     position: relative;
     flex-shrink: 0;
-    transition: transform 0.3s ease;
-    box-shadow: 0 0 24px var(--accent-glow);
 }
 
 .ai-score-ring:hover {
@@ -1178,10 +1095,7 @@ body.modal-open {
 .ai-score-confidence span:last-child {
     font-size: 18px;
     font-weight: 800;
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
+    color: var(--accent);
 }
 
 .ai-score-components {
@@ -1259,17 +1173,12 @@ body.modal-open {
 }
 
 .ai-detail-item {
-    background: linear-gradient(145deg, rgba(255,255,255,0.03) 0%, rgba(255,255,255,0.01) 100%);
+    background: rgba(255,255,255,0.02);
     border: 1px solid var(--border-glass);
     border-radius: 10px;
     padding: 12px;
     display: flex;
     gap: 8px;
-    transition: all 0.2s;
-}
-
-.ai-detail-item:hover {
-    border-color: var(--surface-active);
 }
 
 .ai-detail-icon {
@@ -2132,17 +2041,15 @@ html {
     position: absolute;
     top: calc(100% + 6px);
     left: 0; right: 0;
-    background: var(--bg-overlay);
-    backdrop-filter: var(--glass-blur);
-    -webkit-backdrop-filter: var(--glass-blur);
-    border: 1px solid var(--border-glass);
+    background: #1a1f2e;
+    border: 1px solid var(--border-soft);
     border-radius: var(--radius-sm);
     max-height: 300px;
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     z-index: 500;
     display: none;
-    box-shadow: var(--shadow);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
 
 .suggestion-item {
@@ -2154,10 +2061,12 @@ html {
     align-items: center;
     gap: 10px;
     font-size: 14px;
+    background: #1a1f2e;
+    color: var(--text-primary);
 }
 
 .suggestion-item:last-child { border-bottom: none; }
-.suggestion-item:hover, .suggestion-item:active { background: rgba(129, 140, 248, 0.08); }
+.suggestion-item:hover, .suggestion-item:active { background: rgba(129, 140, 248, 0.12); }
 
 .suggestion-code { font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
 .suggestion-name { color: var(--text-primary); flex: 1; }
@@ -2319,22 +2228,11 @@ input::placeholder {
 
 /* ==================== 核心操作建议 ==================== */
 .core-advice-panel {
-    background: linear-gradient(135deg, rgba(129, 140, 248, 0.12) 0%, rgba(167, 139, 250, 0.08) 100%);
-    border: 1px solid rgba(129, 140, 248, 0.2);
-    border-radius: var(--radius);
-    padding: 18px;
-    margin-bottom: 14px;
-    position: relative;
-    overflow: hidden;
-}
-
-.core-advice-panel::before {
-    content: '';
-    position: absolute;
-    top: -50%; right: -50%;
-    width: 100%; height: 100%;
-    background: radial-gradient(circle, rgba(129, 140, 248, 0.06) 0%, transparent 70%);
-    pointer-events: none;
+    background: rgba(129, 140, 248, 0.05);
+    border: 1px solid rgba(129, 140, 248, 0.15);
+    border-radius: var(--radius-md, 14px);
+    padding: 16px;
+    margin-bottom: 12px;
 }
 
 .core-advice-title {
@@ -2642,23 +2540,14 @@ input::placeholder {
 }
 
 .learn-card {
-    background: var(--bg-card);
-    backdrop-filter: var(--glass-blur);
-    -webkit-backdrop-filter: var(--glass-blur);
+    background: rgba(255,255,255,0.02);
     border: 1px solid var(--border-glass);
-    border-radius: var(--radius);
+    border-radius: var(--radius-md, 14px);
     padding: 14px;
     cursor: pointer;
-    transition: all 0.2s;
-    -webkit-tap-highlight-color: transparent;
     display: flex;
     flex-direction: column;
     gap: 6px;
-}
-
-.learn-card:active {
-    transform: scale(0.97);
-    border-color: var(--surface-active);
 }
 
 .learn-card-icon {
@@ -2993,9 +2882,13 @@ body.theme-light .card:hover {
 
     /* 搜索建议浮层 - 浅色背景 */
 body.theme-light .search-suggestions {
-        background: rgba(255, 255, 255, 0.98);
+        background: #ffffff;
         border-color: rgba(0, 0, 0, 0.08);
         box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
+}
+
+body.theme-light .suggestion-item {
+        background: #ffffff;
 }
 
     body.theme-light .suggestion-item:hover,
@@ -3020,20 +2913,15 @@ body.theme-light .modal-content {
         box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
 }
 
-    /* 信号面板渐变 - 浅色下更柔和 */
+    /* 信号面板 - 浅色下更柔和 */
     body.theme-light .signal-panel,
 body.theme-light .core-advice-panel {
-        background: linear-gradient(135deg, rgba(99, 102, 241, 0.06) 0%, rgba(139, 92, 246, 0.04) 100%);
+        background: rgba(99, 102, 241, 0.04);
         border-color: rgba(99, 102, 241, 0.12);
 }
 
-    body.theme-light .signal-panel::before,
-body.theme-light .core-advice-panel::before {
-        background: radial-gradient(circle, rgba(99, 102, 241, 0.04) 0%, transparent 70%);
-}
-
 body.theme-light .signal-panel-mini {
-        background: linear-gradient(135deg, rgba(99, 102, 241, 0.04) 0%, rgba(139, 92, 246, 0.03) 100%);
+        background: rgba(99, 102, 241, 0.03);
         border-color: rgba(99, 102, 241, 0.1);
 }
 
@@ -3045,7 +2933,7 @@ body.theme-light .core-advice-prices {
 
     /* 全景评分总分面板 */
 body.theme-light .panorama-total-score {
-        background: linear-gradient(135deg, rgba(22, 163, 74, 0.06), rgba(99, 102, 241, 0.06));
+        background: rgba(22, 163, 74, 0.04);
         border-color: rgba(22, 163, 74, 0.12);
 }
 
@@ -3312,7 +3200,7 @@ body.theme-light .theme-option:hover {
 .flex-1 { flex: 1; }
 
 /* ---------- 统一Grid ---------- */
-.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
 .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 
@@ -3331,160 +3219,195 @@ body.theme-light .theme-option:hover {
 .data-tag-yellow { background: var(--yellow-glow); color: var(--yellow); }
 .data-tag-blue { background: var(--accent-glow); color: var(--accent); }
 
-/* ---------- 做T方案卡片专用样式 ---------- */
+/* ---------- 最优做T方案卡片（确保盈利） ---------- */
 .t-plan-card {
-    background: linear-gradient(145deg, rgba(255,255,255,0.04) 0%, rgba(255,255,255,0.01) 100%);
+    background: rgba(255,255,255,0.02);
     border: 1px solid var(--border-glass);
-    border-radius: var(--radius-sm);
-    padding: 14px;
-    margin-bottom: 10px;
-    transition: all 0.25s;
+    border-radius: var(--radius-md, 14px);
+    padding: 16px;
+    margin-bottom: 12px;
+    transition: var(--transition);
     position: relative;
-    overflow: hidden;
-}
-
-.t-plan-card::before {
-    content: '';
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    height: 2px;
-    opacity: 0.6;
 }
 
 .t-plan-card:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 8px 24px rgba(0,0,0,0.15);
+    border-color: var(--surface-active);
+    background: var(--surface-2);
 }
 
 .t-plan-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 12px;
+    margin-bottom: var(--spacing-md);
 }
 
 .t-plan-title {
-    font-size: 13px;
+    font-size: 14px;
     font-weight: 700;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--spacing-sm);
+    color: var(--text-primary);
+    letter-spacing: 0.3px;
 }
 
 .t-plan-badge {
-    padding: 3px 10px;
-    border-radius: 12px;
+    padding: var(--spacing-xs) var(--spacing-md);
+    border-radius: 14px;
     font-size: 11px;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.4px;
+}
+
+.t-plan-name {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: var(--spacing-md);
+    padding: var(--spacing-md);
+    background: var(--surface-1);
+    border-radius: var(--radius-sm);
 }
 
 .t-plan-prices {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 10px;
-    margin-bottom: 12px;
+    gap: var(--spacing-sm);
+    margin-bottom: var(--spacing-md);
 }
 
 .t-plan-price-item {
     text-align: center;
-    padding: 10px 6px;
-    background: var(--bg-inset);
-    border-radius: 10px;
+    padding: var(--spacing-md) var(--spacing-xs);
+    background: var(--surface-1);
+    border-radius: var(--radius-sm);
     border: 1px solid var(--border-glass);
-    transition: all 0.2s;
-}
-
-.t-plan-price-item:hover {
-    border-color: var(--surface-active);
-    transform: scale(1.02);
 }
 
 .t-plan-price-label {
     font-size: 10px;
     color: var(--text-muted);
-    margin-bottom: 6px;
+    margin-bottom: var(--spacing-xs);
     text-transform: uppercase;
-    letter-spacing: 0.5px;
+    letter-spacing: 0.4px;
+    font-weight: 600;
 }
 
 .t-plan-price-value {
-    font-size: 16px;
-    font-weight: 700;
+    font-size: 17px;
+    font-weight: 800;
     font-variant-numeric: tabular-nums;
+    letter-spacing: -0.2px;
 }
 
 .t-plan-footer {
     display: flex;
-    justify-content: center;
-    gap: 20px;
-    padding-top: 10px;
+    justify-content: space-around;
+    gap: var(--spacing-md);
+    padding: var(--spacing-md) 0 0 0;
     border-top: 1px solid var(--border-glass);
     font-size: 12px;
+}
+
+.t-plan-footer > span {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--spacing-xs);
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.t-plan-footer .footer-value {
+    font-weight: 700;
+    font-size: 14px;
+    color: var(--text-primary);
+}
+
+.t-plan-meta {
+    margin-top: var(--spacing-md);
+    padding: var(--spacing-md);
+    background: var(--surface-1);
+    border-radius: var(--radius-sm);
+    display: flex;
+    justify-content: space-around;
+    align-items: center;
+    font-size: 12px;
+    gap: var(--spacing-sm);
+}
+
+.t-plan-meta-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--spacing-xs);
+    flex: 1;
+}
+
+.t-plan-meta-label {
+    color: var(--text-muted);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-weight: 600;
+}
+
+.t-plan-meta-value {
+    font-weight: 700;
+    font-size: 13px;
 }
 
 /* 正T方案 - 绿色主题 */
 .t-plan-long {
     border-color: rgba(52, 211, 153, 0.2);
-    background: linear-gradient(145deg, rgba(52, 211, 153, 0.06), rgba(52, 211, 153, 0.02));
+    background: rgba(52, 211, 153, 0.04);
 }
-.t-plan-long::before { background: linear-gradient(90deg, transparent, var(--green), transparent); }
-.t-plan-long .t-plan-badge { 
-    background: var(--green-glow); 
-    color: var(--green); 
-    box-shadow: 0 0 12px var(--green-glow);
+.t-plan-long .t-plan-badge {
+    background: rgba(52, 211, 153, 0.1);
+    color: var(--green);
 }
 
 /* 反T方案 - 红色主题 */
 .t-plan-short {
     border-color: rgba(248, 113, 113, 0.2);
-    background: linear-gradient(145deg, rgba(248, 113, 113, 0.06), rgba(248, 113, 113, 0.02));
+    background: rgba(248, 113, 113, 0.04);
 }
-.t-plan-short::before { background: linear-gradient(90deg, transparent, var(--red), transparent); }
-.t-plan-short .t-plan-badge { 
-    background: var(--red-glow); 
-    color: var(--red); 
-    box-shadow: 0 0 12px var(--red-glow);
+.t-plan-short .t-plan-badge {
+    background: rgba(248, 113, 113, 0.1);
+    color: var(--red);
 }
 
 /* 箱体方案 - 黄色主题 */
 .t-plan-box {
     border-color: rgba(251, 191, 36, 0.2);
-    background: linear-gradient(145deg, rgba(251, 191, 36, 0.06), rgba(251, 191, 36, 0.02));
+    background: rgba(251, 191, 36, 0.04);
 }
-.t-plan-box::before { background: linear-gradient(90deg, transparent, var(--yellow), transparent); }
-.t-plan-box .t-plan-badge { 
-    background: var(--yellow-glow); 
-    color: var(--yellow); 
-    box-shadow: 0 0 12px var(--yellow-glow);
+.t-plan-box .t-plan-badge {
+    background: rgba(251, 191, 36, 0.1);
+    color: var(--yellow);
 }
 
 /* ---------- 价格预测卡片 ---------- */
 .prediction-card {
-    background: var(--surface-1);
+    background: rgba(255,255,255,0.02);
     border: 1px solid var(--border-glass);
-    border-radius: var(--radius-sm);
-    padding: 10px;
-    margin-bottom: 8px;
+    border-radius: 12px;
+    padding: 12px;
 }
 
 .prediction-card-title {
     display: flex;
-    justify-content: space-between;
+    justify-content: center;
     align-items: center;
-    margin-bottom: 8px;
+    margin-bottom: 10px;
 }
 
 .prediction-card-title-text {
-    font-size: 11px;
-    font-weight: 600;
+    font-size: 12px;
+    font-weight: 700;
     color: var(--text-secondary);
-}
-
-.prediction-card-title-time {
-    font-size: 10px;
-    color: var(--text-muted);
+    letter-spacing: 0.3px;
 }
 
 .prediction-prices {
@@ -3495,21 +3418,26 @@ body.theme-light .theme-option:hover {
 
 .prediction-price-item {
     text-align: center;
-    padding: 6px;
-    background: var(--bg-inset);
-    border-radius: 6px;
+    padding: 10px 6px;
+    background: rgba(255,255,255,0.02);
+    border-radius: 10px;
+    border: 1px solid var(--border-glass);
 }
 
 .prediction-price-label {
     font-size: 10px;
     color: var(--text-muted);
-    margin-bottom: 2px;
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-weight: 600;
 }
 
 .prediction-price-value {
     font-size: 15px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
+    letter-spacing: -0.2px;
 }
 
 /* ---------- 行情大字 ---------- */

@@ -14,8 +14,8 @@ function isSellAction(action) {
 }
 
 function isTAction(action) {
-    return action === 'BUY_THEN_SELL' || action === 'SELL_THEN_BUY' ||
-           action === 'TRADING_OPPORTUNITY' || action === 'BOX_TRADING';
+    // 只统计可执行的做T方案（不包含TRADING_OPPORTUNITY机会提示）
+    return action === 'BUY_THEN_SELL' || action === 'SELL_THEN_BUY' || action === 'BOX_TRADING';
 }
 
 function countStrategyActions(strategies) {
@@ -2522,6 +2522,44 @@ function renderStockInfo() {
     const emptyHome = document.getElementById('emptyHome');
     if (emptyHome) emptyHome.style.display = 'none';
     
+    // 隐藏股票行情区域（用户不希望显示）
+    const marketSection = document.getElementById('marketSection');
+    if (marketSection) marketSection.style.display = 'none';
+    
+    // 填充行情数据
+    const nameEl = document.getElementById('marketName');
+    const codeEl = document.getElementById('marketCode');
+    const priceEl = document.getElementById('marketPrice');
+    const changeEl = document.getElementById('marketChange');
+    const openEl = document.getElementById('marketOpen');
+    const highEl = document.getElementById('marketHigh');
+    const lowEl = document.getElementById('marketLow');
+    const prevCloseEl = document.getElementById('marketPreClose');
+    const volEl = document.getElementById('marketVolume');
+    const turnoverEl = document.getElementById('marketTurnover');
+    
+    if (nameEl) nameEl.innerText = _currentStock.name || '--';
+    if (codeEl) codeEl.innerText = _currentStock.code || '';
+    
+    const chg = _currentStock.change_percent || 0;
+    const chgColor = chg > 0 ? 'var(--red)' : (chg < 0 ? 'var(--green)' : 'var(--text-muted)');
+    const chgSign = chg >= 0 ? '+' : '';
+    
+    if (priceEl) {
+        priceEl.innerText = '￥' + (_currentStock.current_price || 0).toFixed(2);
+        priceEl.style.color = chgColor;
+    }
+    if (changeEl) {
+        changeEl.innerText = chgSign + chg.toFixed(2) + '%';
+        changeEl.style.color = chgColor;
+    }
+    if (openEl) openEl.innerText = _currentStock.open_price ? _currentStock.open_price.toFixed(2) : '--';
+    if (highEl) highEl.innerText = _currentStock.high_price ? _currentStock.high_price.toFixed(2) : '--';
+    if (lowEl) lowEl.innerText = _currentStock.low_price ? _currentStock.low_price.toFixed(2) : '--';
+    if (prevCloseEl) prevCloseEl.innerText = _currentStock.prev_close ? _currentStock.prev_close.toFixed(2) : '--';
+    if (volEl) volEl.innerText = _currentStock.amount ? formatAmount(_currentStock.amount) : '--';
+    if (turnoverEl) turnoverEl.innerText = _currentStock.turnover != null ? _currentStock.turnover.toFixed(2) + '%' : '--';
+    
     // 更新顶部header行情
     updateHeaderQuote();
 }
@@ -2743,7 +2781,7 @@ function renderStrategySummary(strategies) {
     strategies.forEach(s => {
         if (s.action === 'BUY' || s.action === 'STRONG_BUY') buyCount++;
         else if (s.action === 'SELL' || s.action === 'STRONG_SELL') sellCount++;
-        else if (s.action === 'BUY_THEN_SELL' || s.action === 'SELL_THEN_BUY' || s.action === 'TRADING_OPPORTUNITY' || s.action === 'BOX_TRADING') tCount++;
+        else if (isTAction(s.action)) tCount++;
     });
     const watchCount = strategies.filter(s => ['WATCH', 'HOLD', 'OBSERVE'].includes(s.action)).length;
     
@@ -2858,21 +2896,48 @@ function renderBestPlan(summary) {
         } else if (overnightEl) {
             overnightEl.style.display = 'none';
         }
-        // 时间窗口提示
-        const timeWinEl = document.getElementById('planTTimeWindow');
+        // 时间窗口提示（新结构：planTMeta 包含交易时段/时间窗口/过夜风险）
+        const metaEl = document.getElementById('planTMeta');
         const sessionEl = document.getElementById('planTSession');
         const windowEl = document.getElementById('planTWindow');
-        if (timeWinEl && summary.best_t.time_window) {
-            timeWinEl.style.display = 'flex';
-            if (sessionEl) sessionEl.innerText = summary.best_t.time_session;
+        const metaOvernightRiskEl = document.getElementById('planTOvernightRisk');
+        if (metaEl && summary.best_t.time_session) {
+            metaEl.style.display = 'flex';
+            if (sessionEl) sessionEl.innerText = summary.best_t.time_session || '--';
             if (windowEl) {
-                windowEl.innerText = summary.best_t.time_window;
+                windowEl.innerText = summary.best_t.time_window || '--';
                 const wColor = summary.best_t.time_window_color === 'green' ? 'var(--green)' :
                                summary.best_t.time_window_color === 'yellow' ? 'var(--yellow)' : 'var(--red)';
                 windowEl.style.color = wColor;
             }
-        } else if (timeWinEl) {
-            timeWinEl.style.display = 'none';
+            if (metaOvernightRiskEl) {
+                metaOvernightRiskEl.innerText = summary.best_t.overnight_risk || '--';
+                const riskColor = summary.best_t.overnight_risk === '高' ? 'var(--red)' :
+                                  (summary.best_t.overnight_risk === '低' ? 'var(--green)' : 'var(--yellow)');
+                metaOvernightRiskEl.style.color = riskColor;
+            }
+        } else if (metaEl) {
+            metaEl.style.display = 'none';
+        }
+        // 过夜建议提示（复用之前声明的变量）
+        if (overnightAdviceEl) {
+            overnightAdviceEl.innerText = summary.best_t.overnight_advice || '';
+        }
+        // 买入价安全标记：买入价 <= 现价 时显示绿色标记
+        const buyItemEl = document.getElementById('planTBuyItem');
+        if (buyItemEl) {
+            if (buyPrice <= cp) {
+                buyItemEl.classList.add('t-plan-buy-safe');
+                buyItemEl.title = '✓ 买入价低于现价，确保盈利';
+            } else {
+                buyItemEl.classList.remove('t-plan-buy-safe');
+                buyItemEl.title = '';
+            }
+        }
+        // 成功率（如果没值则隐藏）
+        const successRateEl = document.getElementById('planTSuccessRate');
+        if (successRateEl && summary.best_t.success_rate == null) {
+            successRateEl.innerText = '--';
         }
     } else {
         setDisplay('planTSection', 'none');
@@ -3207,7 +3272,7 @@ function showProfitDetail(type) {
 
     if (type === 'total') {
         title = '交易明细';
-        content = '<div style="text-align:center;margin-bottom:12px;"><div style="font-size:22px;font-weight:800;' + colorCls(d.totalProfit) + '">' + fmtMoney(d.totalProfit) + '</div><div style="font-size:11px;color:var(--text-muted);margin-top:4px;">总收益（已实现 + 未实现）</div></div>';
+        content = '<div style="text-align:center;margin-bottom:12px;"><div style="font-size:22px;font-weight:800;' + colorCls(d.totalProfit) + '">' + fmtMoney(d.totalProfit) + '</div><div style="font-size:11px;color:var(--text-muted);margin-top:4px;">总收益（落袋收益 + 持仓浮盈）</div></div>';
         // 交易记录列表
         const allTrades = [..._trades].sort((a, b) => (b.time || 0) - (a.time || 0));
         let listHtml = '';
@@ -3234,7 +3299,7 @@ function showProfitDetail(type) {
         }
         content += '<div style="max-height:320px;overflow-y:auto;">' + listHtml + '</div>';
     } else if (type === 'realized') {
-        title = '已实现盈亏明细';
+        title = '落袋收益明细';
         const sellByStock = {};
         const holdings = {};
         _trades.forEach(t => {
@@ -3274,12 +3339,12 @@ function showProfitDetail(type) {
         if (list.length > 0) {
             listHtml = list.map(s => '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-soft);"><div><div style="font-size:13px;font-weight:600;">' + escapeHtml(s.name) + '</div><div style="font-size:10px;color:var(--text-muted);">' + escapeHtml(s.code) + ' · 已卖' + s.qty + '股</div></div><div style="font-size:14px;font-weight:700;' + colorCls(s.profit) + '">' + fmtMoney(s.profit) + '</div></div>').join('');
         } else {
-            listHtml = '<div class="empty-state" style="padding:20px 0;"><div class="empty-state-icon">📊</div><div>暂无已实现收益</div></div>';
+            listHtml = '<div class="empty-state" style="padding:20px 0;"><div class="empty-state-icon">📊</div><div>暂无落袋收益</div></div>';
         }
-        content = '<div style="text-align:center;margin-bottom:16px;"><div style="font-size:24px;font-weight:800;' + colorCls(d.realizedProfit) + '">' + fmtMoney(d.realizedProfit) + '</div><div style="font-size:11px;color:var(--text-muted);margin-top:4px;">按股票汇总</div></div>';
+        content = '<div style="text-align:center;margin-bottom:16px;"><div style="font-size:24px;font-weight:800;' + colorCls(d.realizedProfit) + '">' + fmtMoney(d.realizedProfit) + '</div><div style="font-size:11px;color:var(--text-muted);margin-top:4px;">按股票汇总 · 已卖出部分</div></div>';
         content += '<div style="max-height:300px;overflow-y:auto;">' + listHtml + '</div>';
     } else if (type === 'unrealized') {
-        title = '未实现盈亏明细';
+        title = '持仓浮盈明细';
         let listHtml = '';
         if (stocks.length > 0) {
             listHtml = stocks.map(s => '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-soft);"><div><div style="font-size:13px;font-weight:600;">' + escapeHtml(s.name) + '</div><div style="font-size:10px;color:var(--text-muted);">' + escapeHtml(s.code) + ' · ' + s.quantity + '股 · 成本¥' + s.avg_cost.toFixed(2) + '</div></div><div style="text-align:right;"><div style="font-size:14px;font-weight:700;' + colorCls(s.profit) + '">' + fmtMoney(s.profit) + '</div><div style="font-size:10px;color:var(--text-muted);">现价¥' + s.current_price.toFixed(2) + '</div></div></div>').join('');
@@ -3305,13 +3370,13 @@ function showProfitDetail(type) {
         content = '<div style="text-align:center;margin-bottom:16px;"><div style="font-size:24px;font-weight:800;' + colorCls(d.tProfit) + '">' + fmtMoney(d.tProfit) + '</div><div style="font-size:11px;color:var(--text-muted);margin-top:4px;">累计做T ' + (d.tTradeCount || 0) + ' 次 · 已扣除手续费</div></div>';
         content += '<div style="max-height:300px;overflow-y:auto;">' + listHtml + '</div>';
     } else if (type === 'tcount') {
-        title = '做T次数统计';
+        title = '成功做T统计';
         const tTrades = _trades.filter(t => t.pair_profit !== undefined && (t.pair_quantity || 0) > 0);
         const winCount = tTrades.filter(t => (t.pair_profit || 0) > 0).length;
         const lossCount = tTrades.filter(t => (t.pair_profit || 0) < 0).length;
         const winRate = tTrades.length > 0 ? (winCount / tTrades.length * 100).toFixed(1) : '0';
         const avgProfit = tTrades.length > 0 ? (d.tProfit || 0) / tTrades.length : 0;
-        content = '<div style="text-align:center;margin-bottom:16px;"><div style="font-size:24px;font-weight:800;color:var(--accent);">' + (d.tTradeCount || 0) + '次</div><div style="font-size:11px;color:var(--text-muted);margin-top:4px;">累计做T次数</div></div>';
+        content = '<div style="text-align:center;margin-bottom:16px;"><div style="font-size:24px;font-weight:800;color:var(--accent);">' + (d.tTradeCount || 0) + '次</div><div style="font-size:11px;color:var(--text-muted);margin-top:4px;">累计成功做T次数</div></div>';
         content += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;font-size:13px;">';
         content += '<div style="padding:12px;background:rgba(52,211,153,0.08);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">盈利次数</div><div style="font-weight:700;margin-top:4px;color:var(--green);">' + winCount + '次</div></div>';
         content += '<div style="padding:12px;background:rgba(248,113,113,0.08);border-radius:10px;text-align:center;"><div style="color:var(--text-muted);font-size:11px;">亏损次数</div><div style="font-weight:700;margin-top:4px;color:var(--red);">' + lossCount + '次</div></div>';
@@ -6648,8 +6713,11 @@ function refreshProfit() {
     let tTradeCount = 0;
     
     const holdings = {};
+    // 收集所有买入和卖出交易（按股票代码分组）
+    const buysByCode = {};
+    const sellsByCode = {};
     
-    _trades.forEach(t => {
+    _trades.forEach((t, idx) => {
         const type = t.trade_type || t.type;
         if (type === 'BUY') {
             totalBuy += t.quantity;
@@ -6668,6 +6736,9 @@ function refreshProfit() {
             holdings[t.code].qty += t.quantity;
             holdings[t.code].cost += amount + fees.commission + fees.transfer;
             
+            if (!buysByCode[t.code]) buysByCode[t.code] = [];
+            buysByCode[t.code].push({ idx, trade: t });
+            
         } else {
             totalSell += t.quantity;
             const amount = t.price * t.quantity;
@@ -6678,10 +6749,8 @@ function refreshProfit() {
             stampTax += fees.stamp;
             transferFee += fees.transfer;
             
-            if (t.pair_profit !== undefined && (t.pair_quantity || 0) > 0) {
-                tProfit += t.pair_profit;
-                tTradeCount++;
-            }
+            if (!sellsByCode[t.code]) sellsByCode[t.code] = [];
+            sellsByCode[t.code].push({ idx, trade: t });
             
             if (holdings[t.code] && holdings[t.code].qty > 0) {
                 if (t.name && t.name !== t.code && holdings[t.code].name === t.code) {
@@ -6696,6 +6765,65 @@ function refreshProfit() {
             }
         }
     });
+    
+    // 自动计算做T收益：按股票代码，对每笔卖出按时间倒序配对其之前的买入
+    for (const code in sellsByCode) {
+        const sells = sellsByCode[code];
+        // 复制该股票的买入列表，按时间正序排列
+        const buys = (buysByCode[code] || []).filter(b => b.trade.time).sort((a, b) => (a.trade.time || 0) - (b.trade.time || 0));
+        // 已使用过的买入索引
+        const usedBuyQty = {}; // buyIdx -> 已配对数量
+        
+        sells.sort((a, b) => (a.trade.time || 0) - (b.trade.time || 0));
+        
+        sells.forEach(sellInfo => {
+            const sellTrade = sellInfo.trade;
+            const sellQty = sellTrade.quantity;
+            const sellPrice = sellTrade.price;
+            const sellAmount = sellPrice * sellQty;
+            const sellFees = calcTradeFees(sellAmount, 'SELL');
+            
+            let remainingQty = sellQty;
+            
+            // 优先使用已有的配对
+            if (sellTrade.pair_buy_index !== undefined && sellTrade.pair_buy_index !== null) {
+                const buyTrade = _trades[sellTrade.pair_buy_index];
+                if (buyTrade && (buyTrade.trade_type || buyTrade.type) === 'BUY') {
+                    const pairQty = sellTrade.pair_quantity || sellQty;
+                    const buyPrice = sellTrade.pair_buy_price || buyTrade.price;
+                    const buyAmount = buyPrice * pairQty;
+                    const buyFees = calcTradeFees(buyAmount, 'BUY');
+                    const buyFee = buyFees.commission + buyFees.transfer;
+                    const sellFee = sellFees.commission + sellFees.stamp + sellFees.transfer;
+                    const profit = (sellPrice - buyPrice) * pairQty - buyFee - sellFee;
+                    tProfit += profit;
+                    tTradeCount++;
+                    remainingQty -= pairQty;
+                }
+            }
+            
+            // 自动配对剩余数量（用此卖出之前的买入）
+            const sellTime = sellTrade.time || 0;
+            for (const buyInfo of buys) {
+                if (remainingQty <= 0) break;
+                if ((buyInfo.trade.time || 0) >= sellTime) continue; // 必须早于卖出
+                const used = usedBuyQty[buyInfo.idx] || 0;
+                const availQty = (buyInfo.trade.quantity || 0) - used;
+                if (availQty <= 0) continue;
+                const pairQty = Math.min(remainingQty, availQty);
+                const buyPrice = buyInfo.trade.price;
+                const buyAmount = buyPrice * pairQty;
+                const buyFees = calcTradeFees(buyAmount, 'BUY');
+                const buyFee = buyFees.commission + buyFees.transfer;
+                const sellFee = sellFees.commission + sellFees.stamp + sellFees.transfer;
+                const profit = (sellPrice - buyPrice) * pairQty - buyFee - sellFee;
+                tProfit += profit;
+                tTradeCount++;
+                usedBuyQty[buyInfo.idx] = used + pairQty;
+                remainingQty -= pairQty;
+            }
+        });
+    }
     
     let remaining = totalBuy - totalSell;
     let unrealizedProfit = 0;
@@ -6754,6 +6882,13 @@ function refreshProfit() {
     
     const tCountEl = document.getElementById('tTradeCount');
     if (tCountEl) tCountEl.textContent = tTradeCount + '次';
+    
+    const tWinRateEl = document.getElementById('tWinRate');
+    if (tWinRateEl) {
+        const winTrades = _trades.filter(t => t.pair_profit !== undefined && (t.pair_quantity || 0) > 0 && (t.pair_profit || 0) > 0);
+        const winRate = tTradeCount > 0 ? (winTrades.length / tTradeCount * 100).toFixed(1) : '0';
+        tWinRateEl.textContent = winRate + '%';
+    }
     
     const totalBuyEl = document.getElementById('totalBuy');
     if (totalBuyEl) totalBuyEl.textContent = totalBuy + '股';

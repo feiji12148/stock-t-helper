@@ -6252,33 +6252,61 @@ class StrategyEngine {
 
         const BUY_ACTIONS = new Set(['BUY', 'STRONG_BUY']);
         const SELL_ACTIONS = new Set(['SELL', 'STRONG_SELL']);
-        // 实际可执行的做T方案：正T、反T、箱体（TRADING_OPPORTUNITY 只是机会提示，不是可执行方案）
+        // 可执行的做T方案：正T、反T、箱体（TRADING_OPPORTUNITY 只是机会提示，不是可执行方案）
         const T_ACTIONS = new Set(['BUY_THEN_SELL', 'SELL_THEN_BUY', 'BOX_TRADING']);
 
         const buySignals = results.filter(s => BUY_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
         const sellSignals = results.filter(s => SELL_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
-        // 只有有持仓时，才筛选可执行的做T方案
-        const tSignals = holdings > 0 ? results.filter(s => T_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99)) : [];
+        // 有持仓时筛选做T方案，没有持仓时也展示（作为机会参考，前端会提示需要底仓）
+        const tSignals = results.filter(s => T_ACTIONS.has(s.action)).sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99));
 
         // ========== 日内时段判断 ==========
+        // 交易时段：9:30-11:30, 13:00-15:00，共4小时 = 240分钟
         let timeSession = '午盘';
         let timeRemaining = 240; // 剩余交易时间（分钟），默认全天
         let isLateDay = false;
-        if (hour < 10 || (hour === 10 && minute < 30)) {
+
+        // 关键时间点（小时*60 + 分钟）
+        const nowMin = hour * 60 + minute;
+        const OPEN = 9 * 60 + 30;      // 9:30 开盘
+        const NOON_END = 11 * 60 + 30; // 11:30 午休开始
+        const NOON_START = 13 * 60;    // 13:00 午盘开始
+        const CLOSE = 15 * 60;          // 15:00 收盘
+        const LATE_START = 14 * 60 + 30; // 14:30 进入尾盘
+
+        // 计算当前到15:00收盘还剩多少分钟
+        if (nowMin < OPEN) {
+            // 9:30 之前：距离开盘还有时间，全天4小时未开始
+            timeSession = '盘前';
+            timeRemaining = 240;
+        } else if (nowMin >= OPEN && nowMin < 10 * 60) {
+            // 9:30 - 10:00：早盘开始
             timeSession = '早盘';
-            timeRemaining = hour < 10 ? (10 - hour) * 60 + (60 - minute) + 240 : (30 - minute) + 240;
-        } else if (hour < 11 || (hour === 11 && minute < 30)) {
+            timeRemaining = (NOON_END - nowMin) + (CLOSE - NOON_START); // 到收盘的总时间
+        } else if (nowMin >= 10 * 60 && nowMin < 11 * 60) {
+            // 10:00 - 11:00：早盘
+            timeSession = '早盘';
+            timeRemaining = (NOON_END - nowMin) + (CLOSE - NOON_START);
+        } else if (nowMin >= 11 * 60 && nowMin < NOON_END) {
+            // 11:00 - 11:30：早盘末
             timeSession = '早盘末';
-            timeRemaining = hour < 11 ? (11 - hour) * 60 + (60 - minute) + 120 : (30 - minute) + 120;
-        } else if (hour < 13 || (hour === 13 && minute < 30)) {
+            timeRemaining = (NOON_END - nowMin) + (CLOSE - NOON_START);
+        } else if (nowMin >= NOON_END && nowMin < NOON_START) {
+            // 11:30 - 13:00：午间休市
+            timeSession = '午间休市';
+            timeRemaining = CLOSE - NOON_START;
+        } else if (nowMin >= NOON_START && nowMin < 14 * 60) {
+            // 13:00 - 14:00：午盘
             timeSession = '午盘';
-            timeRemaining = hour < 13 ? 240 + (60 - minute) : 210 - minute;
-        } else if (hour < 14 || (hour === 14 && minute < 30)) {
+            timeRemaining = CLOSE - nowMin;
+        } else if (nowMin >= 14 * 60 && nowMin < LATE_START) {
+            // 14:00 - 14:30：午盘末
             timeSession = '午盘末';
-            timeRemaining = hour < 14 ? (14 - hour) * 60 + (60 - minute) + 30 : 30 + (30 - minute);
+            timeRemaining = CLOSE - nowMin;
         } else {
+            // 14:30 - 15:00：尾盘
             timeSession = '尾盘';
-            timeRemaining = Math.max(5, 60 - minute);
+            timeRemaining = Math.max(5, CLOSE - nowMin);
             isLateDay = true;
         }
 
@@ -6329,65 +6357,84 @@ class StrategyEngine {
         };
 
         if (buySignals.length > 0) {
-            const bestBuy = buySignals[0];
-            summary.best_buy = {
-                name: bestBuy.name,
-                entry_price: bestBuy.entry_price ?? cp,
-                target_price: bestBuy.target_price ?? null,
-                stop_loss: bestBuy.stop_loss ?? null,
-                profit_potential: bestBuy.profit_potential ?? null,
-                loss_risk: bestBuy.loss_risk ?? null,
-                risk_reward: bestBuy.risk_reward ?? null,
-            };
+            // 优先选与综合方向一致的策略，如果方向是 SELL/SELL_THEN_BUY 则不显示最佳买入
+            const isBuyDirection = _direction === 'STRONG_BUY' || _direction === 'BUY' || _direction === 'HOLD';
+            if (isBuyDirection) {
+                const bestBuy = buySignals[0];
+                summary.best_buy = {
+                    name: bestBuy.name,
+                    entry_price: bestBuy.entry_price ?? cp,
+                    target_price: bestBuy.target_price ?? null,
+                    stop_loss: bestBuy.stop_loss ?? null,
+                    profit_potential: bestBuy.profit_potential ?? null,
+                    loss_risk: bestBuy.loss_risk ?? null,
+                    risk_reward: bestBuy.risk_reward ?? null,
+                };
+            }
         }
 
         if (sellSignals.length > 0) {
-            const bestSell = sellSignals[0];
-            summary.best_sell = {
-                name: bestSell.name,
-                entry_price: bestSell.entry_price ?? cp,
-                target_price: bestSell.target_price ?? null,
-                stop_loss: bestSell.stop_loss ?? null,
-                profit_potential: bestSell.profit_potential ?? null,
-                loss_risk: bestSell.loss_risk ?? null,
-                risk_reward: bestSell.risk_reward ?? null,
-            };
+            // 优先选与综合方向一致的策略，如果方向是 BUY/BUY_THEN_SELL 则不显示最佳卖出
+            const isSellDirection = _direction === 'STRONG_SELL' || _direction === 'SELL' || _direction === 'HOLD';
+            if (isSellDirection) {
+                const bestSell = sellSignals[0];
+                summary.best_sell = {
+                    name: bestSell.name,
+                    entry_price: bestSell.entry_price ?? cp,
+                    target_price: bestSell.target_price ?? null,
+                    stop_loss: bestSell.stop_loss ?? null,
+                    profit_potential: bestSell.profit_potential ?? null,
+                    loss_risk: bestSell.loss_risk ?? null,
+                    risk_reward: bestSell.risk_reward ?? null,
+                };
+            }
         }
 
         if (tSignals.length > 0) {
-            let bestT = tSignals[0];
+            const lastBestTName = this._lastSummary && this._lastSummary.best_t ? this._lastSummary.best_t.name : null;
+            let bestT = null;
             let bestScore = -Infinity;
             for (const t of tSignals) {
-                const buyP = t.buy_price ?? cp;
-                const sellP = t.sell_price ?? cp;
+                let buyP = t.buy_price ?? cp;
+                let sellP = t.sell_price ?? cp;
+
+                // === 确保盈利的关键约束 ===
+                // 买入价必须 <= 现价（如果策略给的买入价 > 现价，会跌破买入价导致亏损）
+                // 卖出价必须 > 买入价（保证有利润空间）
+                if (buyP > cp) {
+                    const adjustedBuy = cp * 0.985;
+                    if (sellP <= adjustedBuy) {
+                        continue;
+                    }
+                    buyP = adjustedBuy;
+                }
                 if (sellP <= buyP || buyP <= 0 || sellP <= 0) continue;
-                
-                // 盈利空间（相对于买入价）
+
                 const profitPct = (sellP - buyP) / buyP * 100;
-                const profitAfterFee = profitPct - feeRate * 100 * 2; // 扣除双边手续费feeRate*2
-                
-                // 必须确保盈利（扣除手续费后）
+                const profitAfterFee = profitPct - feeRate * 100 * 2;
+
                 if (profitAfterFee < 0.3) continue;
-                
+
                 // =====================================================
-                //  评分逻辑：盈利 + 可达性 + 时间窗口
+                //  评分逻辑：盈利主导 + 可达性辅助 + 时间窗口微调
                 // =====================================================
-                
-                // 1. 盈利评分（权重×2）
+
+                // 1. 盈利评分（权重×3，主导因素）—— 这是 bestT 切换的硬指标
                 let profitScore = 0;
-                if (profitAfterFee >= 1) profitScore = 10;
+                if (profitAfterFee >= 1.5) profitScore = 10;
+                else if (profitAfterFee >= 1.0) profitScore = 9;
                 else if (profitAfterFee >= 0.7) profitScore = 8;
                 else if (profitAfterFee >= 0.5) profitScore = 6;
                 else if (profitAfterFee >= 0.3) profitScore = 4;
-                
-                // 2. 卖出可达性评分（权重×2）
+
+                // 2. 卖出可达性评分（权重×1.5）
                 const sellDistance = (hp - sellP) / hp * 100;
                 let sellReachableScore = 0;
                 if (sellDistance >= 0 && sellDistance <= 2) sellReachableScore = 10;
                 else if (sellDistance > 2 && sellDistance <= 5) sellReachableScore = 8;
                 else if (sellDistance > 5 && sellDistance <= 10) sellReachableScore = 5;
                 else sellReachableScore = 2;
-                
+
                 // 3. 买入可达性评分（权重×1）
                 const buyDistance = (buyP - lp) / lp * 100;
                 let buyReachableScore = 0;
@@ -6396,59 +6443,58 @@ class StrategyEngine {
                 else if (buyDistance > 5 && buyDistance <= 10) buyReachableScore = 4;
                 else buyReachableScore = 2;
 
-                // 3.5 买入时间可达性评分（权重×2，新增！解决尾盘买入价过低问题）
-                // 评估买入价在剩余时间内能否达到：尾盘时买入价低于现价太多会大幅扣分
-                let buyTimeScore = 0;
-                const buyBelowCurrent = (cp - buyP) / cp * 100;
+                // 3.5 买入时间可达性评分（权重×1）—— 只在尾盘精细评估，非尾盘固定给 8
+                let buyTimeScore = 8;
                 if (isLateDay) {
-                    if (buyBelowCurrent <= 0.2) buyTimeScore = 10;      // 买入价接近现价，尾盘容易成交
-                    else if (buyBelowCurrent <= 0.5) buyTimeScore = 7; // 买入价略低于现价，尾盘可能成交
-                    else if (buyBelowCurrent <= 1) buyTimeScore = 3;   // 买入价明显低于现价，尾盘难成交
-                    else buyTimeScore = 0;                              // 买入价远低于现价，尾盘几乎不可能成交
-                } else {
-                    if (buyBelowCurrent <= 1) buyTimeScore = 10;
-                    else if (buyBelowCurrent <= 2) buyTimeScore = 8;
-                    else if (buyBelowCurrent <= 3) buyTimeScore = 5;
-                    else buyTimeScore = 2;
+                    const buyBelowCurrent = (cp - buyP) / cp * 100;
+                    if (buyBelowCurrent <= 0.2) buyTimeScore = 10;
+                    else if (buyBelowCurrent <= 0.5) buyTimeScore = 7;
+                    else if (buyBelowCurrent <= 1) buyTimeScore = 3;
+                    else buyTimeScore = 0;
                 }
 
-                // 4. 时间窗口可达性评分（权重×3，新增！核心改进）
-                // 根据剩余交易时间，评估买+卖都能完成的概率
+                // 4. 时间窗口可达性评分（权重×0.5，仅做微调）
                 let timeWindowScore = 0;
-                const totalMoveNeeded = Math.abs(cp - buyP) + Math.abs(sellP - buyP);
-                const movePctNeeded = totalMoveNeeded / cp * 100;
-                
-                // 估算每分钟平均波动
-                const avgVolatilityPerMin = (hp - lp) / lp * 100 / 240;
-                
-                // 估算完成做T需要的时间（分钟）
-                const estimatedTimeNeeded = movePctNeeded / Math.max(avgVolatilityPerMin, 0.001);
-                
-                // 时间充裕度评分
-                const timeRatio = timeRemaining / Math.max(estimatedTimeNeeded, 1);
-                if (timeRatio >= 3) timeWindowScore = 10;      // 时间非常充裕
-                else if (timeRatio >= 2) timeWindowScore = 8; // 时间充裕
-                else if (timeRatio >= 1.5) timeWindowScore = 6; // 时间刚好
-                else if (timeRatio >= 1) timeWindowScore = 3;  // 时间紧张
-                else timeWindowScore = 1;                       // 时间不足，高风险
+                if (timeRemaining >= 180) {
+                    timeWindowScore = 10;
+                } else if (timeRemaining >= 90) {
+                    timeWindowScore = 9;
+                } else if (timeRemaining >= 45) {
+                    timeWindowScore = 7;
+                } else if (timeRemaining >= 20) {
+                    timeWindowScore = 5;
+                } else {
+                    timeWindowScore = 2;
+                }
 
                 // 尾盘特殊处理：正T大幅扣分，反T加分
                 let lateDayPenalty = 0;
                 if (isLateDay && t.action === 'BUY_THEN_SELL') {
-                    lateDayPenalty = -8; // 尾盘正T风险高
+                    lateDayPenalty = -5;
                 }
                 if (isLateDay && t.action === 'SELL_THEN_BUY') {
-                    lateDayPenalty = 3; // 尾盘反T相对安全（先卖出锁定收益）
+                    lateDayPenalty = 2;
                 }
-                
+
                 // 优先级权重
-                const prioWeight = 4 - (t.priority ?? 3);
-                
-                // 总评分：盈利×2 + 卖出可达×2 + 买入可达×1 + 买入时间可达×2 + 时间窗口×3 + 尾盘调整 + 优先级
-                const score = profitScore * 2 + sellReachableScore * 2 + buyReachableScore + buyTimeScore * 2 + timeWindowScore * 3 + lateDayPenalty + prioWeight;
+                const prioWeight = (4 - (t.priority ?? 3)) * 2;
+
+                // 总评分：盈利×3 主导 + 可达性 ×2.5 + 时间 ×0.5 + 尾盘调整 + 优先级×2
+                let score = profitScore * 3
+                    + Math.round(sellReachableScore * 1.5) + buyReachableScore
+                    + buyTimeScore
+                    + Math.round(timeWindowScore * 0.5)
+                    + lateDayPenalty
+                    + prioWeight;
+
+                // 惯性机制：如果这个方案是上一次选中的 bestT，加 5 分
+                if (lastBestTName && t.name === lastBestTName) {
+                    score += 5;
+                }
                 if (score > bestScore) {
                     bestScore = score;
                     bestT = t;
+                    bestT._adjustedBuyPrice = buyP;
                 }
             }
             // 过夜风险评级
@@ -6471,44 +6517,64 @@ class StrategyEngine {
                 overnightAdvice = '建议当日了结，避免隔夜风险';
             }
 
-            // 时间窗口评级
-            const bp = bestT.buy_price ?? cp;
-            const sp = bestT.sell_price ?? cp;
-            const totalMoveNeeded = Math.abs(cp - bp) + Math.abs(sp - bp);
-            const movePctNeeded = totalMoveNeeded / cp * 100;
-            const avgVolPerMin = (hp - lp) / lp * 100 / 240;
-            const estTimeNeeded = movePctNeeded / Math.max(avgVolPerMin, 0.001);
-            const timeRatio = timeRemaining / Math.max(estTimeNeeded, 1);
-            
+            // 时间窗口评级：直接基于剩余交易时间（timeRemaining）和时段判断
+            // 之前用 (hp-lp)/240 估算每分钟波动率再算 estTimeNeeded，对早盘严重低估
+            // （早盘半小时波动常占全天一半），导致早盘误判为"不足"。改为直接基于剩余时间。
             let timeWindowLevel = '充足';
             let timeWindowColor = 'green';
-            if (timeRatio >= 2) { timeWindowLevel = '充足'; timeWindowColor = 'green'; }
-            else if (timeRatio >= 1.5) { timeWindowLevel = '适中'; timeWindowColor = 'green'; }
-            else if (timeRatio >= 1) { timeWindowLevel = '紧张'; timeWindowColor = 'yellow'; }
-            else { timeWindowLevel = '不足'; timeWindowColor = 'red'; }
+            if (timeSession === '盘前' || timeSession === '午间休市') {
+                timeWindowLevel = '充足';
+                timeWindowColor = 'green';
+            } else if (timeRemaining >= 180) {
+                // 早盘 + 午盘早段：时间非常充裕
+                timeWindowLevel = '充足';
+                timeWindowColor = 'green';
+            } else if (timeRemaining >= 90) {
+                // 午盘：时间充裕
+                timeWindowLevel = '充足';
+                timeWindowColor = 'green';
+            } else if (timeRemaining >= 45) {
+                // 午盘末/尾盘前段：时间适中
+                timeWindowLevel = '适中';
+                timeWindowColor = 'green';
+            } else if (timeRemaining >= 20) {
+                // 尾盘中段：时间紧张
+                timeWindowLevel = '紧张';
+                timeWindowColor = 'yellow';
+            } else {
+                // 尾盘末段：时间严重不足
+                timeWindowLevel = '不足';
+                timeWindowColor = 'red';
+            }
 
-            summary.best_t = {
-                name: bestT.name,
-                entry_price: cp,
-                buy_price: bestT.buy_price ?? cp,
-                sell_price: bestT.sell_price ?? cp,
-                profit_potential: (() => {
-                    const bp2 = bestT.buy_price ?? cp;
-                    const sp2 = bestT.sell_price ?? cp;
-                    if (bp2 <= 0 || sp2 <= 0) return null;
-                    return Math.round(((sp2 - bp2) / bp2 * 100 - feeRate * 100 * 2) * 100) / 100;
-                })(),
-                loss_risk: bestT.loss_risk ?? null,
-                risk_reward: bestT.risk_reward ?? null,
-                action: bestT.action,
-                success_rate: bestT.success_rate ?? null,
-                overnight_risk: overnightRisk,
-                overnight_advice: overnightAdvice,
-                time_session: timeSession,
-                time_window: timeWindowLevel,
-                time_window_color: timeWindowColor,
-                time_remaining: timeRemaining,
-            };
+            if (bestT) {
+                // 使用调整后的安全买入价（确保不高于现价，避免跌破买入价导致亏损）
+                const finalBuyPrice = bestT._adjustedBuyPrice != null ? bestT._adjustedBuyPrice : (bestT.buy_price ?? cp);
+                const finalSellPrice = bestT.sell_price ?? cp;
+                // 计算最终利润（基于调整后的买入价）
+                const finalProfitPct = (finalBuyPrice > 0 && finalSellPrice > 0)
+                    ? Math.round(((finalSellPrice - finalBuyPrice) / finalBuyPrice * 100 - feeRate * 100 * 2) * 100) / 100
+                    : null;
+
+                summary.best_t = {
+                    name: bestT.name,
+                    entry_price: cp,
+                    buy_price: finalBuyPrice,
+                    sell_price: finalSellPrice,
+                    profit_potential: finalProfitPct,
+                    loss_risk: bestT.loss_risk ?? null,
+                    risk_reward: bestT.risk_reward ?? null,
+                    action: bestT.action,
+                    success_rate: bestT.success_rate ?? null,
+                    overnight_risk: overnightRisk,
+                    overnight_advice: overnightAdvice,
+                    time_session: timeSession,
+                    time_window: timeWindowLevel,
+                    time_window_color: timeWindowColor,
+                    time_remaining: timeRemaining,
+                    has_holdings: holdings > 0,
+                };
+            }
         }
 
         // ============ 今日价格预测 ============
@@ -6868,12 +6934,10 @@ class StrategyEngine {
             let fusionScore = 0;
             let fusionDetails = [];
             
-            const buySignals = results.filter(r => ['BUY', 'STRONG_BUY'].includes(r.action)).length;
-            const sellSignals = results.filter(r => ['SELL', 'STRONG_SELL'].includes(r.action)).length;
-            const holdSignals = results.filter(r => ['HOLD', 'WATCH'].includes(r.action)).length;
-            
-            // 策略投票分数
-            const strategyScore = (buySignals - sellSignals) / Math.max(buySignals + sellSignals, 1) * 100;
+            // 策略投票分数（与核心建议保持一致，使用 buySignals/sellSignals）
+            const buyCount = buySignals.length;
+            const sellCount = sellSignals.length;
+            const strategyScore = (buyCount - sellCount) / Math.max(buyCount + sellCount, 1) * 100;
             fusionDetails.push({ name: '策略投票', score: strategyScore });
             
             // 趋势因子
@@ -6979,6 +7043,9 @@ class StrategyEngine {
             watch_signals: watchCount,
             message: `已分析${total}种策略（共定义${totalDefined}种），其中${watchCount}个为观望状态`
         };
+
+        // 保存到 instance，用于 bestT 惯性（避免价格微动导致 bestT 反复切换）
+        this._lastSummary = summary;
 
         return [results, summary];
     }

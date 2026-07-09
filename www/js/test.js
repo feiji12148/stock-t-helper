@@ -316,7 +316,7 @@ test('T-plan generation (正T/反T/箱体)', () => {
 });
 
 // ========== 持仓为0时做T方案测试 ==========
-test('Holdings=0 should not generate T-plans', () => {
+test('Holdings=0 best_t has_holdings should be false', () => {
     const stock = {
         current_price: 10.00,
         open_price: 9.90,
@@ -339,13 +339,12 @@ test('Holdings=0 should not generate T-plans', () => {
             volume: 1000000
         });
     }
-    // holdings=0 时不应生成做T方案
+    // holdings=0 时仍可生成做T方案作为参考，但 has_holdings 应为 false
     const result = engine.runAllStrategies(stock, klines, 0, {});
     const [, summary] = result;
 
-    // holdings=0 时 best_t 应该为 null 或不存在
-    if (summary.best_t) {
-        throw new Error('best_t should not be generated when holdings=0');
+    if (summary.best_t && summary.best_t.has_holdings !== false) {
+        throw new Error('best_t.has_holdings should be false when holdings=0');
     }
 });
 
@@ -498,6 +497,173 @@ test('Profit calculation includes fee deduction', () => {
                 throw new Error('Net profit should be less than gross profit after fee deduction');
             }
         }
+    }
+});
+
+// ========== 早盘时间窗口修复测试 ==========
+test('Morning session time window should not be marked as 不足 (insufficient)', () => {
+    // 修复：之前用 (hp-lp)/240 估算波动率导致 estTimeNeeded 偏大，
+    // 早盘误判为"不足"。现在直接基于剩余时间判断。
+    const stock = {
+        current_price: 10.00,
+        open_price: 9.90,
+        high_price: 10.50,
+        low_price: 9.50,
+        prev_close: 9.80,
+        volume: 1000000,
+        change_percent: 2.04,
+        amount: 100000000,
+        name: '早盘测试',
+        code: 'TEST017'
+    };
+    const klines = [];
+    for (let i = 0; i < 30; i++) {
+        klines.push({
+            close: 9.5 + Math.random() * 1,
+            open: 9.5 + Math.random() * 1,
+            high: 9.3 + Math.random() * 1.5,
+            low: 9.2 + Math.random() * 0.8,
+            volume: 1000000
+        });
+    }
+    const result = engine.runAllStrategies(stock, klines, 1000, {});
+    const [, summary] = result;
+
+    if (!summary.best_t) {
+        // 没有可执行的做T方案是允许的（持仓信号不满足时）
+        console.log('  (skipped: no best_t generated)');
+        return;
+    }
+
+    const tw = summary.best_t.time_window;
+    const tr = summary.best_t.time_remaining;
+    const session = summary.best_t.time_session;
+
+    // 验证 time_window 字段存在且是合法值
+    const validWindows = ['充足', '适中', '紧张', '不足'];
+    if (!validWindows.includes(tw)) {
+        throw new Error(`Invalid time_window value: ${tw}`);
+    }
+
+    // 验证 time_window_color 字段存在
+    const validColors = ['green', 'yellow', 'red'];
+    if (!validColors.includes(summary.best_t.time_window_color)) {
+        throw new Error(`Invalid time_window_color: ${summary.best_t.time_window_color}`);
+    }
+
+    // 关键修复：time_remaining >= 90（午盘+早盘时段）必须不是"不足"
+    if (tr != null && tr >= 90 && tw === '不足') {
+        throw new Error(`Time window misjudged: remaining=${tr}min (>=90) but window=${tw}. 早盘/午盘不应判为"不足"`);
+    }
+
+    // 验证 session 字段存在
+    if (!session) {
+        throw new Error('time_session is missing');
+    }
+});
+
+// ========== bestT 稳定性（不飘忽）测试 ==========
+test('bestT should remain stable across consecutive analyses', () => {
+    // 修复：buyTimeScore 用实时股价 cp 计算，导致 bestT 在两次刷新间反复切换
+    // 验证：相同输入两次调用 runAllStrategies，best_t.name 应保持一致
+    const stock = {
+        current_price: 10.00,
+        open_price: 9.90,
+        high_price: 10.50,
+        low_price: 9.50,
+        prev_close: 9.80,
+        volume: 1000000,
+        change_percent: 2.04,
+        amount: 100000000,
+        name: '稳定性测试',
+        code: 'TEST018'
+    };
+    const klines = [];
+    for (let i = 0; i < 30; i++) {
+        klines.push({
+            close: 9.5 + Math.random() * 1,
+            open: 9.5 + Math.random() * 1,
+            high: 9.3 + Math.random() * 1.5,
+            low: 9.2 + Math.random() * 0.8,
+            volume: 1000000
+        });
+    }
+    // 第一次分析
+    const r1 = engine.runAllStrategies(stock, klines, 1000, {});
+    const [, s1] = r1;
+    if (!s1.best_t) {
+        console.log('  (skipped: no best_t generated)');
+        return;
+    }
+    const name1 = s1.best_t.name;
+
+    // 模拟 0.01 元价格微动（实际刷新时最常见的变化幅度）
+    const stock2 = { ...stock, current_price: stock.current_price + 0.01 };
+    const r2 = engine.runAllStrategies(stock2, klines, 1000, {});
+    const [, s2] = r2;
+    if (!s2.best_t) {
+        console.log('  (skipped: no best_t on 2nd call)');
+        return;
+    }
+    const name2 = s2.best_t.name;
+
+    // 验证：±0.01 元的微动不应让 best_t 切换
+    if (name1 !== name2) {
+        throw new Error(`bestT switched on 0.01 price change: '${name1}' → '${name2}'（应保持稳定）`);
+    }
+});
+
+// ========== 买入价确保盈利测试 ==========
+test('best_t.buy_price should not exceed current_price (no loss risk)', () => {
+    // 修复：之前策略给出的买入价可能 > 现价，导致股价跌到买入价以下就亏损
+    // 现在强制约束：买入价必须 <= 现价，否则自动调整为现价的 98.5%
+    const stock = {
+        current_price: 10.00,
+        open_price: 9.90,
+        high_price: 10.80,
+        low_price: 9.50,
+        prev_close: 9.80,
+        volume: 1000000,
+        change_percent: 2.04,
+        amount: 100000000,
+        name: '盈利测试',
+        code: 'TEST019'
+    };
+    const klines = [];
+    for (let i = 0; i < 30; i++) {
+        klines.push({
+            close: 9.5 + Math.random() * 1,
+            open: 9.5 + Math.random() * 1,
+            high: 9.3 + Math.random() * 1.5,
+            low: 9.2 + Math.random() * 0.8,
+            volume: 1000000
+        });
+    }
+    const result = engine.runAllStrategies(stock, klines, 1000, {});
+    const [, summary] = result;
+
+    if (!summary.best_t) {
+        console.log('  (skipped: no best_t generated)');
+        return;
+    }
+
+    const buyPrice = summary.best_t.buy_price;
+    const sellPrice = summary.best_t.sell_price;
+    const cp = summary.current_price;
+
+    // 关键约束：买入价必须 <= 现价（否则会跌破买入价导致亏损）
+    if (buyPrice > cp) {
+        throw new Error(`买入价 ${buyPrice} 高于现价 ${cp}，会导致跌破买入价亏损`);
+    }
+
+    // 卖出价必须 > 买入价（保证有利润空间）
+    if (sellPrice <= buyPrice) {
+        throw new Error(`卖出价 ${sellPrice} 低于买入价 ${buyPrice}，无利润空间`);
+    }
+
+    // 利润必须为正（扣除手续费后）
+    if (summary.best_t.profit_potential != null && summary.best_t.profit_potential <= 0) {
+        throw new Error(`profit_potential=${summary.best_t.profit_potential} 应为正`);
     }
 });
 
