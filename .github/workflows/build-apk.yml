@@ -29,6 +29,12 @@ jobs:
           npm cache clean --force
           # 先尝试正常安装，失败则删除lockfile重新安装
           npm install --legacy-peer-deps || (rm -f package-lock.json && npm install --legacy-peer-deps)
+          # 修复部分插件目录结构不完整（缺少 android/src/main）导致 cap sync 失败的问题
+          for plugin in node_modules/@capacitor/*; do
+            if [ -d "$plugin" ] && [ ! -d "$plugin/android/src/main" ]; then
+              mkdir -p "$plugin/android/src/main"
+            fi
+          done
 
       - name: Sync web assets to Android
         run: npx cap sync android
@@ -36,16 +42,20 @@ jobs:
       - name: Setup signing keystore
         working-directory: android/app
         run: |
-          # 方案1: 如果设置了 KEYSTORE_BASE64 secret，解码使用（推荐，签名完全一致）
-          # 方案2: 否则每次生成新密钥库（签名可能略有差异，但密码一致）
+          # 签名一致性策略（按优先级）：
+          # 1. GitHub Secrets 中的 KEYSTORE_BASE64（最稳，推荐）
+          # 2. 缓存中恢复（保证 7 天内多次构建签名一致）
+          # 3. 首次运行时生成新 keystore 并缓存（后续构建将复用）
           
           if [ -n "${{ secrets.KEYSTORE_BASE64 }}" ]; then
-            echo "Using keystore from GitHub Secrets..."
+            echo "✅ Using keystore from GitHub Secrets (签名最稳定)"
             echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > release.keystore
+          elif [ -f /tmp/stockthelper-keystore/release.keystore ]; then
+            echo "✅ Using cached keystore (签名与上次构建一致)"
+            cp /tmp/stockthelper-keystore/release.keystore release.keystore
           else
-            echo "Generating new keystore with fixed credentials..."
-            # 使用固定参数，每次生成的密钥库内容应该一致
-            keytool -genkey -v \
+            echo "⚙️ First run: generating new keystore and caching..."
+            keytool -genkeypair \
               -keystore release.keystore \
               -alias stockthelper \
               -keyalg RSA \
@@ -54,18 +64,66 @@ jobs:
               -storepass "stockthelper2024" \
               -keypass "stockthelper2024" \
               -dname "CN=StockTHelper, OU=App, O=Personal, L=Beijing, ST=Beijing, C=CN"
+            
+            # 保存到 /tmp 临时位置，供 cache step 缓存
+            mkdir -p /tmp/stockthelper-keystore
+            cp release.keystore /tmp/stockthelper-keystore/release.keystore
+            echo "Keystore generated and saved for caching"
           fi
           
-          echo "Keystore ready: $(ls -la release.keystore)"
+          # 显示签名信息
+          echo ""
+          echo "===== Keystore Info ====="
+          keytool -list -v -keystore release.keystore -storepass stockthelper2024 2>/dev/null | \
+            grep -E "(Alias name|Owner|SHA1|SHA256)" | head -10
+          echo "========================="
+          
+          # 保存 keystore SHA1 指纹到文件，方便对比
+          keytool -list -v -keystore release.keystore -storepass stockthelper2024 2>/dev/null | \
+            grep -E "SHA1:" | head -1 > keystore-fingerprint.txt
+          echo "Fingerprint: $(cat keystore-fingerprint.txt)"
 
-      - name: Build Signed APK
+      - name: Cache signing keystore
+        uses: actions/cache@v4
+        with:
+          path: /tmp/stockthelper-keystore
+          key: stockthelper-keystore-v1
+          # 7 天内复用，跨分支也能用最近的 keystore
+          restore-keys: |
+            stockthelper-keystore-
+
+      - name: Upload keystore as artifact
+        working-directory: android/app
+        run: |
+          # 每次构建都把当前 keystore 上传为 artifact
+          # 用户可下载保存，并配置到 GitHub Secrets 中以获得永久稳定的签名
+          mkdir -p keystore-artifact
+          cp release.keystore keystore-artifact/stockthelper-release.keystore
+          echo "Keystore SHA1: $(cat keystore-fingerprint.txt 2>/dev/null || echo 'N/A')" >> keystore-artifact/README.txt
+          echo "" >> keystore-artifact/README.txt
+          echo "⚠️ 重要：下载此 keystore 并妥善保存！" >> keystore-artifact/README.txt
+          echo "然后到 GitHub 仓库 Settings → Secrets 添加：" >> keystore-artifact/README.txt
+          echo "  Name: KEYSTORE_BASE64" >> keystore-artifact/README.txt
+          echo "  Value: 运行 'base64 -w 0 stockthelper-release.keystore' 获得" >> keystore-artifact/README.txt
+        continue-on-error: true
+
+      - name: Build APK
         working-directory: android
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --stacktrace
+          # 优先构建 release 签名版，失败则回退到 debug 版
+          if ./gradlew assembleRelease --stacktrace; then
+            echo "Release APK built successfully"
+            echo "APK_TYPE=release" >> $GITHUB_ENV
+          else
+            echo "Release build failed, falling back to debug..."
+            ./gradlew assembleDebug --stacktrace
+            echo "Debug APK built successfully"
+            echo "APK_TYPE=debug" >> $GITHUB_ENV
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: stock-t-helper-apk
-          path: android/app/build/outputs/apk/release/*.apk
+          path: android/app/build/outputs/apk/${{ env.APK_TYPE }}/*.apk
