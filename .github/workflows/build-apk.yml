@@ -82,6 +82,21 @@ jobs:
           keytool -list -v -keystore release.keystore -storepass stockthelper2024 2>/dev/null | \
             grep -E "SHA1:" | head -1 > keystore-fingerprint.txt
           echo "Fingerprint: $(cat keystore-fingerprint.txt)"
+          
+          # 输出 keystore 的 base64 编码（方便复制到 GitHub Secrets）
+          echo ""
+          echo "===== KEYSTORE_BASE64 (复制下面这一行到 GitHub Secret) ====="
+          base64 -w 0 release.keystore
+          echo ""
+          echo "============================================================"
+          echo "💡 操作步骤："
+          echo "   1. 完整复制上面那行 base64 字符串"
+          echo "   2. 进入 GitHub 仓库 → Settings → Secrets and variables → Actions"
+          echo "   3. New repository secret"
+          echo "   4. Name: KEYSTORE_BASE64"
+          echo "   5. Value: 粘贴刚才复制的字符串"
+          echo "   6. 点击 Add secret"
+          echo "   7. 重新触发构建，以后所有版本签名一致"
 
       - name: Cache signing keystore
         uses: actions/cache@v4
