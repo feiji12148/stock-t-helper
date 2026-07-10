@@ -132,7 +132,10 @@
             <!-- 做T信号总览 -->
             <div id="signalCard" class="card" style="display:none;">
                 <div class="signal-panel">
-                    <div class="signal-panel-title">⚡ 做T信号总览</div>
+                    <div class="signal-panel-title" style="display:flex;justify-content:space-between;align-items:center;">
+                        <span>⚡ 做T信号总览</span>
+                        <span class="text-tiny" style="cursor:pointer;color:var(--text-muted);" onclick="hideSignalCard()">隐藏</span>
+                    </div>
                     <div class="signal-main" id="signalMainText">等待分析...</div>
                     <div class="signal-detail" id="signalDetailText"></div>
                     <div class="signal-prices">
@@ -392,11 +395,12 @@
                         <div class="card-title"><span class="icon">⚡</span> 最优做T方案（确保盈利）</div>
                         <div id="strategyPlanTSection" class="t-plan-card t-plan-box">
                             <div class="t-plan-header">
-                                <div class="text-caption" id="strategyPlanTName">--</div>
+                                <div class="t-plan-title">⚡ 最优做T方案</div>
                                 <div class="t-plan-badge" id="strategyPlanTAction">--</div>
                             </div>
+                            <div class="t-plan-name" id="strategyPlanTName">--</div>
                             <div class="t-plan-prices">
-                                <div class="t-plan-price-item">
+                                <div class="t-plan-price-item" id="strategyPlanTBuyItem">
                                     <div class="t-plan-price-label">买入价</div>
                                     <div class="t-plan-price-value" style="color:var(--green);" id="strategyPlanTBuy">--</div>
                                 </div>
@@ -1002,6 +1006,18 @@
                 </div>
                 <label class="toggle">
                     <input type="checkbox" id="showChangePercent" checked onchange="saveSettings()">
+                    <span class="toggle-slider"></span>
+                </label>
+            </div>
+
+            <!-- 显示做T信号总览 -->
+            <div class="setting-item">
+                <div class="setting-label">
+                    <div class="setting-title">显示做T信号总览</div>
+                    <div class="setting-desc">首页显示做T信号总览卡片</div>
+                </div>
+                <label class="toggle">
+                    <input type="checkbox" id="showSignalCard" checked onchange="saveSettings(); applySignalCardDisplay();">
                     <span class="toggle-slider"></span>
                 </label>
             </div>

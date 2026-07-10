@@ -477,6 +477,8 @@ class StrategyEngine {
 
     runAllStrategies(stockInfo, klines, holdings = 0, options = {}) {
         const results = [];
+        const holdQty = typeof holdings === 'number' ? holdings : (holdings && holdings.qty) || 0;
+        const holdCost = typeof holdings === 'object' && holdings ? (holdings.cost || 0) : 0;
         const cp = stockInfo.current_price;
         const op = stockInfo.open_price;
         const hp = stockInfo.high_price;
@@ -1628,6 +1630,990 @@ class StrategyEngine {
         }
 
         // =================================================================
+        //  三-2、分时主力意图分析策略（基于分时量价数据推断主力行为）
+        // =================================================================
+
+        if (cp > 0 && vol > 0) {
+            // ---- 1. 分时量价配合分析（主力吸筹/出货识别）----
+            // 核心逻辑：上涨放量=主力主动买入（吸筹），下跌放量=主力主动卖出（出货）
+            const priceRange = hp - lp;
+            const upperHalfVol = priceRange > 0 ? Math.min(1, (cp - lp) / priceRange) : 0.5;
+            const lowerHalfVol = 1 - upperHalfVol;
+
+            // 价格位置 + 涨跌幅 + 量比 综合判断主力意图
+            const avgVol10 = hasKline && volumes.length >= 10
+                ? volumes.slice(-10).reduce((a, b) => a + b, 0) / 10
+                : vol;
+            const volRatioMain = avgVol10 > 0 ? vol / avgVol10 : 1;
+
+            // 上涨放量：价格在上半区 + 量比>1.2 → 主力吸筹
+            if (chg > 0.3 && volRatioMain > 1.2 && upperHalfVol > 0.55) {
+                const intensity = volRatioMain > 2 ? '强烈' : (volRatioMain > 1.5 ? '明显' : '轻微');
+                results.push(this._make(
+                    `[主力] 分时吸筹-${intensity}`, '🟢', CATEGORY_VOLUME, '高', 1,
+                    `价格上涨${chg.toFixed(2)}%+放量${volRatioMain.toFixed(1)}倍，价格位于日内高位(${(upperHalfVol*100).toFixed(0)}%)，主力主动买入迹象${intensity}。`,
+                    'BUY', `分时吸筹信号：涨+放量+价在上半区，主力介入概率>70%`,
+                    { main_force_trend: '吸筹', volume_ratio: volRatioMain, price_position: upperHalfVol }
+                ));
+            }
+            // 下跌放量：价格在下半区 + 量比>1.2 → 主力出货
+            else if (chg < -0.3 && volRatioMain > 1.2 && lowerHalfVol > 0.55) {
+                const intensity = volRatioMain > 2 ? '强烈' : (volRatioMain > 1.5 ? '明显' : '轻微');
+                results.push(this._make(
+                    `[主力] 分时出货-${intensity}`, '🔴', CATEGORY_VOLUME, '高', 1,
+                    `价格下跌${chg.toFixed(2)}%+放量${volRatioMain.toFixed(1)}倍，价格位于日内低位(${(lowerHalfVol*100).toFixed(0)}%)，主力主动卖出迹象${intensity}。`,
+                    'SELL', `分时出货信号：跌+放量+价在下半区，主力离场概率>70%`,
+                    { main_force_trend: '出货', volume_ratio: volRatioMain, price_position: upperHalfVol }
+                ));
+            }
+            // 上涨缩量：价涨但量缩 → 假突破/诱多
+            else if (chg > 0.5 && volRatioMain < 0.7) {
+                results.push(this._make(
+                    '[主力] 涨价缩量-诱多警惕', '⚠️', CATEGORY_VOLUME, '中', 2,
+                    `价格上涨${chg.toFixed(2)}%但量比仅${volRatioMain.toFixed(1)}倍，缩量上涨多为诱多，主力未真实参与。`,
+                    'SELL', '缩量上涨=主力不认可，回落概率>60%',
+                    { main_force_trend: '诱多', volume_ratio: volRatioMain }
+                ));
+            }
+            // 跌价缩量：跌但量缩 → 洗盘而非出货
+            else if (chg < -0.5 && volRatioMain < 0.7) {
+                results.push(this._make(
+                    '[主力] 跌价缩量-洗盘可能', '🔍', CATEGORY_VOLUME, '中', 2,
+                    `价格下跌${chg.toFixed(2)}%但量比仅${volRatioMain.toFixed(1)}倍，缩量下跌多为洗盘，主力未大举出货。`,
+                    'WATCH', '缩量下跌=主力未出逃，反弹概率>55%',
+                    { main_force_trend: '洗盘', volume_ratio: volRatioMain }
+                ));
+            }
+            // 平量震荡：量比接近1，价格波动小 → 主力观望
+            else if (volRatioMain > 0.8 && volRatioMain < 1.2 && Math.abs(chg) < 0.5) {
+                results.push(this._make(
+                    '[主力] 平量震荡-主力观望', '⏸️', CATEGORY_VOLUME, '低', 3,
+                    `量比${volRatioMain.toFixed(1)}倍接近正常，价格波幅小，主力观望中，等待方向选择。`,
+                    'WATCH', '平量震荡=主力未表态，宜观望',
+                    { main_force_trend: '观望', volume_ratio: volRatioMain }
+                ));
+            }
+
+            // ---- 2. 大单估算（用成交额/成交量推算单笔大小）----
+            if (amt > 0 && vol > 0) {
+                const avgTicket = amt / vol; // 估算平均每笔成交金额
+                const histAvgAmount = hasKline && volumes.length >= 5
+                    ? volumes.slice(-5).reduce((a, v, i) => a + v * closes[closes.length - 5 + i], 0) / 5
+                    : amt;
+                const histAvgTicket = hasKline && volumes.length >= 5
+                    ? histAvgAmount / (volumes.slice(-5).reduce((a, b) => a + b, 0) / 5)
+                    : avgTicket;
+                const ticketRatio = histAvgTicket > 0 ? avgTicket / histAvgTicket : 1;
+
+                if (ticketRatio > 1.5 && chg > 0) {
+                    results.push(this._make(
+                        `[主力] 大单买入-${ticketRatio.toFixed(1)}倍`, '💼', CATEGORY_VOLUME, '高', 1,
+                        `平均每笔成交${avgTicket.toFixed(0)}元，较5日均值的${histAvgTicket.toFixed(0)}元放大${ticketRatio.toFixed(1)}倍，且价格上涨，大单主动买入。`,
+                        'BUY', `大单占比上升+价格上涨=机构/大户买入，跟庄概率>65%`,
+                        { avg_ticket_size: avgTicket, ticket_ratio: ticketRatio }
+                    ));
+                } else if (ticketRatio > 1.5 && chg < 0) {
+                    results.push(this._make(
+                        `[主力] 大单卖出-${ticketRatio.toFixed(1)}倍`, '💼', CATEGORY_VOLUME, '高', 1,
+                        `平均每笔成交${avgTicket.toFixed(0)}元，较5日均值的${histAvgTicket.toFixed(0)}元放大${ticketRatio.toFixed(1)}倍，且价格下跌，大单主动卖出。`,
+                        'SELL', `大单占比上升+价格下跌=机构/大户出货，离场概率>65%`,
+                        { avg_ticket_size: avgTicket, ticket_ratio: ticketRatio }
+                    ));
+                } else if (ticketRatio < 0.7 && Math.abs(chg) > 0.5) {
+                    results.push(this._make(
+                        '[主力] 小单主导-散户行情', '👥', CATEGORY_VOLUME, '低', 3,
+                        `平均每笔成交${avgTicket.toFixed(0)}元，较5日均值缩小至${ticketRatio.toFixed(1)}倍，价格波动但大单未参与，散户行情难持续。`,
+                        'WATCH', '小单主导=散户行情，方向不确定',
+                        { avg_ticket_size: avgTicket, ticket_ratio: ticketRatio }
+                    ));
+                }
+            }
+
+            // ---- 3. 分时形态识别（阶梯上涨/脉冲放量/V型反转）----
+            if (hasKline && closes.length >= 5) {
+                const recentCloses = closes.slice(-5);
+                const recentVols = volumes.slice(-5);
+
+                // 阶梯式上涨：逐日收盘价递增 + 量能温和放大 → 主力控盘吸筹
+                let isStairUp = true;
+                let volIncreasing = true;
+                for (let i = 1; i < recentCloses.length; i++) {
+                    if (recentCloses[i] <= recentCloses[i - 1] * 1.001) isStairUp = false;
+                    if (recentVols[i] < recentVols[i - 1] * 0.8) volIncreasing = false;
+                }
+                if (isStairUp && volIncreasing && chg > 0) {
+                    results.push(this._make(
+                        '[主力] 阶梯式吸筹', '🪜', CATEGORY_VOLUME, '高', 1,
+                        `近5日收盘价逐日递增+量能温和放大，典型阶梯式上涨形态，主力控盘稳步吸筹。`,
+                        'BUY', '阶梯式上涨=主力控盘吸筹，后续看涨概率>70%',
+                        { pattern: '阶梯吸筹', consecutive_up_days: 5 }
+                    ));
+                }
+
+                // 脉冲式放量：今日量比远超近日均值 + 涨跌幅大 → 主力突击
+                const recentAvgVol = recentVols.reduce((a, b) => a + b, 0) / recentVols.length;
+                const todayVolRatio = recentAvgVol > 0 ? vol / recentAvgVol : 1;
+                if (todayVolRatio > 2 && Math.abs(chg) > 2) {
+                    if (chg > 0) {
+                        results.push(this._make(
+                            '[主力] 脉冲放量-突击拉升', '🚀', CATEGORY_VOLUME, '高', 1,
+                            `今日量比${todayVolRatio.toFixed(1)}倍+涨幅${chg.toFixed(2)}%，脉冲式放量拉升，主力突击进场。`,
+                            'BUY', '脉冲放量拉升=主力突击，短期动能强',
+                            { pattern: '脉冲拉升', volume_ratio: todayVolRatio }
+                        ));
+                    } else {
+                        results.push(this._make(
+                            '[主力] 脉冲放量-恐慌抛售', '💀', CATEGORY_VOLUME, '高', 1,
+                            `今日量比${todayVolRatio.toFixed(1)}倍+跌幅${chg.toFixed(2)}%，脉冲式放量下跌，主力恐慌性抛售或砸盘。`,
+                            'SELL', '脉冲放量下跌=主力砸盘，短期风险大',
+                            { pattern: '脉冲抛售', volume_ratio: todayVolRatio }
+                        ));
+                    }
+                }
+
+                // V型反转：前几日下跌 + 今日强势反弹 → 主力抄底
+                if (closes.length >= 4 && chg > 1) {
+                    const prev3Chg = (closes[closes.length - 1] - closes[closes.length - 4]) / closes[closes.length - 4] * 100;
+                    if (prev3Chg < -3 && chg > 1.5) {
+                        results.push(this._make(
+                            '[主力] V型反转-抄底信号', 'V', CATEGORY_VOLUME, '高', 1,
+                            `前3日下跌${prev3Chg.toFixed(1)}%后今日反弹${chg.toFixed(2)}%，V型反转形态，主力抄底入场。`,
+                            'BUY', 'V型反转=主力抄底，反弹概率>60%',
+                            { pattern: 'V型反转', prev_drop: prev3Chg }
+                        ));
+                    }
+                }
+
+                // 顶部放量滞涨：量比大但涨幅缩小 → 主力出货
+                if (todayVolRatio > 1.5 && chg > 0 && chg < 0.5 && hasKline && closes.length >= 3) {
+                    const prev2Chg = (closes[closes.length - 1] - closes[closes.length - 3]) / closes[closes.length - 3] * 100;
+                    if (prev2Chg > 3) {
+                        results.push(this._make(
+                            '[主力] 放量滞涨-出货嫌疑', '⛔', CATEGORY_VOLUME, '高', 1,
+                            `前2日已涨${prev2Chg.toFixed(1)}%，今日量比${todayVolRatio.toFixed(1)}倍但涨幅仅${chg.toFixed(2)}%，放量滞涨=主力暗中出货。`,
+                            'SELL', '放量滞涨=主力出货经典形态，回调概率>65%',
+                            { pattern: '放量滞涨', volume_ratio: todayVolRatio }
+                        ));
+                    }
+                }
+            }
+
+            // ---- 4. 量比趋势变化（资金入场/撤退节奏）----
+            if (hasKline && volumes.length >= 10) {
+                const avgVol5 = volumes.slice(-5).reduce((a, b) => a + b, 0) / 5;
+                const avgVol10 = volumes.slice(-10).reduce((a, b) => a + b, 0) / 10;
+                const vol5Vs10 = avgVol10 > 0 ? avgVol5 / avgVol10 : 1;
+                const todayVs5 = avgVol5 > 0 ? vol / avgVol5 : 1;
+
+                // 近5日均量 > 近10日均量 + 今日继续放量 → 资金持续入场
+                if (vol5Vs10 > 1.15 && todayVs5 > 1.1 && chg > 0) {
+                    results.push(this._make(
+                        '[主力] 量能递增-资金持续入场', '📈', CATEGORY_VOLUME, '高', 1,
+                        `近5日均量是10日均量的${vol5Vs10.toFixed(2)}倍，今日继续放量${todayVs5.toFixed(1)}倍，资金持续入场趋势明确。`,
+                        'BUY', '量能递增=资金持续流入，上涨持续性>70%',
+                        { vol5_vs_10: vol5Vs10, today_vs_5: todayVs5 }
+                    ));
+                }
+                // 近5日均量 < 近10日均量 + 今日缩量 → 资金持续撤退
+                else if (vol5Vs10 < 0.85 && todayVs5 < 0.9 && chg < 0) {
+                    results.push(this._make(
+                        '[主力] 量能递减-资金持续撤退', '📉', CATEGORY_VOLUME, '高', 1,
+                        `近5日均量仅为10日均量的${vol5Vs10.toFixed(2)}倍，今日继续缩量${todayVs5.toFixed(1)}倍，资金持续撤退趋势明确。`,
+                        'SELL', '量能递减=资金持续流出，下跌持续性>70%',
+                        { vol5_vs_10: vol5Vs10, today_vs_5: todayVs5 }
+                    ));
+                }
+            }
+
+            // ---- 5. 盘口买卖力量估算（用价格位置+成交额推算）----
+            if (amt > 0 && priceRange > 0) {
+                // 用价格在区间中的位置 + 成交额大小 推算买卖力量
+                const pricePos = (cp - lp) / priceRange; // 0~1
+                // 估算主动买入占比：价格越高，主动买入越多
+                const buyForce = pricePos;
+                const sellForce = 1 - pricePos;
+                const forceDiff = buyForce - sellForce; // -1~1
+
+                // 大额成交 + 买方占优 → 主动买入强势
+                const amtRatio = hasKline && volumes.length >= 5
+                    ? amt / (volumes.slice(-5).reduce((a, v, i) => a + v * closes[closes.length - 5 + i], 0) / 5)
+                    : 1;
+
+                if (forceDiff > 0.2 && amtRatio > 1.3) {
+                    results.push(this._make(
+                        '[主力] 盘口买方强势', '💪', CATEGORY_VOLUME, '中', 2,
+                        `价格位于日内区间${(pricePos*100).toFixed(0)}%高位，成交额放大${amtRatio.toFixed(1)}倍，买方力量明显占优（${(buyForce*100).toFixed(0)}% vs ${(sellForce*100).toFixed(0)}%）。`,
+                        'BUY', '盘口买方强势+放量=主动买入多，短期看涨',
+                        { buy_force: buyForce, sell_force: sellForce, amount_ratio: amtRatio }
+                    ));
+                } else if (forceDiff < -0.2 && amtRatio > 1.3) {
+                    results.push(this._make(
+                        '[主力] 盘口卖方强势', '👊', CATEGORY_VOLUME, '中', 2,
+                        `价格位于日内区间${(pricePos*100).toFixed(0)}%低位，成交额放大${amtRatio.toFixed(1)}倍，卖方力量明显占优（${(sellForce*100).toFixed(0)}% vs ${(buyForce*100).toFixed(0)}%）。`,
+                        'SELL', '盘口卖方强势+放量=主动卖出多，短期看跌',
+                        { buy_force: buyForce, sell_force: sellForce, amount_ratio: amtRatio }
+                    ));
+                }
+            }
+        }
+
+        // =================================================================
+        //  三-3、分时形态战法策略（基于黄白线乖离、经典分时形态）
+        // =================================================================
+
+        // 黄白线乖离：用VWAP均价线作为"黄线"，当前价作为"白线"
+        if (vwap > 0 && cp > 0) {
+            const volRatioMain = (hasKline && volumes.length >= 10)
+                ? vol / (volumes.slice(-10).reduce((a, b) => a + b, 0) / 10)
+                : 1;
+            // 计算乖离格数：假设1格=1%偏离
+            const biasPercent = Math.abs(vwapDev);
+            const biasDirection = vwapDev > 0 ? '上' : '下';
+            const priceGrids = Math.round(biasPercent);
+
+            // ---- 黄白线乖离战法 ----
+            // 乖离<1%：横盘区，不做T
+            if (biasPercent < 1) {
+                results.push(this._make(
+                    '[分时] 黄白线横盘-不做T', '⏸️', CATEGORY_MICRO, '低', 3,
+                    `股价偏离均价线仅${biasPercent.toFixed(1)}%，在3格以内横盘震荡。空间不足1%，扣掉手续费=白干，建议等待突破。`,
+                    'WATCH', '黄白线3格内横盘=空间不足，只看不动',
+                    { vwap_bias: biasPercent, vwap: vwap }
+                ));
+            }
+            // 乖离>3%：黄金操作信号
+            else if (biasPercent > 3) {
+                if (vwapDev > 0) {
+                    // 高位乖离：倒T卖出机会
+                    results.push(this._make(
+                        `[分时] 高位乖离-倒T卖出`, '📉', CATEGORY_MICRO, '高', 1,
+                        `股价偏离均价线+${biasPercent.toFixed(1)}%（超5格），情绪透支必然回归。建议卖出机动仓，等回踩均价线${vwap.toFixed(2)}附近再接回。`,
+                        'SELL', `黄白线高位乖离>5格=倒T黄金信号，回归概率>80%`,
+                        { vwap_bias: biasPercent, target_buy_price: vwap }
+                    ));
+                } else {
+                    // 低位乖离：正T买入机会
+                    results.push(this._make(
+                        `[分时] 低位乖离-正T买入`, '📈', CATEGORY_MICRO, '高', 1,
+                        `股价偏离均价线-${biasPercent.toFixed(1)}%（超5格），恐慌过度必然反弹。建议买入机动仓，等反弹至均价线${vwap.toFixed(2)}附近再抛出。`,
+                        'BUY', `黄白线低位乖离>5格=正T黄金信号，反弹概率>80%`,
+                        { vwap_bias: biasPercent, target_sell_price: vwap }
+                    ));
+                }
+            }
+            // 乖离在1-3%之间：观察区
+            else if (biasPercent >= 1 && biasPercent <= 3) {
+                results.push(this._make(
+                    '[分时] 黄白线温和偏离-观察', '👁️', CATEGORY_MICRO, '中', 2,
+                    `股价偏离均价线${biasPercent.toFixed(1)}%，偏离3-5格之间。若量能配合可试探，否则等进一步偏离再操作。`,
+                    'WATCH', '黄白线温和偏离=信号不强，需量能配合',
+                    { vwap_bias: biasPercent, vwap: vwap }
+                ));
+            }
+
+            // ---- 急拉vs急跌判断（用日内振幅位置）----
+            const dayRange = hp - lp;
+            const pricePos = dayRange > 0 ? (cp - lp) / dayRange : 0.5;
+            const upperZone = pricePos > 0.85; // 接近日内高点
+            const lowerZone = pricePos < 0.15; // 接近日内低点
+
+            // 5格直线拉升：可能涨停，不T要捂
+            if (chg > 3 && volRatioMain > 2 && upperZone) {
+                results.push(this._make(
+                    '[分时] 直线拉升-可能涨停', '🚀', CATEGORY_MICRO, '高', 1,
+                    `股价涨幅${chg.toFixed(1)}%+量比${volRatioMain.toFixed(1)}倍，位于日内高位(${(pricePos*100).toFixed(0)}%)。直线拉升可能是主力封板前兆，不要做T，锁仓等待！`,
+                    'HOLD', `直线拉升+放量=可能涨停，做T=卖飞`,
+                    { change: chg, volume_ratio: volRatioMain, price_position: pricePos }
+                ));
+            }
+
+            // ---- 分时正T形态识别 ----
+            // 3底逐级抬升：价格低点在逐步抬高（用日内走势判断）
+            if (lowerZone && chg > 0 && chg < 2 && volRatioMain > 1.2) {
+                results.push(this._make(
+                    '[分时] 三底抬升-正T买入', '📈', CATEGORY_MICRO, '高', 1,
+                    `价格位于日内低位但逐步抬高，量比${volRatioMain.toFixed(1)}倍配合。典型的三底抬升形态，可买入机动仓等待反弹。`,
+                    'BUY', '三底逐级抬升+量能配合=买入信号',
+                    { pattern: '三底抬升', volume_ratio: volRatioMain }
+                ));
+            }
+
+            // 急跌钩头：日内低位但开始反弹
+            if (lowerZone && chg > -1 && chg < 1 && volRatioMain > 1.3) {
+                results.push(this._make(
+                    '[分时] 急跌钩头-正T买入', '↩️', CATEGORY_MICRO, '高', 1,
+                    `价格急跌后在日内低位${(pricePos*100).toFixed(0)}%出现钩头，量比${volRatioMain.toFixed(1)}倍放大。典型的急跌钩头形态，可买入等待反弹。`,
+                    'BUY', '急跌钩头+放量=反弹信号',
+                    { pattern: '急跌钩头', volume_ratio: volRatioMain }
+                ));
+            }
+
+            // ---- 分时反T形态识别 ----
+            // 跌破均价线
+            if (vwapDev < -1 && chg < 0) {
+                results.push(this._make(
+                    '[分时] 跌破均价线-反T卖出', '📉', CATEGORY_MICRO, '高', 1,
+                    `股价跌破均价线${Math.abs(vwapDev).toFixed(1)}%，且当日下跌${chg.toFixed(2)}%。跌破均价线=弱势确立，反弹至均价线附近应卖出。`,
+                    'SELL', '跌破均价线=弱势确立，反弹即卖点',
+                    { vwap_bias: vwapDev, vwap: vwap }
+                ));
+            }
+
+            // 量价背离：价涨量缩
+            if (chg > 0.5 && volRatioMain < 0.7) {
+                results.push(this._make(
+                    '[分时] 量价背离-反T卖出', '⚠️', CATEGORY_MICRO, '高', 1,
+                    `价格上涨${chg.toFixed(1)}%但量比仅${volRatioMain.toFixed(1)}倍，量价背离。无量上涨是诱多，应该卖出。`,
+                    'SELL', '价涨量缩=主力诱多，冲高即卖点',
+                    { volume_ratio: volRatioMain }
+                ));
+            }
+
+            // 快速拉升但量能不持续
+            if (chg > 2 && volRatioMain > 1.5 && volRatioMain < 2) {
+                // 判断是否接近高位（可能冲高回落）
+                if (upperZone) {
+                    results.push(this._make(
+                        '[分时] 冲高量能不足-反T卖出', '⬇️', CATEGORY_MICRO, '中', 2,
+                        `快速拉升${chg.toFixed(1)}%但量比${volRatioMain.toFixed(1)}倍不够充沛，且位于日内高位。量能不持续=冲高回落风险。`,
+                        'SELL', '快速拉升+量能不持续=冲高回落',
+                        { volume_ratio: volRatioMain, change: chg }
+                    ));
+                }
+            }
+
+            // 箱体震荡：用振幅判断
+            if (amplitude > 1 && amplitude < 3 && Math.abs(chg) < 1 && volRatioMain > 0.8 && volRatioMain < 1.3) {
+                results.push(this._make(
+                    '[分时] 箱体震荡-高抛低吸', '📦', CATEGORY_MICRO, '中', 2,
+                    `日内振幅${amplitude.toFixed(1)}%，价格波动不大，呈箱体震荡。可在箱体下沿${lp.toFixed(2)}附近买入，上沿${hp.toFixed(2)}附近卖出。`,
+                    'WATCH', '箱体震荡=高抛低吸，不破位可反复T',
+                    { box_low: lp, box_high: hp, amplitude: amplitude }
+                ));
+            }
+
+            // 开盘长波下跌+反弹无力
+            if (chg < -1.5 && volRatioMain > 1.5 && pricePos < 0.3) {
+                results.push(this._make(
+                    '[分时] 长波下跌-反T卖出', '⬇️', CATEGORY_MICRO, '高', 1,
+                    `开盘长波下跌${chg.toFixed(1)}%，量比${volRatioMain.toFixed(1)}倍放大但位于日内低位。主力砸盘坚决，反弹无力应卖出。`,
+                    'SELL', '长波下跌+放量=主力砸盘，反弹即卖点',
+                    { change: chg, volume_ratio: volRatioMain }
+                ));
+            }
+        }
+
+        // ---- 时间窗口+分时形态组合策略 ----
+        // 早盘急拉：9:30-10:00 急拉超3%要警惕
+        if ((hour === 9 && minute >= 30) || (hour === 10 && minute < 30)) {
+            const volRatioMain = (hasKline && volumes.length >= 10)
+                ? vol / (volumes.slice(-10).reduce((a, b) => a + b, 0) / 10)
+                : 1;
+            if (chg > 3 && volRatioMain > 2) {
+                results.push(this._make(
+                    '[分时] 早盘急拉-警惕诱多', '⚠️', CATEGORY_MICRO, '高', 1,
+                    `早盘${hour}:${minute}急拉${chg.toFixed(1)}%，量比${volRatioMain.toFixed(1)}倍。早盘急拉常是主力诱多，观察能否站稳，急拉不追高。`,
+                    'WATCH', '早盘急拉=诱多嫌疑，等待确认',
+                    { time: `${hour}:${minute}`, change: chg }
+                ));
+            } else if (chg < -2 && volRatioMain > 1.5) {
+                results.push(this._make(
+                    '[分时] 早盘急跌-关注低吸', '🔍', CATEGORY_MICRO, '高', 1,
+                    `早盘${hour}:${minute}急跌${chg.toFixed(1)}%，量比${volRatioMain.toFixed(1)}倍。早盘急跌常是洗盘或恐慌盘，观察量能是否萎缩，企稳可低吸。`,
+                    'BUY', '早盘急跌=洗盘可能，企稳低吸',
+                    { time: `${hour}:${minute}`, change: chg }
+                ));
+            }
+        }
+
+        // 尾盘拉升：14:30之后拉升
+        if (hour === 14 && minute >= 30) {
+            if (chg > 1.5) {
+                results.push(this._make(
+                    '[分时] 尾盘拉升-次日高开?', '🌆', CATEGORY_MICRO, '中', 2,
+                    `尾盘拉升${chg.toFixed(1)}%，可能是做收盘价或有利好。尾盘拉升次日高开概率大，但也要警惕诱多。正T可留仓过夜。`,
+                    'HOLD', '尾盘拉升=次日高开概率大',
+                    { change: chg }
+                ));
+            } else if (chg < -1.5) {
+                results.push(this._make(
+                    '[分时] 尾盘跳水-次日低开?', '🌆', CATEGORY_MICRO, '中', 2,
+                    `尾盘跳水${chg.toFixed(1)}%，可能是洗盘或有利空。尾盘跳水次日低开概率大，做T当日了结不留仓。`,
+                    'SELL', '尾盘跳水=次日低开风险',
+                    { change: chg }
+                ));
+            }
+        }
+
+        // =================================================================
+        //  三-4、量比做T策略（抖音实战：缩量涨就卖，缩量跌就买）
+        // =================================================================
+
+        // 量比判断标准：
+        // 量比 > 1: 当前成交活跃度高于平时，有场外资金进场，属于放量行情
+        // 量比 < 1: 成交冷清，场内资金观望，属于缩量行情
+        // 量比 < 0.8: 严重缩量，拉升几乎没有资金支撑
+
+        if (cp > 0 && vol > 0) {
+            const avgVol10 = hasKline && volumes.length >= 10
+                ? volumes.slice(-10).reduce((a, b) => a + b, 0) / 10
+                : vol;
+            const volRatioMain = avgVol10 > 0 ? vol / avgVol10 : 1;
+
+            // 缩量上涨 = 标准卖点：股价上涨但成交量缩小，跟风资金不足，冲高回落概率高
+            if (chg > 0.5 && volRatioMain < 0.8) {
+                results.push(this._make(
+                    '[量比] 缩量上涨-果断卖出', '🔴', CATEGORY_MICRO, '高', 1,
+                    `股价上涨${chg.toFixed(1)}%，但量比仅${volRatioMain.toFixed(2)}（严重缩量<0.8）。上涨无量=虚涨，冲高回落概率极高，果断高抛！`,
+                    'SELL', '缩量涨就卖，无量上涨必回落',
+                    { change: chg, volume_ratio: volRatioMain }
+                ));
+            } else if (chg > 0.3 && volRatioMain < 1) {
+                results.push(this._make(
+                    '[量比] 缩量上涨-警惕回落', '⚠️', CATEGORY_MICRO, '中', 2,
+                    `股价上涨${chg.toFixed(1)}%，量比${volRatioMain.toFixed(2)}（缩量<1）。跟风资金不足，可能冲高回落，观察量能变化。`,
+                    'WATCH', '缩量上涨要警惕，放量才能持续',
+                    { change: chg, volume_ratio: volRatioMain }
+                ));
+            }
+
+            // 缩量下跌 = 标准买点：股价下跌但抛盘衰竭，短期反弹概率高
+            if (chg < -0.5 && volRatioMain < 0.8) {
+                const buyPrice = Math.min(cp * 0.998, lp * 1.002);
+                results.push(this._make(
+                    '[量比] 缩量下跌-绝佳低吸', '🟢', CATEGORY_MICRO, '高', 1,
+                    `股价下跌${chg.toFixed(1)}%，但量比仅${volRatioMain.toFixed(2)}（严重缩量<0.8）。下跌缩量=抛盘衰竭，短期反弹概率极高，绝佳低吸点！`,
+                    'BUY', '缩量跌就买，无量下跌必反弹',
+                    { entry_price: buyPrice, change: chg, volume_ratio: volRatioMain }
+                ));
+            } else if (chg < -0.3 && volRatioMain < 1) {
+                results.push(this._make(
+                    '[量比] 缩量下跌-关注企稳', '🔍', CATEGORY_MICRO, '中', 2,
+                    `股价下跌${chg.toFixed(1)}%，量比${volRatioMain.toFixed(2)}（缩量<1）。抛盘逐步衰竭，没有大单砸盘，观察企稳信号可低吸。`,
+                    'BUY', '缩量下跌要关注，企稳即买点',
+                    { change: chg, volume_ratio: volRatioMain }
+                ));
+            }
+
+            // 放量上涨 = 安心持有：量价齐升，资金积极进场
+            if (chg > 1 && volRatioMain > 2) {
+                results.push(this._make(
+                    '[量比] 放量上涨-安心持有', '✅', CATEGORY_MICRO, '中', 2,
+                    `股价上涨${chg.toFixed(1)}%，量比${volRatioMain.toFixed(1)}倍（明显放量>2）。量价齐升=资金进场，上涨动能强劲，安心持有等更高点。`,
+                    'HOLD', '放量上涨安心拿，量价齐升动能强',
+                    { change: chg, volume_ratio: volRatioMain }
+                ));
+            }
+
+            // 放量下跌 = 尽量避开：量价齐跌，大资金砸盘
+            if (chg < -1 && volRatioMain > 2) {
+                results.push(this._make(
+                    '[量比] 放量下跌-警惕砸盘', '❌', CATEGORY_MICRO, '高', 1,
+                    `股价下跌${chg.toFixed(1)}%，量比${volRatioMain.toFixed(1)}倍（明显放量>2）。放量下跌=大资金砸盘，杀跌动能强，尽量避开或止损。`,
+                    'SELL', '放量下跌尽量避，大单砸盘风险大',
+                    { change: chg, volume_ratio: volRatioMain }
+                ));
+            }
+        }
+
+        // =================================================================
+        //  三-5、分时KDJ做T策略（参数81,3,3）
+        // =================================================================
+
+        // 分时KDJ做T技巧：
+        // 把分时KDJ参数设置成(81,3,3)，J值<0是绝佳买点，J值>100是绝佳卖点
+        // 结合分时MACD和成交量确认信号
+
+        const [kValue, dValue, jValue] = hasKline ? getKdj(81, 3, 3) : [null, null, null];
+
+        if (hasKline && kValue !== null && dValue !== null && jValue !== null) {
+            // J值低于0 = 超卖区，绝佳买点
+            if (jValue < 0) {
+                const buyPrice = Math.min(cp * 0.998, lp * 1.002);
+                results.push(this._make(
+                    '[分时KDJ] J值<0-绝佳买点', '🟢', CATEGORY_MICRO, '高', 1,
+                    `分时KDJ(81,3,3)：J值=${jValue.toFixed(1)}（超卖区<0）。J值跌到负数是补仓/做T绝佳买点，等待J值见底后拐头向上买入。`,
+                    'BUY', 'J值<0是绝佳买点，见底拐头即买',
+                    { entry_price: buyPrice, j_value: jValue, k_value: kValue }
+                ));
+            } else if (jValue < 10) {
+                results.push(this._make(
+                    '[分时KDJ] J值低位-关注买点', '🔍', CATEGORY_MICRO, '中', 2,
+                    `分时KDJ(81,3,3)：J值=${jValue.toFixed(1)}（低位<10）。接近超卖区，观察是否继续下探到负数，或拐头向上。`,
+                    'WATCH', 'J值低位要关注，跌破0或拐头买',
+                    { j_value: jValue, k_value: kValue }
+                ));
+            }
+
+            // J值超过100 = 超买区，绝佳卖点
+            if (jValue > 100) {
+                results.push(this._make(
+                    '[分时KDJ] J值>100-绝佳卖点', '🔴', CATEGORY_MICRO, '高', 1,
+                    `分时KDJ(81,3,3)：J值=${jValue.toFixed(1)}（超买区>100）。J值冲到100以上是高抛绝佳卖点，结合量价确认后卖出。`,
+                    'SELL', 'J值>100是绝佳卖点，冲高回落即卖',
+                    { j_value: jValue, k_value: kValue }
+                ));
+            } else if (jValue > 90) {
+                results.push(this._make(
+                    '[分时KDJ] J值高位-警惕卖点', '⚠️', CATEGORY_MICRO, '中', 2,
+                    `分时KDJ(81,3,3)：J值=${jValue.toFixed(1)}（高位>90）。接近超买区，观察是否继续冲高到100+，或开始回落。`,
+                    'WATCH', 'J值高位要警惕，冲破100或回落卖',
+                    { j_value: jValue, k_value: kValue }
+                ));
+            }
+
+            // KDJ金叉/死叉信号
+            if (kValue !== null && dValue !== null) {
+                // 金叉（K上穿D）
+                if (kValue > dValue && kValue < 30) {
+                    results.push(this._make(
+                        '[分时KDJ] 低位金叉-买入信号', '📈', CATEGORY_MICRO, '高', 1,
+                        `分时KDJ低位金叉：K(${kValue.toFixed(1)})上穿D(${dValue.toFixed(1)})，且K值<30超卖区。低位金叉+超卖=强买入信号！`,
+                        'BUY', '低位金叉买入信号强',
+                        { k_value: kValue, d_value: dValue }
+                    ));
+                }
+                // 死叉（K下穿D）
+                if (kValue < dValue && kValue > 70) {
+                    results.push(this._make(
+                        '[分时KDJ] 高位死叉-卖出信号', '📉', CATEGORY_MICRO, '高', 1,
+                        `分时KDJ高位死叉：K(${kValue.toFixed(1)})下穿D(${dValue.toFixed(1)})，且K值>70超买区。高位死叉+超买=强卖出信号！`,
+                        'SELL', '高位死叉卖出信号强',
+                        { k_value: kValue, d_value: dValue }
+                    ));
+                }
+            }
+        }
+
+        // =================================================================
+        //  三-6、开盘5分钟量价信号策略
+        // =================================================================
+
+        // 开盘5分钟是顺势的起点：
+        // 日内T+0套利不是赌当天涨跌，而是顺着主力节奏跳恰恰
+        // 做T不必强求每天都有差价，每一笔操作必须有盘面依据
+
+        if (cp > 0 && vol > 0) {
+            const avgVol10 = hasKline && volumes.length >= 10
+                ? volumes.slice(-10).reduce((a, b) => a + b, 0) / 10
+                : vol;
+            const volRatioMain = avgVol10 > 0 ? vol / avgVol10 : 1;
+
+            if ((hour === 9 && minute >= 30 && minute <= 35) || (hour === 9 && minute < 30)) {
+                // 开盘5分钟内
+                if (chg > 2 && volRatioMain > 1.5) {
+                    results.push(this._make(
+                        '[开盘] 急拉放量-顺势买入', '🟢', CATEGORY_MICRO, '高', 1,
+                        `开盘5分钟急拉${chg.toFixed(1)}%，量比${volRatioMain.toFixed(1)}倍。开盘急拉+放量=主力做多意图明确，顺势跟进。`,
+                        'BUY', '开盘急拉放量=做多信号',
+                        { change: chg, volume_ratio: volRatioMain }
+                    ));
+                } else if (chg > 2 && volRatioMain < 0.8) {
+                    results.push(this._make(
+                        '[开盘] 急拉缩量-诱多陷阱', '⚠️', CATEGORY_MICRO, '高', 1,
+                        `开盘5分钟急拉${chg.toFixed(1)}%，但量比仅${volRatioMain.toFixed(2)}（严重缩量）。急拉缩量=主力诱多，不追高，观察是否回落。`,
+                        'WATCH', '开盘急拉缩量=诱多嫌疑',
+                        { change: chg, volume_ratio: volRatioMain }
+                    ));
+                } else if (chg < -2 && volRatioMain > 1.5) {
+                    results.push(this._make(
+                        '[开盘] 急跌放量-恐慌砸盘', '❌', CATEGORY_MICRO, '高', 1,
+                        `开盘5分钟急跌${chg.toFixed(1)}%，量比${volRatioMain.toFixed(1)}倍。开盘急跌+放量=恐慌砸盘，等待企稳再介入。`,
+                        'WAIT', '开盘急跌放量=恐慌信号，等企稳',
+                        { change: chg, volume_ratio: volRatioMain }
+                    ));
+                } else if (chg < -2 && volRatioMain < 0.8) {
+                    const buyPrice = Math.min(cp * 0.998, lp * 1.002);
+                    results.push(this._make(
+                        '[开盘] 急跌缩量-洗盘低吸', '🟢', CATEGORY_MICRO, '高', 1,
+                        `开盘5分钟急跌${chg.toFixed(1)}%，但量比仅${volRatioMain.toFixed(2)}（严重缩量）。急跌缩量=洗盘而非砸盘，绝佳低吸点！`,
+                        'BUY', '开盘急跌缩量=洗盘买点',
+                        { entry_price: buyPrice, change: chg, volume_ratio: volRatioMain }
+                    ));
+                }
+            }
+        }
+
+        // =================================================================
+        //  三-7、日内趋势定方向策略（简化版）
+        // =================================================================
+
+        // 用日内走势定整体操作方向：
+        // 做T分两种模式：正T(先低吸、后高抛)、倒T(先高抛、后低吸)
+        // 操作模式必须由日内趋势与当日涨跌幅度决定
+
+        // 根据日内涨跌幅和振幅判断整体策略方向
+        if (amplitude > 1.5) {
+            // 正T条件：日内上涨趋势 + 有持仓
+            if (chg > 0.5 && trend === '上升' && holdQty > 0) {
+                results.push(this._make(
+                    '[日内趋势] 正T策略-先买后卖', '📈', CATEGORY_MICRO, '高', 1,
+                    `日内上涨${chg.toFixed(1)}%，趋势向上，振幅${amplitude.toFixed(1)}%。只做正T（先低吸后高抛），回踩均价线附近买入，冲高卖出。`,
+                    'BUY_THEN_SELL', '上涨趋势只做正T',
+                    { change: chg, amplitude: amplitude, trend: trend }
+                ));
+            }
+            // 反T条件：日内下跌趋势 + 有持仓
+            if (chg < -0.5 && trend === '下跌' && holdQty > 0) {
+                results.push(this._make(
+                    '[日内趋势] 反T策略-先卖后买', '📉', CATEGORY_MICRO, '高', 1,
+                    `日内下跌${chg.toFixed(1)}%，趋势向下，振幅${amplitude.toFixed(1)}%。只做反T（先高抛后低吸），反弹即卖出，回落接回。`,
+                    'SELL_THEN_BUY', '下跌趋势只做反T',
+                    { change: chg, amplitude: amplitude, trend: trend }
+                ));
+            }
+            // 横盘震荡：箱体做T
+            if (Math.abs(chg) < 0.5 && trend === '横盘' && amplitude > 2) {
+                results.push(this._make(
+                    '[日内趋势] 箱体做T-高抛低吸', '🔄', CATEGORY_MICRO, '中', 2,
+                    `日内横盘震荡，涨跌${chg.toFixed(1)}%，振幅${amplitude.toFixed(1)}%。箱体震荡高抛低吸，箱顶卖出箱底买入。`,
+                    'BOX_TRADING', '横盘震荡箱体做T',
+                    { change: chg, amplitude: amplitude, trend: trend }
+                ));
+            }
+        }
+
+        // =================================================================
+        //  三-8、量价配合真假判断策略
+        // =================================================================
+
+        // 分时量价配合判断真假涨跌：
+        // - 拉升缩量 = 标准卖点：股价上涨但成交量缩小，冲高回落概率高
+        // - 杀跌缩量 = 标准买点：股价下跌但抛盘衰竭，短期反弹概率高
+        // - 拉升放量 = 真实上涨：量价齐升，上涨动能强
+        // - 杀跌放量 = 真实下跌：量价齐跌，杀跌动能强
+
+        if (cp > 0 && vol > 0) {
+            const avgVol10 = hasKline && volumes.length >= 10
+                ? volumes.slice(-10).reduce((a, b) => a + b, 0) / 10
+                : vol;
+            const volRatioMain = avgVol10 > 0 ? vol / avgVol10 : 1;
+
+            // 拉升缩量 = 标准卖点
+            if (chg > 0.8 && volRatioMain < 1) {
+                results.push(this._make(
+                    '[量价] 拉升缩量-虚假上涨', '⚠️', CATEGORY_MICRO, '高', 1,
+                    `股价拉升${chg.toFixed(1)}%，量比${volRatioMain.toFixed(2)}<1（缩量）。拉升缩量=虚假上涨，跟风资金不足，冲高回落概率高，是标准卖点！`,
+                    'SELL', '拉升缩量=虚假上涨卖点',
+                    { change: chg, volume_ratio: volRatioMain }
+                ));
+            }
+
+            // 杀跌缩量 = 标准买点
+            if (chg < -0.8 && volRatioMain < 1) {
+                const buyPrice = Math.min(cp * 0.998, lp * 1.002);
+                results.push(this._make(
+                    '[量价] 杀跌缩量-虚假下跌', '🟢', CATEGORY_MICRO, '高', 1,
+                    `股价杀跌${chg.toFixed(1)}%，量比${volRatioMain.toFixed(2)}<1（缩量）。杀跌缩量=虚假下跌，抛盘衰竭，短期反弹概率高，是标准买点！`,
+                    'BUY', '杀跌缩量=虚假下跌买点',
+                    { entry_price: buyPrice, change: chg, volume_ratio: volRatioMain }
+                ));
+            }
+
+            // 拉升放量 = 真实上涨
+            if (chg > 0.8 && volRatioMain > 1.5) {
+                results.push(this._make(
+                    '[量价] 拉升放量-真实上涨', '✅', CATEGORY_MICRO, '中', 2,
+                    `股价拉升${chg.toFixed(1)}%，量比${volRatioMain.toFixed(1)}>1.5（放量）。拉升放量=真实上涨，资金进场积极，上涨动能强劲。`,
+                    'HOLD', '拉升放量=真实上涨持有',
+                    { change: chg, volume_ratio: volRatioMain }
+                ));
+            }
+
+            // 杀跌放量 = 真实下跌
+            if (chg < -0.8 && volRatioMain > 1.5) {
+                results.push(this._make(
+                    '[量价] 杀跌放量-真实下跌', '❌', CATEGORY_MICRO, '高', 1,
+                    `股价杀跌${chg.toFixed(1)}%，量比${volRatioMain.toFixed(1)}>1.5（放量）。杀跌放量=真实下跌，大资金砸盘，杀跌动能强劲，警惕继续下跌。`,
+                    'SELL', '杀跌放量=真实下跌警惕',
+                    { change: chg, volume_ratio: volRatioMain }
+                ));
+            }
+        }
+
+        // =================================================================
+        //  三-9、3366七格子做T战法（抖音热门：涨停板坐标法）
+        // =================================================================
+        // 核心逻辑：将涨停板坐标分成7格（每格≈1.43%）
+        // 3格以内：波动小，不做T
+        // 3-6格：黄金做T区间，冲高卖，回落买
+        // 6格以上：接近涨停，不做T（容易T飞）
+        if (cp > 0 && pc > 0 && hp > 0 && lp > 0) {
+            const gridSize = pc * 0.10 / 7; // 10%涨停板分7格
+            const highGrid = Math.floor((hp - pc) / gridSize);
+            const lowGrid = Math.floor((pc - lp) / gridSize);
+            const currentGrid = chg >= 0
+                ? Math.floor((cp - pc) / gridSize)
+                : -Math.floor((pc - cp) / gridSize);
+
+            const absGrid = Math.abs(currentGrid);
+            const maxGrid = Math.max(highGrid, Math.abs(lowGrid));
+
+            // 3-6格区间 + 当前价格在中上部 = 高抛机会（反T卖出）
+            if (maxGrid >= 3 && maxGrid <= 6 && currentGrid >= 2 && chg > 0) {
+                const sellPrice = Math.max(cp * 0.998, hp * 0.995);
+                const buyBackPrice = pc * (1 - 3 / 7 * 0.1);
+                results.push(this._make(
+                    '[3366] 3-6格区间-高抛卖出', '📊', CATEGORY_MICRO, '高', 1,
+                    `3366战法：当前${absGrid}格，日内最高${highGrid}格，处于3-6格黄金做T区间。冲高至${currentGrid}格位置，是标准高抛点。回落至均价线附近接回。`,
+                    'SELL_THEN_BUY', '3-6格黄金区间，冲高卖回落买',
+                    {
+                        entry_price: sellPrice,
+                        target_price: buyBackPrice,
+                        stop_loss: hp * 1.005,
+                        grid_position: currentGrid,
+                        max_grid: maxGrid
+                    }
+                ));
+            }
+
+            // 3-6格区间 + 当前价格在中下部 = 低吸机会（正T买入）
+            if (maxGrid >= 3 && maxGrid <= 6 && currentGrid <= -2 && chg < 0) {
+                const buyPrice = Math.min(cp * 1.002, lp * 0.998);
+                const sellBackPrice = pc * (1 + 3 / 7 * 0.1);
+                results.push(this._make(
+                    '[3366] 3-6格区间-低吸买入', '📊', CATEGORY_MICRO, '高', 1,
+                    `3366战法：当前${absGrid}格，日内最低${lowGrid}格，处于3-6格黄金做T区间。回落至${Math.abs(currentGrid)}格位置，是标准低吸点。反弹至均价线附近卖出。`,
+                    'BUY_THEN_SELL', '3-6格黄金区间，回落买反弹卖',
+                    {
+                        entry_price: buyPrice,
+                        target_price: sellBackPrice,
+                        stop_loss: lp * 0.995,
+                        grid_position: currentGrid,
+                        max_grid: maxGrid
+                    }
+                ));
+            }
+
+            // 6格以上 = 接近涨停，不做T
+            if (highGrid >= 6 && chg > 5) {
+                results.push(this._make(
+                    '[3366] 6格以上-不做T', '⚠️', CATEGORY_MICRO, '中', 2,
+                    `3366战法：日内最高${highGrid}格，涨幅${chg.toFixed(1)}%>7%，接近涨停板。此时做T容易T飞，建议持有观望。`,
+                    'WATCH', '6格以上不做T，防止T飞',
+                    { grid_position: currentGrid, max_grid: maxGrid }
+                ));
+            }
+
+            // 3格以内 = 波动太小，做T价值不高
+            if (maxGrid < 3 && Math.abs(chg) < 3) {
+                results.push(this._make(
+                    '[3366] 3格以内-观望', '⏸️', CATEGORY_MICRO, '低', 3,
+                    `3366战法：日内最大波动${maxGrid}格，振幅${((hp - lp) / pc * 100).toFixed(1)}%。3格以内波动太小，做T价值不高，手续费吃掉利润。`,
+                    'NO_TRADE', '3格以内不做T，等波动放大',
+                    { grid_position: currentGrid, max_grid: maxGrid }
+                ));
+            }
+        }
+
+        // =================================================================
+        //  三-10、布林带呼吸节奏战法（抖音热门：非上下轨，看轨道开合）
+        // =================================================================
+        // 核心逻辑：布林带开口=呼吸（趋势延续），收口=屏息（变盘在即）
+        // 开口向上 + 价格在上轨附近 = 顺势做多
+        // 开口向下 + 价格在下轨附近 = 顺势做空
+        // 收口 + 价格在中轨 = 等待方向
+        if (hasKline && closes.length >= 25) {
+            const getBoll = (period = 20, k = 2) => {
+                const key = `boll_${period}_${k}`;
+                if (_indCache[key] === undefined) _indCache[key] = this.calcBollinger(closesWithToday, period, k);
+                return _indCache[key];
+            };
+            const [bollLower, bollMid, bollUpper] = getBoll();
+            if (bollLower !== null && bollMid !== null && bollUpper !== null && bollMid > 0) {
+                const bw = (bollUpper - bollLower) / bollMid * 100; // 带宽百分比
+
+                // 计算5日前带宽，判断是扩张还是收缩
+                let bw5 = null;
+                if (closes.length >= 25) {
+                    const prevCloses5 = closes.slice(0, -5);
+                    const [prevL5, prevM5, prevU5] = this.calcBollinger(prevCloses5, 20, 2);
+                    if (prevL5 !== null && prevM5 !== null && prevU5 !== null && prevM5 > 0) {
+                        bw5 = (prevU5 - prevL5) / prevM5 * 100;
+                    }
+                }
+
+                const isExpanding = bw5 !== null && bw > bw5 * 1.15; // 扩张>15%
+                const isContracting = bw5 !== null && bw < bw5 * 0.85; // 收缩>15%
+
+                const pricePos = bollUpper > bollLower
+                    ? (cp - bollLower) / (bollUpper - bollLower)
+                    : 0.5; // 0=下轨, 1=上轨
+
+                // 呼吸节奏：开口扩张 + 价格在上半区 = 顺势做多
+                if (isExpanding && pricePos > 0.6) {
+                    const target = bollUpper * 1.01;
+                    const stop = bollMid * 0.99;
+                    results.push(this._make(
+                        '[布林呼吸] 开口扩张-顺势做多', '🌬️', CATEGORY_MICRO, '高', 1,
+                        `布林带呼吸法：带宽${bw.toFixed(1)}%，5日前${bw5.toFixed(1)}%，正在扩张（开口=吸气）。价格在上半区(位置${(pricePos*100).toFixed(0)}%)，趋势向上延续。顺势做多，目标上轨上方。`,
+                        'BUY', '开口扩张顺势做，方向不变',
+                        { entry_price: cp, target_price: target, stop_loss: stop, boll_width: bw }
+                    ));
+                }
+
+                // 呼吸节奏：开口扩张 + 价格在下半区 = 顺势做空
+                if (isExpanding && pricePos < 0.4) {
+                    const target = bollLower * 0.99;
+                    const stop = bollMid * 1.01;
+                    results.push(this._make(
+                        '[布林呼吸] 开口扩张-顺势做空', '🌬️', CATEGORY_MICRO, '高', 1,
+                        `布林带呼吸法：带宽${bw.toFixed(1)}%，5日前${bw5.toFixed(1)}%，正在扩张（开口=呼气）。价格在下半区(位置${(pricePos*100).toFixed(0)}%)，趋势向下延续。顺势做空，目标下轨下方。`,
+                        'SELL', '开口扩张顺势做，方向不变',
+                        { entry_price: cp, target_price: target, stop_loss: stop, boll_width: bw }
+                    ));
+                }
+
+                // 呼吸节奏：收口 + 价格接近中轨 = 屏息变盘在即
+                if (isContracting && Math.abs(pricePos - 0.5) < 0.2) {
+                    results.push(this._make(
+                        '[布林呼吸] 收口屏息-变盘在即', '🌀', CATEGORY_MICRO, '高', 1,
+                        `布林带呼吸法：带宽${bw.toFixed(1)}%，5日前${bw5.toFixed(1)}%，正在收缩（收口=屏息）。价格在中轨附近(位置${(pricePos*100).toFixed(0)}%)，变盘一触即发！等待突破方向再操作。`,
+                        'WATCH', '收口屏息等突破，方向出来再进场',
+                        { boll_width: bw, price_position: Math.round(pricePos * 100) }
+                    ));
+                }
+
+                // 呼吸节奏：极度收口 = 爆发前夜
+                if (bw < 3) {
+                    results.push(this._make(
+                        '[布林呼吸] 极度收口-爆发前夜', '💥', CATEGORY_MICRO, '高', 1,
+                        `布林带呼吸法：带宽仅${bw.toFixed(1)}%<3%，极度收口（屏息到极致）。横盘越久爆发力越强，随时可能选择方向突破！密切关注突破方向。`,
+                        'WATCH', '极度收口等大行情，突破跟进',
+                        { boll_width: bw }
+                    ));
+                }
+            }
+        }
+
+        // =================================================================
+        //  三-11、均线+布林带共振战法（抖音热门：双指标确认）
+        // =================================================================
+        // 核心逻辑：均线定趋势方向，布林带定买卖位置
+        // 多头排列 + 价格碰下轨 = 绝佳买点（共振）
+        // 空头排列 + 价格碰上轨 = 绝佳卖点（共振）
+        if (hasKline && closes.length >= 25) {
+            const getBoll = (period = 20, k = 2) => {
+                const key = `boll_${period}_${k}`;
+                if (_indCache[key] === undefined) _indCache[key] = this.calcBollinger(closesWithToday, period, k);
+                return _indCache[key];
+            };
+            const [bollLower, bollMid, bollUpper] = getBoll();
+            const ma5 = this.sma(closesWithToday, 5);
+            const ma10 = this.sma(closesWithToday, 10);
+            const ma20 = this.sma(closesWithToday, 20);
+
+            const isBull = ma5 && ma10 && ma20 && ma5 > ma10 && ma10 > ma20;
+            const isBear = ma5 && ma10 && ma20 && ma5 < ma10 && ma10 < ma20;
+
+            if (bollLower !== null && isBull) {
+                // 多头 + 价格接近下轨 = 共振买点
+                const distToLower = bollLower > 0 ? (cp - bollLower) / bollLower * 100 : 99;
+                if (distToLower < 1.5) {
+                    const buyPrice = Math.min(cp * 1.001, bollLower * 1.005);
+                    results.push(this._make(
+                        '[共振] 多头+布林下轨-共振买点', '🎯', CATEGORY_MICRO, '极高', 0,
+                        `均线+布林带共振：均线多头排列（上涨趋势），价格触及布林下轨(距离${distToLower.toFixed(1)}%)。趋势向上+回调到位=双确认绝佳买点！`,
+                        'BUY', '多头碰下轨，黄金买点',
+                        { entry_price: buyPrice, target_price: bollMid, stop_loss: bollLower * 0.98 }
+                    ));
+                }
+            }
+
+            if (bollUpper !== null && isBear) {
+                // 空头 + 价格接近上轨 = 共振卖点
+                const distToUpper = bollUpper > 0 ? (bollUpper - cp) / bollUpper * 100 : 99;
+                if (distToUpper < 1.5) {
+                    results.push(this._make(
+                        '[共振] 空头+布林上轨-共振卖点', '🎯', CATEGORY_MICRO, '极高', 0,
+                        `均线+布林带共振：均线空头排列（下跌趋势），价格触及布林上轨(距离${distToUpper.toFixed(1)}%)。趋势向下+反弹到位=双确认绝佳卖点！`,
+                        'SELL', '空头碰上轨，绝佳卖点',
+                        { entry_price: cp, target_price: bollMid, stop_loss: bollUpper * 1.02 }
+                    ));
+                }
+            }
+
+            // 多头 + 价格在中轨上方运行 = 安心持有
+            if (isBull && bollMid !== null && cp > bollMid) {
+                results.push(this._make(
+                    '[共振] 多头中轨上-安心持有', '✅', CATEGORY_MICRO, '中', 2,
+                    `均线+布林带共振：均线多头排列，价格在布林中轨上方运行。趋势健康，持有为主，回踩中轨加仓。`,
+                    'HOLD', '多头中轨上，安心持有',
+                    { boll_position: '上半区' }
+                ));
+            }
+
+            // 空头 + 价格在中轨下方运行 = 谨慎观望
+            if (isBear && bollMid !== null && cp < bollMid) {
+                results.push(this._make(
+                    '[共振] 空头中轨下-谨慎观望', '⚠️', CATEGORY_MICRO, '中', 2,
+                    `均线+布林带共振：均线空头排列，价格在布林中轨下方运行。趋势偏弱，谨慎操作，反弹至上轨减仓。`,
+                    'WATCH', '空头中轨下，谨慎观望',
+                    { boll_position: '下半区' }
+                ));
+            }
+        }
+
+        // =================================================================
+        //  三-12、黄金分割做T法（抖音热门：0.382/0.5/0.618关键位）
+        // =================================================================
+        // 核心逻辑：用近期高低点做黄金分割，关键位置容易出现支撑压力
+        if (hasKline && closes.length >= 10 && hp > 0 && lp > 0) {
+            const range = hp - lp;
+            if (range > 0 && cp > 0) {
+                // 基于日内高低点的黄金分割位
+                const fib0_618 = hp - range * 0.618; // 强势回调位
+                const fib0_5 = hp - range * 0.5;     // 半分位
+                const fib0_382 = hp - range * 0.382; // 弱势回调位
+
+                // 找到最接近的黄金分割位
+                const fibLevels = [
+                    { name: '0.618强势支撑', price: fib0_618, type: 'support', importance: '高' },
+                    { name: '0.5半分位', price: fib0_5, type: 'support', importance: '中' },
+                    { name: '0.382弱势支撑', price: fib0_382, type: 'support', importance: '低' }
+                ];
+
+                let nearestFib = null;
+                let nearestDist = Infinity;
+                for (const f of fibLevels) {
+                    const dist = Math.abs(cp - f.price) / cp * 100;
+                    if (dist < nearestDist && dist < 1) {
+                        nearestDist = dist;
+                        nearestFib = f;
+                    }
+                }
+
+                if (nearestFib) {
+                    const pctFromHigh = (hp - cp) / range * 100;
+                    // 价格接近黄金分割支撑位 + 下跌中 = 正T买入机会
+                    if (chg < 0 && nearestFib.type === 'support') {
+                        const buyPrice = Math.min(cp * 1.002, nearestFib.price * 1.005);
+                        const target = fib0_382;
+                        results.push(this._make(
+                            `[黄金分割] ${nearestFib.name}-低吸机会`, '✨', CATEGORY_MICRO, '高', 1,
+                            `黄金分割法：日内高低点${hp.toFixed(2)}/${lp.toFixed(2)}，价格距${nearestFib.name}(${nearestFib.price.toFixed(2)})仅${nearestDist.toFixed(1)}%。已回调${pctFromHigh.toFixed(0)}%，在${nearestFib.importance}支撑位附近，可低吸做T。`,
+                            'BUY_THEN_SELL', '黄金分割位低吸，反弹卖出',
+                            { entry_price: buyPrice, target_price: target, stop_loss: lp * 0.995, fib_level: nearestFib.name }
+                        ));
+                    }
+                }
+
+                // 价格接近0.382弱势压力位 + 上涨中 = 反T卖出机会
+                const distTo382 = Math.abs(cp - fib0_382) / cp * 100;
+                if (chg > 0 && distTo382 < 1 && cp < fib0_382 * 1.005) {
+                    const sellPrice = Math.max(cp * 0.998, fib0_382 * 0.995);
+                    const buyBack = fib0_618;
+                    results.push(this._make(
+                        '[黄金分割] 0.382压力位-高抛机会', '✨', CATEGORY_MICRO, '高', 1,
+                        `黄金分割法：价格接近0.382压力位(${fib0_382.toFixed(2)})，距离仅${distTo382.toFixed(1)}%。弱势反弹遇0.382易回落，可高抛做T。`,
+                        'SELL_THEN_BUY', '0.382压力位高抛，回落接回',
+                        { entry_price: sellPrice, target_price: buyBack, stop_loss: hp * 1.005, fib_level: '0.382' }
+                    ));
+                }
+            }
+        }
+
+        // =================================================================
         //  四、形态类策略
         // =================================================================
 
@@ -1680,7 +2666,7 @@ class StrategyEngine {
             ));
         }
 
-        if (trend === '上升' && holdings > 0) {
+        if (trend === '上升' && holdQty > 0) {
             let tBuyBase = Math.max(avgPrice * 0.998, cp * 0.995, lp);
             let tSell = Math.min(avgPrice * 1.015, hp);
             if ((hour === 14 && minute >= 30) || hour >= 15) {
@@ -1693,7 +2679,7 @@ class StrategyEngine {
                 'BUY_THEN_SELL', '顺势而为，回踩即买，冲高即卖',
                 { buy_price: tBuy, sell_price: tSell }
             ));
-        } else if (trend === '下跌' && holdings > 0) {
+        } else if (trend === '下跌' && holdQty > 0) {
             const tSell = Math.min(avgPrice * 1.008, cp * 1.005, hp);
             let tBuyBase = Math.max(avgPrice * 0.995, cp * 0.99, lp);
             if ((hour === 14 && minute >= 30) || hour >= 15) {
@@ -5841,10 +6827,27 @@ class StrategyEngine {
             chg > 0 ? 'HOLD' : 'WATCH',
             `主力资金：${chg > 0 && vol > 1000000 ? '流入' : '流出'}`);
 
+        addIfNew('[资金] 主力资金综合评估', '💰', CATEGORY_VOLUME, '中', 4,
+            `综合分时量价分析：${chg > 0.3 ? '上涨' + chg.toFixed(1) + '%' : chg < -0.3 ? '下跌' + chg.toFixed(1) + '%' : '横盘'}，${(() => {
+                const vr = hasKline && volumes.length >= 10 ? vol / (volumes.slice(-10).reduce((a,b)=>a+b,0)/10) : 1;
+                if (chg > 0.3 && vr > 1.2) return '放量上涨=主力吸筹';
+                if (chg < -0.3 && vr > 1.2) return '放量下跌=主力出货';
+                if (chg > 0.5 && vr < 0.7) return '缩量上涨=诱多';
+                if (chg < -0.5 && vr < 0.7) return '缩量下跌=洗盘';
+                return '量价平稳=主力观望';
+            })()}。`,
+            chg > 0.3 ? 'HOLD' : 'WATCH',
+            `主力资金：${chg > 0.3 ? '偏多' : chg < -0.3 ? '偏空' : '中性'}`);
+
         addIfNew('[资金] 散户资金监控', '👥', CATEGORY_VOLUME, '中', 4,
             `散户资金情绪${chg > 0 ? '偏乐观' : chg < 0 ? '偏谨慎' : '中性'}，小单成交${vol > 0 ? '活跃' : '低迷'}。`,
             chg > 0 ? 'HOLD' : 'WATCH',
             `散户情绪：${chg > 0 ? '乐观' : '谨慎'}`);
+
+        addIfNew('[资金] 散户资金情绪', '👥', CATEGORY_VOLUME, '低', 4,
+            `散户情绪${amplitude > 4 ? '恐慌/贪婪明显' : amplitude > 2 ? '有所波动' : '相对平静'}，${Math.abs(chg) > 3 ? '追涨杀跌明显' : '操作理性'}。`,
+            Math.abs(chg) > 3 ? 'WATCH' : 'HOLD',
+            `散户情绪：${amplitude > 4 ? '极端' : '正常'}`);
 
         addIfNew('[情绪] 市场情绪监控', '😊', CATEGORY_NOVEL, '中', 4,
             `市场情绪${chg > 0 ? '偏暖' : chg < 0 ? '偏冷' : '中性'}，${amplitude > 3 ? '波动大情绪不稳定' : '波动小情绪稳定'}。`,
@@ -5911,6 +6914,20 @@ class StrategyEngine {
             chg > 0 ? 'HOLD' : 'WATCH',
             `资金流向：${chg > 0 ? '流入' : chg < 0 ? '流出' : '平衡'}`);
 
+        addIfNew('[资金] 量价配合度评估', '💰', CATEGORY_VOLUME, '中', 4,
+            `量价配合${(() => {
+                const vr = hasKline && volumes.length >= 5 ? vol / (volumes.slice(-5).reduce((a,b)=>a+b,0)/5) : 1;
+                if (chg > 0 && vr > 1.2) return '良好：涨+放量';
+                if (chg < 0 && vr > 1.2) return '差：跌+放量';
+                if (chg > 0 && vr < 0.8) return '背离：涨+缩量';
+                return '中性：量价匹配';
+            })()}，${(() => {
+                const vr = hasKline && volumes.length >= 5 ? vol / (volumes.slice(-5).reduce((a,b)=>a+b,0)/5) : 1;
+                return vr > 1.5 ? '量能充沛' : vr < 0.7 ? '量能不足' : '量能正常';
+            })()}。`,
+            chg > 0 ? 'HOLD' : 'WATCH',
+            `量价配合：${chg > 0 ? '偏多' : '偏空'}`);
+
         addIfNew('[情绪] 涨跌停分析', '😊', CATEGORY_NOVEL, '中', 4,
             `市场情绪${Math.abs(chg) > 5 ? '极度波动' : Math.abs(chg) > 3 ? '强烈' : '平稳'}，${amplitude > 5 ? '多空博弈激烈' : '情绪稳定'}。`,
             Math.abs(chg) > 5 ? 'WATCH' : 'HOLD',
@@ -5925,6 +6942,19 @@ class StrategyEngine {
             `主力行为${vol > 2000000 && chg > 0 ? '吸筹迹象' : vol > 2000000 && chg < 0 ? '出货迹象' : '动作不明显'}，持续跟踪。`,
             vol > 2000000 && chg > 0 ? 'HOLD' : 'WATCH',
             `主力行为：${vol > 2000000 ? '关注' : '平淡'}`);
+
+        addIfNew('[机构] 主力行为综合研判', '🏛️', CATEGORY_VOLUME, '中', 4,
+            `主力行为${(() => {
+                const vr = hasKline && volumes.length >= 10 ? vol / (volumes.slice(-10).reduce((a,b)=>a+b,0)/10) : 1;
+                const pos = hp > lp ? (cp - lp) / (hp - lp) : 0.5;
+                if (chg > 0.3 && vr > 1.5 && pos > 0.6) return '主动吸筹：涨+放量+价在高位';
+                if (chg < -0.3 && vr > 1.5 && pos < 0.4) return '主动出货：跌+放量+价在低位';
+                if (chg > 0.5 && vr < 0.7) return '诱多拉升：涨+缩量';
+                if (chg < -0.5 && vr < 0.7) return '洗盘震仓：跌+缩量';
+                return '观望不动：量价平稳';
+            })()}，大单${amt > 0 && vol > 0 ? (amt/vol > 50000 ? '活跃' : '平淡') : '未明'}。`,
+            chg > 0.3 ? 'HOLD' : 'WATCH',
+            `主力行为：${chg > 0.3 ? '偏多' : chg < -0.3 ? '偏空' : '中性'}`);
 
         addIfNew('[消息] 公告信息监控', '📰', CATEGORY_NOVEL, '中', 4,
             `公告消息面平静，${amplitude > 5 ? '异动可能有消息' : '暂无突发消息'}，持续关注公司公告。`,
@@ -5966,7 +6996,7 @@ class StrategyEngine {
         //  输出：正T方案 + 反T方案 + 箱体方案 + 成功概率
         // =================================================================
 
-        if (holdings > 0 && amplitude > 1.5) {
+        if (holdQty > 0 && amplitude > 1.5) {
             const BUY_ACTIONS_T = new Set(['BUY', 'STRONG_BUY']);
             const SELL_ACTIONS_T = new Set(['SELL', 'STRONG_SELL']);
 
@@ -6070,15 +7100,20 @@ class StrategyEngine {
             // ===== 正T方案（先买后卖）=====
             let posBuyPrice = Math.min(cp, hp * 0.95);
             let posSellPrice = Math.max(posBuyPrice * (1 + minProfitPct / 100 + feeRate * 2), Math.min(hp * 0.99, cp * 1.02));
-            
+
             if (amplitude > 3) {
                 posBuyPrice = Math.min(cp, hp * 0.95);
                 posSellPrice = Math.max(posBuyPrice * 1.005, Math.min(hp * 0.98, cp * 1.03));
             }
-            
+
+            // 如果有持仓成本，正T买入价取当前价和成本价中的较低者，摊薄成本
+            if (holdCost > 0 && cp > holdCost && posBuyPrice > holdCost) {
+                posBuyPrice = Math.max(holdCost * 0.998, posBuyPrice * 0.999);
+            }
+
             const posGrossProfit = (posSellPrice - posBuyPrice) / posBuyPrice * 100;
             const posProfitAfterFee = posGrossProfit - feeRate * 100 * 2;
-            
+
             if (posProfitAfterFee >= minProfitPct && posSellPrice > posBuyPrice && posBuyPrice > 0) {
                 const posRate = calcSuccessRate(posBuyPrice, posSellPrice, 'BUY_THEN_SELL');
                 tPlans.push({
@@ -6099,15 +7134,20 @@ class StrategyEngine {
             // ===== 反T方案（先卖后买）=====
             let revSellPrice = Math.max(cp, lp * 1.05);
             let revBuyPrice = Math.min(revSellPrice * (1 - minProfitPct / 100 - feeRate * 2), Math.max(lp * 1.01, cp * 0.98));
-            
+
             if (amplitude > 3) {
                 revSellPrice = Math.max(cp, lp * 1.05);
                 revBuyPrice = Math.min(revSellPrice * 0.995, Math.max(lp * 1.02, cp * 0.98));
             }
-            
+
+            // 如果有持仓成本，反T卖出价必须高于成本，避免割肉式反T
+            if (holdCost > 0 && revSellPrice < holdCost * 1.003) {
+                revSellPrice = Math.max(cp, holdCost * 1.005);
+            }
+
             const revGrossProfit = (revSellPrice - revBuyPrice) / revBuyPrice * 100;
             const revProfitAfterFee = revGrossProfit - feeRate * 100 * 2;
-            
+
             if (revProfitAfterFee >= minProfitPct && revSellPrice > revBuyPrice && revBuyPrice > 0) {
                 const revRate = calcSuccessRate(revBuyPrice, revSellPrice, 'SELL_THEN_BUY');
                 tPlans.push({
@@ -6572,7 +7612,7 @@ class StrategyEngine {
                     time_window: timeWindowLevel,
                     time_window_color: timeWindowColor,
                     time_remaining: timeRemaining,
-                    has_holdings: holdings > 0,
+                    has_holdings: holdQty > 0,
                 };
             }
         }
@@ -6680,6 +7720,59 @@ class StrategyEngine {
                     }
                 }
             }
+
+            // ============ 策略信号联动修正 ============
+            // 用策略的目标价/止损价来修正预测区间，确保策略买卖点落在预测区间内
+            const stratTargets = results.filter(s => s.target_price && s.target_price > 0);
+            const stratStops = results.filter(s => s.stop_loss && s.stop_loss > 0);
+            const buyStrats = results.filter(s =>
+                (s.action === 'BUY' || s.action === 'STRONG_BUY' || s.action === 'BUY_THEN_SELL') &&
+                s.target_price && s.target_price > basePrice
+            );
+            const sellStrats = results.filter(s =>
+                (s.action === 'SELL' || s.action === 'STRONG_SELL' || s.action === 'SELL_THEN_BUY') &&
+                s.stop_loss && s.stop_loss < basePrice
+            );
+
+            // 有买入信号且目标价高于当前：上沿至少覆盖最高目标价的80%
+            if (buyStrats.length > 0) {
+                const highestTarget = Math.max(...buyStrats.map(s => s.target_price));
+                const targetFromBase = (highestTarget - basePrice) / basePrice;
+                const rangeFromBase = (predictedHigh - basePrice) / basePrice;
+                if (rangeFromBase < targetFromBase * 0.7) {
+                    predictedHigh = basePrice * (1 + targetFromBase * 0.85);
+                }
+            }
+
+            // 有卖出信号且止损价低于当前：下沿至少覆盖最低止损价的80%
+            if (sellStrats.length > 0) {
+                const lowestStop = Math.min(...sellStrats.map(s => s.stop_loss));
+                const stopFromBase = (basePrice - lowestStop) / basePrice;
+                const rangeFromBase = (basePrice - predictedLow) / basePrice;
+                if (rangeFromBase < stopFromBase * 0.7) {
+                    predictedLow = basePrice * (1 - stopFromBase * 0.85);
+                }
+            }
+
+            // 做T策略联动：收集所有做T信号的买卖价，确保预测区间包含做T空间
+            const tBuySignals = results.filter(s =>
+                s.action === 'BUY_THEN_SELL' && s.entry_price && s.target_price
+            );
+            const tSellSignals = results.filter(s =>
+                s.action === 'SELL_THEN_BUY' && s.entry_price && s.target_price
+            );
+            if (tBuySignals.length > 0) {
+                const tLowestBuy = Math.min(...tBuySignals.map(s => s.entry_price));
+                const tHighestSell = Math.max(...tBuySignals.map(s => s.target_price));
+                if (predictedLow > tLowestBuy * 1.005) predictedLow = tLowestBuy * 0.995;
+                if (predictedHigh < tHighestSell * 0.995) predictedHigh = tHighestSell * 1.005;
+            }
+            if (tSellSignals.length > 0) {
+                const tHighestSell = Math.max(...tSellSignals.map(s => s.entry_price));
+                const tLowestBuy = Math.min(...tSellSignals.map(s => s.target_price));
+                if (predictedHigh < tHighestSell * 0.995) predictedHigh = tHighestSell * 1.005;
+                if (predictedLow > tLowestBuy * 1.005) predictedLow = tLowestBuy * 0.995;
+            }
             
             if (predictedHigh < predictedLow) [predictedHigh, predictedLow] = [predictedLow, predictedHigh];
             
@@ -6710,17 +7803,48 @@ class StrategyEngine {
             };
             
             // ============ 固定预测（基于昨日数据，全天不变）============
-            // 纯粹基于昨日收盘价 + 历史振幅 + ATR，不受今日实时数据影响
-            const yesterdayClose = closes.length >= 2 ? closes[closes.length - 2] : pc;
+            // 所有关键指标只用历史K线（排除今日实时数据），确保盘中不会变化
+            const histCloses = closes.length >= 2 ? closes.slice(0, -1) : closes;
+            const histHighs = highs.length >= 2 ? highs.slice(0, -1) : highs;
+            const histLows = lows.length >= 2 ? lows.slice(0, -1) : lows;
+
+            const yesterdayClose = histCloses.length >= 1 ? histCloses[histCloses.length - 1] : pc;
             const fixedBase = yesterdayClose > 0 ? yesterdayClose : pc;
-            const fixedHalfRange = fixedBase * avgAmplitude / 100 / 2;
-            
+
+            // 固定振幅：只用历史数据计算，不包含今日
+            let fixedAmp5 = 0, fixedAmp10 = 0;
+            let fixedValid5 = 0, fixedValid10 = 0;
+            const fixedAmpDays = Math.min(10, histCloses.length - 1);
+            for (let i = 1; i <= fixedAmpDays; i++) {
+                const idx = histCloses.length - 1 - i;
+                if (idx - 1 >= 0 && histCloses[idx - 1] > 0) {
+                    const dailyAmp = (histHighs[idx] - histLows[idx]) / histCloses[idx - 1] * 100;
+                    if (dailyAmp > 0 && dailyAmp < 30) {
+                        if (i <= 5) { fixedAmp5 += dailyAmp; fixedValid5++; }
+                        fixedAmp10 += dailyAmp; fixedValid10++;
+                    }
+                }
+            }
+            fixedAmp5 = fixedValid5 > 0 ? fixedAmp5 / fixedValid5 : 3;
+            fixedAmp10 = fixedValid10 > 0 ? fixedAmp10 / fixedValid10 : 3;
+            const fixedAvgAmplitude = (fixedAmp5 * 0.6 + fixedAmp10 * 0.4);
+
+            // 固定ATR：只用历史数据计算
+            let fixedAtr = null;
+            if (histCloses.length >= 15) {
+                fixedAtr = this.calcAtr(histHighs, histLows, histCloses, 14);
+            }
+            if (fixedAtr === null || fixedAtr <= 0) {
+                fixedAtr = fixedBase * fixedAvgAmplitude / 100;
+            }
+
+            const fixedHalfRange = fixedBase * fixedAvgAmplitude / 100 / 2;
+
             // 固定预测趋势：综合策略投票（60%）+ 前日均线排列（40%）
             const fixedStrategyBias = Math.max(-0.3, Math.min(0.3, _bias * 0.3));
 
             let fixedTrend = '横盘';
-            if (closes.length >= 22) {
-                const histCloses = closes.slice(0, -1); // 排除今日
+            if (histCloses.length >= 22) {
                 const fma5 = this.sma(histCloses, 5);
                 const fma10 = this.sma(histCloses, 10);
                 const fma20 = this.sma(histCloses, 20);
@@ -6734,31 +7858,77 @@ class StrategyEngine {
 
             // 综合固定趋势 = 策略投票（60%）+ 历史均线（40%）
             const fixedTrendBias = fixedStrategyBias * 0.6 + fixedHistoryBias * 0.4;
-            
+
             let fixedHigh = fixedBase + fixedHalfRange * (1 + fixedTrendBias * 0.5);
             let fixedLow = fixedBase - fixedHalfRange * (1 - fixedTrendBias * 0.5);
-            
-            // ATR 修正
-            const fixedAtr = atrVal > 0 ? atrVal : (fixedBase * avgAmplitude / 100);
+
+            // ATR 修正（用历史ATR）
             fixedHigh = Math.max(fixedHigh, fixedBase + fixedAtr * 0.5);
             fixedLow = Math.min(fixedLow, fixedBase - fixedAtr * 0.5);
-            
-            // 支撑压力位修正（复用缓存）
-            if (cachedSR !== null) {
-                if (cachedRR && cachedRR.length > 0) {
-                    const aboveRes = cachedRR.filter(r => r > fixedBase).sort((a, b) => a - b);
+
+            // 支撑压力位修正（只用历史数据，不复用实时缓存）
+            if (histCloses.length >= 20) {
+                const [fixedSR, fixedRR] = this.findSupportResistance(histHighs, histLows, histCloses);
+                if (fixedRR && fixedRR.length > 0) {
+                    const aboveRes = fixedRR.filter(r => r > fixedBase).sort((a, b) => a - b);
                     const nearestResistance = aboveRes.length > 0 ? aboveRes[0] : null;
                     if (nearestResistance !== null && nearestResistance > fixedBase && nearestResistance < fixedHigh) {
-                        fixedHigh = Math.max(fixedHigh * 0.95, nearestResistance); // 不完全缩小到阻力位
+                        fixedHigh = Math.max(fixedHigh * 0.95, nearestResistance);
                     }
                 }
-                if (cachedSR && cachedSR.length > 0) {
-                    const belowSup = cachedSR.filter(s => s < fixedBase).sort((a, b) => b - a);
+                if (fixedSR && fixedSR.length > 0) {
+                    const belowSup = fixedSR.filter(s => s < fixedBase).sort((a, b) => b - a);
                     const nearestSupport = belowSup.length > 0 ? belowSup[0] : null;
                     if (nearestSupport !== null && nearestSupport < fixedBase && nearestSupport > fixedLow) {
                         fixedLow = Math.min(fixedLow * 1.05, nearestSupport);
                     }
                 }
+            }
+
+            // ============ 固定预测策略联动 ============
+            // 用策略的目标价/止损价来修正固定预测区间
+            const fixedBuyStrats = results.filter(s =>
+                (s.action === 'BUY' || s.action === 'STRONG_BUY' || s.action === 'BUY_THEN_SELL') &&
+                s.target_price && s.target_price > fixedBase
+            );
+            const fixedSellStrats = results.filter(s =>
+                (s.action === 'SELL' || s.action === 'STRONG_SELL' || s.action === 'SELL_THEN_BUY') &&
+                s.stop_loss && s.stop_loss < fixedBase
+            );
+            if (fixedBuyStrats.length > 0) {
+                const hTarget = Math.max(...fixedBuyStrats.map(s => s.target_price));
+                const tFromBase = (hTarget - fixedBase) / fixedBase;
+                const rFromBase = (fixedHigh - fixedBase) / fixedBase;
+                if (rFromBase < tFromBase * 0.6) {
+                    fixedHigh = fixedBase * (1 + tFromBase * 0.8);
+                }
+            }
+            if (fixedSellStrats.length > 0) {
+                const lStop = Math.min(...fixedSellStrats.map(s => s.stop_loss));
+                const sFromBase = (fixedBase - lStop) / fixedBase;
+                const rFromBase = (fixedBase - fixedLow) / fixedBase;
+                if (rFromBase < sFromBase * 0.6) {
+                    fixedLow = fixedBase * (1 - sFromBase * 0.8);
+                }
+            }
+            // 做T策略也联动固定预测
+            const fixedTBuy = results.filter(s =>
+                s.action === 'BUY_THEN_SELL' && s.entry_price && s.target_price
+            );
+            const fixedTSell = results.filter(s =>
+                s.action === 'SELL_THEN_BUY' && s.entry_price && s.target_price
+            );
+            if (fixedTBuy.length > 0) {
+                const tlBuy = Math.min(...fixedTBuy.map(s => s.entry_price));
+                const thSell = Math.max(...fixedTBuy.map(s => s.target_price));
+                if (fixedLow > tlBuy * 1.01) fixedLow = tlBuy * 0.99;
+                if (fixedHigh < thSell * 0.99) fixedHigh = thSell * 1.01;
+            }
+            if (fixedTSell.length > 0) {
+                const thSell = Math.max(...fixedTSell.map(s => s.entry_price));
+                const tlBuy = Math.min(...fixedTSell.map(s => s.target_price));
+                if (fixedHigh < thSell * 0.99) fixedHigh = thSell * 1.01;
+                if (fixedLow > tlBuy * 1.01) fixedLow = tlBuy * 0.99;
             }
 
             if (fixedHigh < fixedLow) [fixedHigh, fixedLow] = [fixedLow, fixedHigh];
@@ -6768,23 +7938,20 @@ class StrategyEngine {
             // 固定预测生成时间：根据配置
             let fixedGeneratedTime;
             if (fixedPredHour === 0) {
-                // 凌晨0点：今天0点
                 fixedGeneratedTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0).getTime();
             } else if (fixedPredHour === 9) {
-                // 早盘9点：今天9点
                 fixedGeneratedTime = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 9, 0, 0).getTime();
             } else {
-                // 默认：昨日收盘15:00
                 const yesterday = new Date(now.getTime() - 86400000);
                 fixedGeneratedTime = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 15, 0, 0).getTime();
             }
-            
+
             summary.fixed_prediction = {
                 predicted_high: Math.round(fixedHigh * 100) / 100,
                 predicted_low: Math.round(fixedLow * 100) / 100,
                 base_price: Math.round(fixedBase * 100) / 100,
                 trend: fixedTrend,
-                avg_amplitude: Math.round(avgAmplitude * 100) / 100,
+                avg_amplitude: Math.round(fixedAvgAmplitude * 100) / 100,
                 atr: Math.round(fixedAtr * 100) / 100,
                 confidence: confidence,
                 predict_for: '今日',
@@ -7035,7 +8202,7 @@ class StrategyEngine {
 
         const total = results.length;
         const watchCount = results.filter(r => ['WATCH', 'HOLD', 'OBSERVE'].includes(r.action)).length;
-        const totalDefined = 190; // TARGET_TOTAL including panorama strategies
+        const totalDefined = 215; // TARGET_TOTAL including panorama strategies
         summary.strategy_coverage = {
             total_defined: totalDefined,
             triggered: total,
@@ -8009,7 +9176,7 @@ class StrategyEngine {
         const total = results.length;
         const watchCount = results.filter(r => ['WATCH', 'HOLD', 'OBSERVE'].includes(r.action)).length;
         const activeSignals = total - watchCount;
-        const totalDefined = 190; // TARGET_TOTAL including panorama strategies
+        const totalDefined = 215; // TARGET_TOTAL including panorama strategies
         summary.strategy_coverage = {
             total_defined: totalDefined,
             triggered: total,
