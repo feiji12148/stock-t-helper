@@ -66,6 +66,182 @@ function calcTradeFees(amount, type) {
     return { commission, stamp, transfer, total };
 }
 
+// ============================================================
+// TradeManager - 统一数据层（交易读写、持仓、利润计算）
+// ============================================================
+const TradeManager = {
+    /** 获取某只股票的持仓 { qty, cost, avgCost, name } */
+    getHoldings(code) {
+        let qty = 0, cost = 0, name = code;
+        for (const t of _trades) {
+            if (t.code !== code) continue;
+            const type = t.trade_type || t.type;
+            const tQty = parseInt(t.quantity, 10) || 0;
+            const price = parseFloat(t.price) || 0;
+            if (t.name && t.name !== code) name = t.name;
+            if (type === 'BUY') {
+                qty += tQty;
+                cost += tQty * price;
+            } else if (type === 'SELL') {
+                if (qty > 0) {
+                    const avg = cost / qty;
+                    const sq = Math.min(tQty, qty);
+                    cost -= avg * sq;
+                    cost = Math.max(0, cost);
+                }
+                qty = Math.max(0, qty - tQty);
+            }
+        }
+        return qty > 0 ? { qty, cost, avgCost: cost / qty, name } : null;
+    },
+
+    /** 获取所有持仓 { [code]: { qty, cost, avgCost, name } } */
+    getAllHoldings() {
+        const holdings = {};
+        for (const t of _trades) {
+            const type = t.trade_type || t.type;
+            const tQty = parseInt(t.quantity, 10) || 0;
+            const price = parseFloat(t.price) || 0;
+            if (!holdings[t.code]) holdings[t.code] = { qty: 0, cost: 0, name: t.name || t.code };
+            else if (t.name && t.name !== t.code) holdings[t.code].name = t.name;
+            if (type === 'BUY') {
+                holdings[t.code].qty += tQty;
+                holdings[t.code].cost += tQty * price;
+            } else if (type === 'SELL') {
+                if (holdings[t.code].qty > 0) {
+                    const avg = holdings[t.code].cost / holdings[t.code].qty;
+                    const sq = Math.min(tQty, holdings[t.code].qty);
+                    holdings[t.code].cost -= avg * sq;
+                    holdings[t.code].cost = Math.max(0, holdings[t.code].cost);
+                }
+                holdings[t.code].qty = Math.max(0, holdings[t.code].qty - tQty);
+            }
+        }
+        // 计算 avgCost
+        for (const h of Object.values(holdings)) {
+            h.avgCost = h.qty > 0 ? h.cost / h.qty : 0;
+        }
+        return holdings;
+    },
+
+    /** 获取某只股票的持仓数量 */
+    getHoldingQty(code) {
+        const h = this.getHoldings(code);
+        return h ? h.qty : 0;
+    },
+
+    /** 获取买入记录的剩余可卖数量 */
+    getTradeRemaining(idx) {
+        const trade = _trades[idx];
+        if (!trade || (trade.trade_type || trade.type) !== 'BUY') return 0;
+        let sold = 0;
+        for (const t of _trades) {
+            if ((t.trade_type || t.type) === 'SELL' && t.pair_buy_index === idx) {
+                sold += (t.pair_quantity || t.quantity || 0);
+            }
+        }
+        return Math.max(0, (trade.quantity || 0) - sold);
+    },
+
+    /** 
+     * 计算一笔卖出的配对利润
+     * @returns {{ profit, qty, buyPrice, sellPrice, fees }} or null
+     */
+    getSellPairInfo(sellIdx) {
+        const t = _trades[sellIdx];
+        if (!t || (t.trade_type || t.type) !== 'SELL') return null;
+
+        let pairQty = t.pair_quantity || 0;
+        let pairBuyPrice = t.pair_buy_price || 0;
+        let pairSellPrice = t.pair_sell_price || t.price;
+        let pairFee = t.pair_fee || 0;
+        let profit = t.pair_profit || 0;
+
+        // 如果已有有效配对数据，直接返回
+        if (pairQty > 0 && t.pair_profit !== undefined) {
+            return { profit, qty: pairQty, buyPrice: pairBuyPrice, sellPrice: pairSellPrice, fees: pairFee };
+        }
+
+        // 自动配对：找同代码、时间更早的买入
+        const sellTime = t.time || t.timestamp || 0;
+        const sellQty = t.quantity || 0;
+        if (sellQty <= 0) return null;
+
+        // 如果有 pair_buy_index，优先用
+        if (t.pair_buy_index !== undefined && t.pair_buy_index !== null) {
+            const buyTrade = _trades[t.pair_buy_index];
+            if (buyTrade && (buyTrade.trade_type || buyTrade.type) === 'BUY') {
+                pairQty = sellQty;
+                pairBuyPrice = buyTrade.price;
+                pairSellPrice = t.price;
+                const buyFees = calcTradeFees(pairBuyPrice * pairQty, 'BUY');
+                const sellFees = calcTradeFees(pairSellPrice * pairQty, 'SELL');
+                pairFee = buyFees.commission + buyFees.transfer + sellFees.commission + sellFees.stamp + sellFees.transfer;
+                profit = (pairSellPrice - pairBuyPrice) * pairQty - pairFee;
+                return { profit, qty: pairQty, buyPrice: pairBuyPrice, sellPrice: pairSellPrice, fees: pairFee };
+            }
+        }
+
+        // 按时间顺序自动配对
+        let remainingQty = sellQty;
+        let totalProfit = 0;
+        const usedQty = {};
+        for (let bidx = 0; bidx < _trades.length; bidx++) {
+            if (remainingQty <= 0) break;
+            const b = _trades[bidx];
+            if ((b.trade_type || b.type) !== 'BUY' || b.code !== t.code) continue;
+            if ((b.time || b.timestamp || 0) >= sellTime) continue;
+            const used = usedQty[bidx] || 0;
+            const avail = (b.quantity || 0) - used;
+            if (avail <= 0) continue;
+            const pq = Math.min(remainingQty, avail);
+            const bf = calcTradeFees(b.price * pq, 'BUY');
+            const sf = calcTradeFees(t.price * pq, 'SELL');
+            totalProfit += (t.price - b.price) * pq - bf.commission - bf.transfer - sf.commission - sf.stamp - sf.transfer;
+            usedQty[bidx] = used + pq;
+            remainingQty -= pq;
+        }
+
+        return sellQty > 0 ? { profit: totalProfit, qty: sellQty, buyPrice: pairBuyPrice || 0, sellPrice: t.price, fees: 0 } : null;
+    },
+
+    /**
+     * 计算完整的交易统计（统一入口）
+     * @returns {{ tProfit, tCount, tWinCount, totalFee, totalBuy, totalSell, remaining, unrealizedProfit, stockProfits }}
+     */
+    calcTradeStats() {
+        let tProfit = 0, tCount = 0, tWinCount = 0, totalFee = 0;
+        let totalBuy = 0, totalSell = 0;
+        const buyQtyUsed = {};
+
+        for (const t of _trades) {
+            const type = t.trade_type || t.type;
+            const amount = (t.price || 0) * (t.quantity || 0);
+            totalFee += calcTradeFees(amount, type).total;
+            if (type === 'BUY') {
+                totalBuy += t.quantity || 0;
+            } else {
+                totalSell += t.quantity || 0;
+            }
+        }
+
+        // 计算做T利润
+        for (let i = 0; i < _trades.length; i++) {
+            const t = _trades[i];
+            if ((t.trade_type || t.type) !== 'SELL') continue;
+            const info = this.getSellPairInfo(i);
+            if (info && info.qty > 0) {
+                tProfit += info.profit;
+                tCount++;
+                if (info.profit > 0) tWinCount++;
+            }
+        }
+
+        const remaining = totalBuy - totalSell;
+        return { tProfit, tCount, tWinCount, totalFee, totalBuy, totalSell, remaining };
+    }
+};
+
 let _currentStock = null;
 let _lastSearchedStock = null; // 最后一次查询的股票，优先作为默认加载
 let _watchList = [];
@@ -3437,25 +3613,25 @@ function showProfitDetail(type) {
         const allTrades = [..._trades].sort((a, b) => (b.time || 0) - (a.time || 0));
         let listHtml = '';
         if (allTrades.length > 0) {
-            listHtml = allTrades.map(t => {
+            listHtml = '<table class="trade-table"><thead class="trade-table-header"><tr><th>股票</th><th>类型</th><th>价格</th><th>数量</th><th>金额</th><th>时间</th></tr></thead><tbody class="trade-table-body">';
+            listHtml += allTrades.map(t => {
                 const ttype = t.trade_type || t.type;
                 const isBuy = ttype === 'BUY';
                 const date = t.time ? new Date(t.time).toLocaleDateString('zh-CN') : '';
                 const timeStr = t.time ? new Date(t.time).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
                 const amount = (t.price || 0) * (t.quantity || 0);
-                return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-soft);">'
-                    + '<div>'
-                    + '<div style="font-size:13px;font-weight:600;">' + escapeHtml(t.name || t.code) + ' <span style="font-size:10px;color:var(--text-muted);">' + escapeHtml(t.code) + '</span></div>'
-                    + '<div style="font-size:10px;color:var(--text-muted);margin-top:2px;">' + date + ' ' + timeStr + '</div>'
-                    + '</div>'
-                    + '<div style="text-align:right;">'
-                    + '<div style="font-size:13px;font-weight:700;color:' + (isBuy ? 'var(--green)' : 'var(--red)') + '">' + (isBuy ? '买入' : '卖出') + ' ¥' + (t.price || 0).toFixed(2) + '</div>'
-                    + '<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">' + (t.quantity || 0) + '股 · 金额¥' + amount.toFixed(2) + '</div>'
-                    + '</div>'
-                    + '</div>';
+                return '<tr>'
+                    + '<td><span class="trade-stock-name">' + escapeHtml(t.name || t.code) + '</span><span class="trade-stock-code">' + escapeHtml(t.code) + '</span></td>'
+                    + '<td><span class="trade-type-tag ' + (isBuy ? 'buy' : 'sell') + '">' + (isBuy ? '买入' : '卖出') + '</span></td>'
+                    + '<td class="trade-price">¥' + (t.price || 0).toFixed(2) + '</td>'
+                    + '<td>' + (t.quantity || 0) + '</td>'
+                    + '<td class="trade-amount">¥' + amount.toFixed(2) + '</td>'
+                    + '<td><span class="trade-table-time">' + date + '<br>' + timeStr + '</span></td>'
+                    + '</tr>';
             }).join('');
+            listHtml += '</tbody></table>';
         } else {
-            listHtml = '<div class="empty-state" style="padding:20px 0;"><div class="empty-state-icon">📊</div><div>暂无交易记录</div></div>';
+            listHtml = '<div class="trade-table-empty"><div class="empty-state-icon">📝</div><div>暂无交易记录</div></div>';
         }
         content += '<div style="max-height:320px;overflow-y:auto;">' + listHtml + '</div>';
     } else if (type === 'realized') {
@@ -3515,14 +3691,31 @@ function showProfitDetail(type) {
         content += '<div style="max-height:300px;overflow-y:auto;">' + listHtml + '</div>';
     } else if (type === 't') {
         title = '做T收益明细';
-        const tTrades = _trades.filter(t => t.pair_profit !== undefined && (t.pair_quantity || 0) > 0);
-        const sorted = [...tTrades].sort((a, b) => (b.pair_time || 0) - (a.pair_time || 0));
+        // 【修复】包含 pair_quantity=0 的交易，自动计算利润
+        const tTrades = _trades.filter(t => {
+            const type = t.trade_type || t.type;
+            if (type !== 'SELL') return false;
+            if (t.pair_profit !== undefined && (t.pair_quantity || 0) > 0) return true;
+            if (t.pair_buy_index !== undefined && t.pair_buy_index !== null && (t.quantity || 0) > 0) return true;
+            return false;
+        });
+        const sorted = [...tTrades].sort((a, b) => (b.pair_time || b.timestamp || 0) - (a.pair_time || a.timestamp || 0));
         let listHtml = '';
         if (sorted.length > 0) {
             listHtml = sorted.map(tt => {
-                const profit = tt.pair_profit || 0;
-                const date = tt.pair_time ? new Date(tt.pair_time).toLocaleDateString('zh-CN') : (tt.time ? new Date(tt.time).toLocaleDateString('zh-CN') : '');
-                return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-soft);"><div><div style="font-size:13px;font-weight:600;">' + escapeHtml(tt.name || tt.code) + '</div><div style="font-size:10px;color:var(--text-muted);">' + date + ' · ' + (tt.pair_quantity || 0) + '股</div></div><div style="font-size:14px;font-weight:700;' + colorCls(profit) + '">' + fmtMoney(profit) + '</div></div>';
+                let profit = tt.pair_profit || 0;
+                let qty = tt.pair_quantity || 0;
+                if (qty <= 0 && tt.pair_buy_index !== undefined && tt.pair_buy_index !== null) {
+                    qty = tt.quantity || 0;
+                    const buyTrade = _trades[tt.pair_buy_index];
+                    if (buyTrade) {
+                        const buyFees = calcTradeFees(buyTrade.price * qty, 'BUY');
+                        const sellFees = calcTradeFees(tt.price * qty, 'SELL');
+                        profit = (tt.price - buyTrade.price) * qty - buyFees.commission - buyFees.transfer - sellFees.commission - sellFees.stamp - sellFees.transfer;
+                    }
+                }
+                const date = tt.pair_time ? new Date(tt.pair_time).toLocaleDateString('zh-CN') : (tt.timestamp ? new Date(tt.timestamp).toLocaleDateString('zh-CN') : '');
+                return '<div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid var(--border-soft);"><div><div style="font-size:13px;font-weight:600;">' + escapeHtml(tt.name || tt.code) + '</div><div style="font-size:10px;color:var(--text-muted);">' + date + ' · ' + qty + '股</div></div><div style="font-size:14px;font-weight:700;' + colorCls(profit) + '">' + fmtMoney(profit) + '</div></div>';
             }).join('');
         } else {
             listHtml = '<div class="empty-state" style="padding:20px 0;"><div class="empty-state-icon">⚡</div><div>暂无做T记录</div></div>';
@@ -4153,7 +4346,7 @@ function renderStrategyDetailSection(strategies) {
             const scoreSignal = document.getElementById('aiScoreSignal');
             if (scoreRing && scoreValue && scoreSignal) {
                 const clampedScore = Math.max(-100, Math.min(100, fusion.score));
-                const color = clampedScore > 0 ? 'var(--green)' : (clampedScore < 0 ? 'var(--red)' : 'var(--accent)');
+                const color = clampedScore > 0 ? 'var(--red)' : (clampedScore < 0 ? 'var(--green)' : 'var(--accent)');
                 const deg = Math.abs(clampedScore) * 0.9; // 0~90
                 const colorStop = 90 + deg;
                 const surfaceStop = 180;
@@ -4188,7 +4381,7 @@ function renderStrategyDetailSection(strategies) {
                                 <div class="ai-component-track ${isPositive ? 'positive' : 'negative'}" 
                                      style="width:${width}%"></div>
                             </div>
-                            <div class="ai-component-value" style="color:${isPositive ? 'var(--green)' : 'var(--red)'}">
+                            <div class="ai-component-value" style="color:${isPositive ? 'var(--red)' : 'var(--green)'}">
                                 ${isPositive ? '+' : ''}${c.score.toFixed(0)}
                             </div>
                         </div>
@@ -4218,7 +4411,7 @@ function renderStrategyDetailSection(strategies) {
                 if (ai.regression) {
                     regDesc.innerText = `预期变化${ai.regression.predicted_change > 0 ? '+' : ''}${ai.regression.predicted_change}%，置信度${ai.regression.confidence}%`;
                     regTag.innerText = ai.regression.predicted_change > 0.5 ? '看多' : (ai.regression.predicted_change < -0.5 ? '看空' : '中性');
-                    regTag.style.color = ai.regression.predicted_change > 0.5 ? 'var(--green)' : (ai.regression.predicted_change < -0.5 ? 'var(--red)' : 'var(--accent)');
+                    regTag.style.color = ai.regression.predicted_change > 0.5 ? 'var(--red)' : (ai.regression.predicted_change < -0.5 ? 'var(--green)' : 'var(--accent)');
                     regTag.style.background = ai.regression.predicted_change > 0.5 ? 'rgba(52, 211, 153, 0.15)' : (ai.regression.predicted_change < -0.5 ? 'rgba(239, 68, 68, 0.15)' : 'var(--accent-glow)');
                 } else {
                     regDesc.innerText = '训练数据不足';
@@ -4780,6 +4973,12 @@ function _sanitizeTrade(t) {
         date: t.date || '',
         fee: Math.max(0, parseFloat(t.fee) || 0),
         pair_buy_index: t.pair_buy_index != null ? t.pair_buy_index : null,
+        pair_quantity: t.pair_quantity != null ? Math.max(0, parseInt(t.pair_quantity, 10) || 0) : undefined,
+        pair_profit: t.pair_profit != null ? parseFloat(t.pair_profit) || 0 : undefined,
+        pair_buy_price: t.pair_buy_price != null ? parseFloat(t.pair_buy_price) || 0 : undefined,
+        pair_sell_price: t.pair_sell_price != null ? parseFloat(t.pair_sell_price) || 0 : undefined,
+        pair_fee: t.pair_fee != null ? parseFloat(t.pair_fee) || 0 : undefined,
+        pair_time: t.pair_time != null ? parseInt(t.pair_time, 10) || 0 : undefined,
         timestamp: t.timestamp ? parseInt(t.timestamp, 10) || 0 : 0,
         note: t.note || ''
     };
@@ -4878,121 +5077,277 @@ async function renderTrades() {
     }
     
     if (tradeList) {
-        tradeList.innerHTML = _trades.map((t, idx) => {
+        const usedSellIndices = new Set();
+        const completedPairs = [];
+
+        _trades.forEach((t, idx) => {
             const type = t.trade_type || t.type;
-            const isBuy = type === 'BUY';
-            const remaining = isBuy ? getTradeRemaining(idx) : 0;
-            const isPaired = t.pair_buy_index !== undefined;
-            const amount = t.price * t.quantity;
-            const fees = calcTradeFees(amount, type);
-            const totalFee = fees.total;
-            
-            let feeInfo = `
-                <div style="font-size:10px;color:var(--text-muted);margin-top:2px;padding:4px 6px;background:var(--surface-3);border-radius:4px;">
-                    <span>金额 ¥${amount.toFixed(2)}</span>
-                    <span style="margin-left:8px;color:var(--red);">手续费 ¥${totalFee.toFixed(2)}</span>
-                    ${isBuy ? '' : `<span style="margin-left:4px;">(印花税¥${fees.stamp.toFixed(2)})</span>`}
-                </div>
-            `;
-            
-            let pairInfo = '';
-            if (isPaired && !isBuy) {
-                const pairQty = t.pair_quantity || 0;
-                const pairBuyPrice = t.pair_buy_price || 0;
-                const pairSellPrice = t.pair_sell_price || t.price;
-                const pairFee = t.pair_fee || 0;
-                const profit = t.pair_profit || 0;
-                const buyAmount = pairBuyPrice * pairQty;
-                const grossProfit = (pairSellPrice - pairBuyPrice) * pairQty;
-                const profitPercent = buyAmount > 0 ? (profit / buyAmount) * 100 : 0;
-                const isProfit = profit >= 0;
-                const buyFees = calcTradeFees(buyAmount, 'BUY');
-                const buyFee = buyFees.commission + buyFees.transfer;
-                const sellFee = pairFee - buyFee;
-                
-                if (pairQty > 0) {
-                    pairInfo = `
-                        <div style="margin-top:8px;padding:10px;background:${isProfit ? 'rgba(52,211,153,0.08)' : 'rgba(239,68,68,0.08)'};border-radius:8px;border-left:3px solid ${isProfit ? 'var(--green)' : 'var(--red)'};">
-                            <div style="font-size:12px;font-weight:700;color:${isProfit ? 'var(--green)' : 'var(--red)'};margin-bottom:6px;">
-                                🔗 做T收益（${pairQty}股）：${isProfit ? '+' : ''}¥${profit.toFixed(2)} (${isProfit ? '+' : ''}${profitPercent.toFixed(2)}%)
-                            </div>
-                            <div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px;">
-                                买入价 ¥${pairBuyPrice.toFixed(2)} → 卖出价 ¥${pairSellPrice.toFixed(2)}，差价 ¥${(pairSellPrice - pairBuyPrice).toFixed(2)}
-                            </div>
-                            <div style="font-size:10px;color:var(--text-muted);padding-top:4px;border-top:1px solid var(--surface-active);">
-                                <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
-                                    <span>毛利：</span>
-                                    <span style="color:${isProfit ? 'var(--green)' : 'var(--red)'};">${isProfit ? '+' : ''}¥${grossProfit.toFixed(2)}</span>
-                                </div>
-                                <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
-                                    <span>手续费（买入）：</span>
-                                    <span style="color:var(--red);">-¥${buyFee.toFixed(2)}</span>
-                                </div>
-                                <div style="display:flex;justify-content:space-between;margin-bottom:2px;">
-                                    <span>手续费（卖出）：</span>
-                                    <span style="color:var(--red);">-¥${sellFee.toFixed(2)}</span>
-                                </div>
-                                <div style="display:flex;justify-content:space-between;font-weight:600;padding-top:2px;">
-                                    <span>净收益：</span>
-                                    <span style="color:${isProfit ? 'var(--green)' : 'var(--red)'};">${isProfit ? '+' : ''}¥${profit.toFixed(2)}</span>
-                                </div>
-                            </div>
-                        </div>
-                    `;
+            if (type === 'BUY') {
+                const sells = [];
+                _trades.forEach((s, sidx) => {
+                    const stype = s.trade_type || s.type;
+                    if (stype === 'SELL' && s.pair_buy_index === idx && !usedSellIndices.has(sidx)) {
+                        sells.push({ sellIdx: sidx, trade: s });
+                        usedSellIndices.add(sidx);
+                    }
+                });
+                if (sells.length > 0) {
+                    completedPairs.push({ buyIdx: idx, buyTrade: t, sells });
                 }
             }
-            
-            let remainingInfo = '';
-            if (isBuy && remaining > 0) {
-                remainingInfo = `<div style="font-size:11px;color:var(--accent);margin-top:4px;">📊 剩余可卖：${remaining}股 / ${t.quantity}股</div>`;
-            } else if (isBuy && remaining === 0 && t.quantity > 0) {
-                remainingInfo = `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">✓ 已全部卖出</div>`;
+        });
+
+        // 自动配对：将未配对的卖出与同代码的早期买入按时间顺序配对
+        const usedBuyQty = {}; // buyIdx -> 已配对数量
+        // 先统计显式配对已用掉的买入数量
+        completedPairs.forEach(p => {
+            let usedQty = 0;
+            p.sells.forEach(s => {
+                usedQty += s.trade.pair_quantity || s.trade.quantity || 0;
+            });
+            usedBuyQty[p.buyIdx] = usedQty;
+        });
+
+        const orphanSells = [];
+        _trades.forEach((t, idx) => {
+            const type = t.trade_type || t.type;
+            if (type === 'SELL' && !usedSellIndices.has(idx) && t.pair_buy_index === undefined) {
+                // 尝试自动配对：找同代码、时间更早的买入
+                const sellTime = t.time || t.timestamp || 0;
+                const sellQty = t.quantity || 0;
+                let remainingQty = sellQty;
+                const autoPairs = [];
+
+                // 按时间正序遍历买入
+                _trades.forEach((b, bidx) => {
+                    if (remainingQty <= 0) return;
+                    const btype = b.trade_type || b.type;
+                    if (btype !== 'BUY' || b.code !== t.code) return;
+                    const bTime = b.time || b.timestamp || 0;
+                    if (bTime >= sellTime) return; // 买入必须早于卖出
+                    const used = usedBuyQty[bidx] || 0;
+                    const availQty = (b.quantity || 0) - used;
+                    if (availQty <= 0) return;
+                    const pairQty = Math.min(remainingQty, availQty);
+                    const buyPrice = b.price;
+                    const buyAmount = buyPrice * pairQty;
+                    const sellAmount = t.price * pairQty;
+                    const buyFees = calcTradeFees(buyAmount, 'BUY');
+                    const sellFees = calcTradeFees(sellAmount, 'SELL');
+                    const totalFee = buyFees.commission + buyFees.transfer + sellFees.commission + sellFees.stamp + sellFees.transfer;
+                    const profit = (t.price - buyPrice) * pairQty - totalFee;
+                    autoPairs.push({
+                        sellIdx: idx,
+                        trade: t,
+                        autoBuyIdx: bidx,
+                        autoBuyTrade: b,
+                        autoPairQty: pairQty,
+                        autoProfit: profit
+                    });
+                    usedBuyQty[bidx] = used + pairQty;
+                    remainingQty -= pairQty;
+                });
+
+                if (autoPairs.length > 0) {
+                    // 有自动配对，按买入分组加入completedPairs
+                    const byBuy = {};
+                    autoPairs.forEach(ap => {
+                        if (!byBuy[ap.autoBuyIdx]) byBuy[ap.autoBuyIdx] = [];
+                        byBuy[ap.autoBuyIdx].push(ap);
+                    });
+                    Object.entries(byBuy).forEach(([buyIdx, pairs]) => {
+                        const bidx = parseInt(buyIdx);
+                        const existingPair = completedPairs.find(p => p.buyIdx === bidx);
+                        if (existingPair) {
+                            pairs.forEach(ap => {
+                                existingPair.sells.push({
+                                    sellIdx: ap.sellIdx,
+                                    trade: ap.trade,
+                                    _autoPairQty: ap.autoPairQty,
+                                    _autoProfit: ap.autoProfit
+                                });
+                            });
+                        } else {
+                            completedPairs.push({
+                                buyIdx: bidx,
+                                buyTrade: _trades[bidx],
+                                sells: pairs.map(ap => ({
+                                    sellIdx: ap.sellIdx,
+                                    trade: ap.trade,
+                                    _autoPairQty: ap.autoPairQty,
+                                    _autoProfit: ap.autoProfit
+                                }))
+                            });
+                        }
+                    });
+                    usedSellIndices.add(idx);
+                } else {
+                    // 真正无法配对的卖出
+                    orphanSells.push({ sellIdx: idx, trade: t });
+                    usedSellIndices.add(idx);
+                }
             }
-            
-            return `
-                <div class="trade-item" onclick="showTradeDetail(${idx})" style="cursor:pointer;">
-                    <div class="trade-header">
-                        <span class="trade-stock">${escapeHtml(t.name || t.code)}</span>
-                        <span class="trade-type ${type.toLowerCase()}">${isBuy ? '买入' : '卖出'}</span>
-                        <button onclick="event.stopPropagation();deleteTrade(${idx})" style="margin-left:auto;background:rgba(239,68,68,0.15);color:var(--red);border:none;border-radius:6px;padding:4px 10px;cursor:pointer;font-size:11px;">删除</button>
+        });
+
+        completedPairs.sort((a, b) => {
+            const aTime = (b.sells[0]?.trade?.time || b.sells[0]?.trade?.timestamp || 0);
+            const bTime = (a.sells[0]?.trade?.time || a.sells[0]?.trade?.timestamp || 0);
+            return aTime - bTime;
+        });
+
+        // 【新增】未结算买入（有持仓但未卖出的买入记录）
+        const unmatchedBuys = [];
+        const buyUsedQty = {};
+        completedPairs.forEach(p => {
+            let used = 0;
+            p.sells.forEach(s => {
+                used += s._autoPairQty || s.trade.pair_quantity || s.trade.quantity || 0;
+            });
+            buyUsedQty[p.buyIdx] = used;
+        });
+        _trades.forEach((t, idx) => {
+            const type = t.trade_type || t.type;
+            if (type !== 'BUY') return;
+            const totalQty = t.quantity || 0;
+            const used = buyUsedQty[idx] || 0;
+            const remaining = totalQty - used;
+            if (remaining > 0) {
+                unmatchedBuys.push({ idx, trade: t, remaining });
+            }
+        });
+
+        let html = '<div class="trade-group-list">';
+
+        // 未结算持仓放最前面
+        if (unmatchedBuys.length > 0) {
+            html += '<div class="trade-section-title">📦 未结算持仓 (' + unmatchedBuys.length + ')</div>';
+            unmatchedBuys.forEach(u => {
+                const t = u.trade;
+                const amount = (t.price || 0) * u.remaining;
+                const timeStr = (t.time || t.timestamp) ? new Date(t.time || t.timestamp).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+                html += '<div class="trade-pair-card">'
+                    + '<div class="trade-pair-row">'
+                    + '<span class="trade-type-tag buy">买入</span>'
+                    + '<span class="trade-stock-name">' + escapeHtml(t.name || t.code) + '</span>'
+                    + '<span class="trade-stock-code">' + escapeHtml(t.code) + '</span>'
+                    + '<span class="trade-pair-price">¥' + (t.price || 0).toFixed(2) + ' × ' + u.remaining + '股</span>'
+                    + '<span class="trade-pair-amount">¥' + amount.toFixed(2) + '</span>'
+                    + '<span class="trade-pair-time">' + timeStr + '</span>'
+                    + '</div></div>';
+            });
+        }
+
+        if (completedPairs.length > 0) {
+            html += '<div class="trade-section-title">✅ 已完成做T (' + completedPairs.length + ')</div>';
+            completedPairs.forEach(p => {
+                const buy = p.buyTrade;
+                const buyAmount = (buy.price || 0) * (buy.quantity || 0);
+                const buyTime = buy.time || buy.timestamp;
+                const buyTimeStr = buyTime ? new Date(buyTime).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+
+                let totalProfit = 0;
+                let totalQty = 0;
+                p.sells.forEach(s => {
+                    if (s._autoProfit !== undefined) {
+                        totalProfit += s._autoProfit;
+                        totalQty += s._autoPairQty || 0;
+                    } else {
+                        const sellQty = s.trade.pair_quantity || s.trade.quantity || 0;
+                        totalQty += sellQty;
+                        // pair_profit 存在就用，否则根据买卖价差实时计算
+                        if (s.trade.pair_profit !== undefined && s.trade.pair_profit !== null) {
+                            totalProfit += s.trade.pair_profit;
+                        } else if (sellQty > 0) {
+                            const buyPrice = buy.price || 0;
+                            const sellPrice = s.trade.price || 0;
+                            const buyFees = calcTradeFees(buyPrice * sellQty, 'BUY');
+                            const sellFees = calcTradeFees(sellPrice * sellQty, 'SELL');
+                            totalProfit += (sellPrice - buyPrice) * sellQty - buyFees.commission - buyFees.transfer - sellFees.commission - sellFees.stamp - sellFees.transfer;
+                        }
+                    }
+                });
+
+                const isProfit = totalProfit >= 0;
+                const sellTime = p.sells[0].trade.time || p.sells[0].trade.timestamp;
+                const holdDays = (buyTime && sellTime) ? Math.max(1, Math.ceil((sellTime - buyTime) / 86400000)) : 1;
+                const profitPercent = buyAmount > 0 ? (totalProfit / buyAmount * 100).toFixed(2) : '0';
+
+                html += `<div class="trade-pair-card ${isProfit ? 'profit' : 'loss'}">
+                    <div class="trade-pair-summary">
+                        <span class="trade-stock-name">${escapeHtml(buy.name || buy.code)}</span>
+                        <span class="trade-stock-code">${escapeHtml(buy.code)}</span>
+                        <span class="trade-pair-hold-days">持有${holdDays}天 · ${totalQty}股</span>
+                        <span class="trade-pair-profit" style="color:${isProfit ? 'var(--red)' : 'var(--green)'};">${isProfit ? '+' : ''}¥${totalProfit.toFixed(2)} (${isProfit ? '+' : ''}${profitPercent}%)</span>
                     </div>
-                    <div class="trade-info">
-                        <span>${escapeHtml(t.code)}</span>
-                        <span>¥${(t.price || 0).toFixed(2)} × ${(t.quantity || 0)}股</span>
+                    <div class="trade-pair-row" onclick="showTradeDetail(${p.buyIdx})" style="cursor:pointer;">
+                        <span class="trade-type-tag buy">买入</span>
+                        <span class="trade-pair-price">¥${(buy.price || 0).toFixed(2)} × ${buy.quantity}股</span>
+                        <span class="trade-pair-amount">¥${buyAmount.toFixed(2)}</span>
+                        <span class="trade-pair-time">${buyTimeStr}</span>
+                    </div>`;
+
+                p.sells.forEach(s => {
+                    const sell = s.trade;
+                    const sellQty = s._autoPairQty || sell.pair_quantity || sell.quantity || 0;
+                    const sellAmount = (sell.price || 0) * sellQty;
+                    let sellProfit;
+                    if (s._autoProfit !== undefined) {
+                        sellProfit = s._autoProfit;
+                    } else if (sell.pair_profit !== undefined && sell.pair_profit !== null) {
+                        sellProfit = sell.pair_profit;
+                    } else if (sellQty > 0) {
+                        const buyPrice = buy.price || 0;
+                        const sellPrice = sell.price || 0;
+                        const buyFees = calcTradeFees(buyPrice * sellQty, 'BUY');
+                        const sellFees = calcTradeFees(sellPrice * sellQty, 'SELL');
+                        sellProfit = (sellPrice - buyPrice) * sellQty - buyFees.commission - buyFees.transfer - sellFees.commission - sellFees.stamp - sellFees.transfer;
+                    } else {
+                        sellProfit = 0;
+                    }
+                    const sellTimeStr = (sell.time || sell.timestamp) ? new Date(sell.time || sell.timestamp).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+                    html += `<div class="trade-pair-row" onclick="showTradeDetail(${s.sellIdx})" style="cursor:pointer;">
+                        <span class="trade-type-tag sell">卖出</span>
+                        <span class="trade-pair-price">¥${(sell.price || 0).toFixed(2)} × ${sellQty}股</span>
+                        <span class="trade-pair-amount">¥${sellAmount.toFixed(2)}</span>
+                        <span class="trade-pair-time">${sellTimeStr}</span>
+                        <span class="trade-pair-profit" style="margin-left:8px;font-size:12px;color:${sellProfit >= 0 ? 'var(--red)' : 'var(--green)'};">${sellProfit >= 0 ? '+' : ''}¥${sellProfit.toFixed(2)}</span>
+                        <button onclick="event.stopPropagation();deleteTrade(${s.sellIdx})" class="trade-mini-btn">删</button>
+                    </div>`;
+                });
+
+                html += '</div>';
+            });
+        }
+
+        if (orphanSells.length > 0) {
+            html += '<div class="trade-section-title">📋 其他卖出 (' + orphanSells.length + ')</div>';
+            orphanSells.forEach(s => {
+                const t = s.trade;
+                const amount = (t.price || 0) * (t.quantity || 0);
+                const timeStr = (t.time || t.timestamp) ? new Date(t.time || t.timestamp).toLocaleDateString('zh-CN') : '';
+                html += `<div class="trade-pair-card">
+                    <div class="trade-pair-row" onclick="showTradeDetail(${s.sellIdx})" style="cursor:pointer;">
+                        <span class="trade-type-tag sell">卖出</span>
+                        <span class="trade-stock-name">${escapeHtml(t.name || t.code)}</span>
+                        <span class="trade-stock-code">${escapeHtml(t.code)}</span>
+                        <span class="trade-pair-price">¥${(t.price || 0).toFixed(2)} × ${t.quantity}股</span>
+                        <span class="trade-pair-amount">¥${amount.toFixed(2)}</span>
+                        <span class="trade-pair-time">${timeStr}</span>
+                        <button onclick="event.stopPropagation();deleteTrade(${s.sellIdx})" class="trade-mini-btn">删</button>
                     </div>
-                    ${feeInfo}
-                    ${remainingInfo}
-                    ${pairInfo}
-                    ${t.note ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">📝 ${escapeHtml(t.note)}</div>` : ''}
-                    <div class="trade-time">${new Date(t.timestamp || t.date).toLocaleString('zh-CN')}</div>
-                </div>
-            `;
-        }).join('');
+                </div>`;
+            });
+        }
+
+        if (completedPairs.length === 0 && orphanSells.length === 0) {
+            html = '<div class="trade-table-empty"><div class="empty-state-icon">📝</div><div>暂无交易记录</div></div>';
+        }
+        
+        html += '</div>';
+        tradeList.innerHTML = html;
     }
     
-    const holdings = {};
-    _trades.forEach(t => {
-        const type = t.trade_type || t.type;
-        if (!holdings[t.code]) {
-            holdings[t.code] = { qty: 0, cost: 0, name: t.name || t.code };
-        } else if (t.name && t.name !== t.code) {
-            holdings[t.code].name = t.name;
-        }
-        if (type === 'BUY') {
-            const amount = t.price * t.quantity;
-            const fees = calcTradeFees(amount, 'BUY');
-            holdings[t.code].qty += t.quantity;
-            holdings[t.code].cost += amount + fees.commission + fees.transfer;
-        } else if (type === 'SELL') {
-            if (holdings[t.code].qty > 0) {
-                const avgCost = holdings[t.code].cost / holdings[t.code].qty;
-                const sellQty = Math.min(t.quantity, holdings[t.code].qty);
-                const sellCost = avgCost * sellQty;
-                holdings[t.code].cost -= sellCost;
-                holdings[t.code].qty -= sellQty;
-            }
-        }
-    });
+    const holdings = TradeManager.getAllHoldings();
     
     let holdingsHtml = '';
     let hasHoldings = false;
@@ -5000,7 +5355,7 @@ async function renderTrades() {
     for (const [code, info] of Object.entries(holdings)) {
         if (info.qty > 0) {
             hasHoldings = true;
-            const avgCost = info.cost / info.qty;
+            const avgCost = info.avgCost;
             holdingsCodes.push(code);
             
             holdingsHtml += `
@@ -5018,9 +5373,12 @@ async function renderTrades() {
     }
     
     if (holdingsList) {
+        // 找到持仓卡片的父元素，没持仓时隐藏整个卡片
+        const holdingsCard = holdingsList.closest('.card');
         if (!hasHoldings) {
-            holdingsList.innerHTML = '<div class="empty-state"><div class="empty-state-icon">💹</div><div>暂无持仓记录</div><button onclick="openAddTradeModal()" class="btn btn-primary" style="margin-top:12px;width:auto;padding:10px 24px;">添加买入</button></div>';
+            if (holdingsCard) holdingsCard.style.display = 'none';
         } else {
+            if (holdingsCard) holdingsCard.style.display = '';
             holdingsList.innerHTML = holdingsHtml;
             
             // 异步获取持仓股票的价格并更新盈亏显示（分批控制，避免大量并发请求）
@@ -5057,32 +5415,83 @@ async function renderTrades() {
 }
 
 function refreshTradeStats() {
-    let tProfit = 0;
-    let tCount = 0;
-    let totalFee = 0;
+    const stats = TradeManager.calcTradeStats();
+    const holdings = TradeManager.getAllHoldings();
     
-    _trades.forEach(t => {
-        const type = t.trade_type || t.type;
-        const amount = t.price * t.quantity;
-        const fees = calcTradeFees(amount, type);
-        totalFee += fees.total;
-        
-        if (type === 'SELL' && t.pair_profit !== undefined) {
-            tProfit += t.pair_profit;
-            tCount++;
-        }
-    });
-    
-    const tProfitEl = document.getElementById('tradeTProfit');
-    const tCountEl = document.getElementById('tradeTCount');
-    const totalFeeEl = document.getElementById('tradeTotalFee');
-    
-    if (tProfitEl) {
-        tProfitEl.textContent = (tProfit >= 0 ? '+' : '') + '¥' + tProfit.toFixed(2);
-        tProfitEl.className = 'profit-value ' + (tProfit >= 0 ? 'positive' : 'negative');
+    // 计算未结算收益（持仓浮盈）
+    let unrealizedProfit = 0;
+    for (const [code, info] of Object.entries(holdings)) {
+        if (info.qty <= 0) continue;
+        // 用 _profitDetail 中的实时价格（如果有），否则用成本价
+        const stockData = (_profitDetail.stockProfits || []).find(s => s.code === code);
+        const currentPrice = stockData ? stockData.current_price : info.avgCost;
+        unrealizedProfit += (currentPrice - info.avgCost) * info.qty;
     }
-    if (tCountEl) tCountEl.textContent = tCount + '次';
-    if (totalFeeEl) totalFeeEl.textContent = '¥' + totalFee.toFixed(2);
+    
+    // 更新UI
+    const setVal = (id, val, prefix) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.textContent = (prefix || '') + '¥' + val.toFixed(2);
+        el.className = 'profit-value';
+        el.style.color = val > 0 ? 'var(--red)' : val < 0 ? 'var(--green)' : 'var(--text-primary)';
+    };
+    
+    setVal('tradeTProfit', stats.tProfit, stats.tProfit >= 0 ? '+' : '');
+    setVal('tradeTUnrealized', unrealizedProfit, unrealizedProfit >= 0 ? '+' : '');
+    
+    const tCountEl = document.getElementById('tradeTCount');
+    if (tCountEl) tCountEl.textContent = stats.tCount + '次';
+    const totalFeeEl = document.getElementById('tradeTotalFee');
+    if (totalFeeEl) totalFeeEl.textContent = '¥' + stats.totalFee.toFixed(2);
+}
+
+// 【修复】构建配对收益明细HTML（兼容 pair_quantity=0）
+function _buildPairDetailHtml(t) {
+    let pairQty = t.pair_quantity || 0;
+    let pairBuyPrice = t.pair_buy_price || 0;
+    let pairSellPrice = t.pair_sell_price || t.price;
+    let pairFee = t.pair_fee || 0;
+    let profit = t.pair_profit || 0;
+    
+    if (pairQty <= 0 && t.pair_buy_index !== undefined && t.pair_buy_index !== null) {
+        const buyTrade = _trades[t.pair_buy_index];
+        if (buyTrade && (buyTrade.trade_type || buyTrade.type) === 'BUY') {
+            pairQty = t.quantity || 0;
+            pairBuyPrice = buyTrade.price;
+            pairSellPrice = t.price;
+            const buyFees = calcTradeFees(pairBuyPrice * pairQty, 'BUY');
+            const sellFees = calcTradeFees(pairSellPrice * pairQty, 'SELL');
+            pairFee = buyFees.commission + buyFees.transfer + sellFees.commission + sellFees.stamp + sellFees.transfer;
+            profit = (pairSellPrice - pairBuyPrice) * pairQty - pairFee;
+        }
+    }
+    
+    if (pairQty <= 0) return '';
+    
+    const buyAmount = pairBuyPrice * pairQty;
+    const grossProfit = (pairSellPrice - pairBuyPrice) * pairQty;
+    const profitPercent = buyAmount > 0 ? (profit / buyAmount) * 100 : 0;
+    const isProfit = profit >= 0;
+    const buyFee = Math.max(buyAmount * 0.0003, 5) + buyAmount * 0.00001;
+    const sellFee = Math.max(0, pairFee - buyFee);
+    const profitColor = isProfit ? 'var(--red)' : 'var(--green)';
+    const bgColor = isProfit ? 'rgba(239,68,68,0.08)' : 'rgba(34,197,94,0.08)';
+    
+    return '<div style="background:' + bgColor + ';border-radius:12px;padding:16px;border-left:4px solid ' + profitColor + ';">'
+        + '<div style="font-size:13px;font-weight:700;color:' + profitColor + ';margin-bottom:12px;">🔗 做T收益明细（' + pairQty + '股）</div>'
+        + '<div style="font-size:12px;margin-bottom:12px;padding:10px;background:var(--surface-3);border-radius:8px;">'
+        + '<div style="display:flex;justify-content:space-between;margin-bottom:6px;"><span style="color:var(--text-muted);">配对买入</span><span>¥' + pairBuyPrice.toFixed(2) + ' × ' + pairQty + '股</span></div>'
+        + '<div style="display:flex;justify-content:space-between;"><span style="color:var(--text-muted);">配对卖出</span><span>¥' + pairSellPrice.toFixed(2) + ' × ' + pairQty + '股</span></div>'
+        + '</div>'
+        + '<div style="font-size:12px;padding:10px;background:var(--bg-inset);border-radius:8px;">'
+        + '<div style="display:flex;justify-content:space-between;margin-bottom:4px;"><span>差价收益</span><span style="color:' + profitColor + ';">' + (isProfit ? '+' : '') + '¥' + grossProfit.toFixed(2) + '</span></div>'
+        + '<div style="display:flex;justify-content:space-between;margin-bottom:4px;"><span style="color:var(--text-muted);">买入手续费</span><span style="color:var(--red);">-¥' + buyFee.toFixed(2) + '</span></div>'
+        + '<div style="display:flex;justify-content:space-between;margin-bottom:4px;"><span style="color:var(--text-muted);">卖出手续费</span><span style="color:var(--red);">-¥' + sellFee.toFixed(2) + '</span></div>'
+        + '</div>'
+        + '<div style="display:flex;justify-content:space-between;margin-top:12px;padding-top:12px;border-top:2px solid var(--border-soft);font-weight:700;font-size:16px;">'
+        + '<span>净收益</span><span style="color:' + profitColor + ';">' + (isProfit ? '+' : '') + '¥' + profit.toFixed(2) + ' (' + (isProfit ? '+' : '') + profitPercent.toFixed(2) + '%)</span>'
+        + '</div></div>';
 }
 
 function showTradeDetail(idx) {
@@ -5145,52 +5554,7 @@ function showTradeDetail(idx) {
                 </div>
             </div>
             
-            ${t.pair_buy_index !== undefined && t.pair_quantity > 0 ? (() => {
-                const pairQty = t.pair_quantity || 0;
-                const pairBuyPrice = t.pair_buy_price || 0;
-                const pairSellPrice = t.pair_sell_price || t.price;
-                const pairFee = t.pair_fee || 0;
-                const profit = t.pair_profit || 0;
-                const buyAmount = pairBuyPrice * pairQty;
-                const grossProfit = (pairSellPrice - pairBuyPrice) * pairQty;
-                const profitPercent = buyAmount > 0 ? (profit / buyAmount) * 100 : 0;
-                const isProfit = profit >= 0;
-                const buyFee = Math.max(buyAmount * 0.0003, 5) + buyAmount * 0.00001;
-                const sellFee = Math.max(0, pairFee - buyFee);
-                return `
-                <div style="background:${isProfit ? 'rgba(52,211,153,0.08)' : 'rgba(239,68,68,0.08)'};border-radius:12px;padding:16px;border-left:4px solid ${isProfit ? 'var(--green)' : 'var(--red)'};">
-                    <div style="font-size:13px;font-weight:700;color:${isProfit ? 'var(--green)' : 'var(--red)'};margin-bottom:12px;">🔗 做T收益明细（${pairQty}股）</div>
-                    <div style="font-size:12px;margin-bottom:12px;padding:10px;background:var(--surface-3);border-radius:8px;">
-                        <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
-                            <span style="color:var(--text-muted);">配对买入</span>
-                            <span>¥${pairBuyPrice.toFixed(2)} × ${pairQty}股</span>
-                        </div>
-                        <div style="display:flex;justify-content:space-between;">
-                            <span style="color:var(--text-muted);">配对卖出</span>
-                            <span>¥${pairSellPrice.toFixed(2)} × ${pairQty}股</span>
-                        </div>
-                    </div>
-                    <div style="font-size:12px;padding:10px;background:var(--bg-inset);border-radius:8px;">
-                        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-                            <span>差价收益</span>
-                            <span style="color:${isProfit ? 'var(--green)' : 'var(--red)'};">${isProfit ? '+' : ''}¥${grossProfit.toFixed(2)}</span>
-                        </div>
-                        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-                            <span style="color:var(--text-muted);">买入手续费</span>
-                            <span style="color:var(--red);">-¥${buyFee.toFixed(2)}</span>
-                        </div>
-                        <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-                            <span style="color:var(--text-muted);">卖出手续费</span>
-                            <span style="color:var(--red);">-¥${sellFee.toFixed(2)}</span>
-                        </div>
-                    </div>
-                    <div style="display:flex;justify-content:space-between;margin-top:12px;padding-top:12px;border-top:2px solid var(--border-soft);font-weight:700;font-size:16px;">
-                        <span>净收益</span>
-                        <span style="color:${isProfit ? 'var(--green)' : 'var(--red)'};">${isProfit ? '+' : ''}¥${profit.toFixed(2)} (${isProfit ? '+' : ''}${profitPercent.toFixed(2)}%)</span>
-                    </div>
-                </div>
-                `;
-            })() : ''}
+            ${_buildPairDetailHtml(t)}
             
             ${t.note ? `
             <div style="margin-top:16px;padding:12px;background:var(--surface-3);border-radius:8px;">
@@ -5408,26 +5772,16 @@ function updatePairProfitPreview() {
     
     const isProfit = profit >= 0;
     profitEl.textContent = (isProfit ? '+' : '') + '¥' + profit.toFixed(2);
-    profitEl.style.color = isProfit ? 'var(--green)' : 'var(--red)';
+    profitEl.style.color = isProfit ? 'var(--red)' : 'var(--green)';
     percentEl.textContent = (isProfit ? '+' : '') + profitPercent.toFixed(2) + '%';
-    percentEl.style.color = isProfit ? 'var(--green)' : 'var(--red)';
+    percentEl.style.color = isProfit ? 'var(--red)' : 'var(--green)';
     
     preview.style.background = isProfit ? 'rgba(52,211,153,0.08)' : 'rgba(239,68,68,0.08)';
     preview.style.borderColor = isProfit ? 'rgba(52,211,153,0.2)' : 'rgba(239,68,68,0.2)';
 }
 
 function getTradeRemaining(idx) {
-    const trade = _trades[idx];
-    if (!trade || (trade.trade_type || trade.type) !== 'BUY') return 0;
-    
-    let sold = 0;
-    _trades.forEach(t => {
-        if ((t.trade_type || t.type) === 'SELL' && t.pair_buy_index === idx) {
-            sold += (t.pair_quantity || 0);
-        }
-    });
-    
-    return Math.max(0, (trade.quantity || 0) - sold);
+    return TradeManager.getTradeRemaining(idx);
 }
 
 function deleteTrade(idx) {
@@ -5504,27 +5858,9 @@ function deleteTrade(idx) {
 }
 
 function getHoldings(code) {
-    let qty = 0;
-    let cost = 0;
-    for (const t of _trades) {
-        if (t.code !== code) continue;
-        const type = t.trade_type || t.type;
-        const tQty = parseInt(t.quantity, 10) || 0;
-        const price = parseFloat(t.price) || 0;
-        if (type === 'BUY') {
-            qty += tQty;
-            cost += tQty * price;
-        } else if (type === 'SELL') {
-            const sellQty = Math.min(tQty, qty);
-            if (qty > 0) {
-                cost -= (cost / qty) * sellQty;
-                cost = Math.max(0, cost);
-            }
-            qty = Math.max(0, qty - tQty);
-        }
-    }
-    if (qty <= 0) return 0;
-    return { qty, cost: cost / qty };
+    const h = TradeManager.getHoldings(code);
+    if (!h) return 0;
+    return { qty: h.qty, cost: h.avgCost };
 }
 
 // 舆情页
@@ -6114,7 +6450,7 @@ function renderLongtermAnalysis(stockInfo, klines) {
                     <div style="background:rgba(0,0,0,0.25); border-radius:8px; padding:6px 8px;">
                         <div style="font-size:9px; color:var(--text-muted);">中性</div>
                         <div style="font-size:13px; font-weight:700; color:${neutral >= cp ? 'var(--green)' : 'var(--red)'};">${neutral.toFixed(2)}</div>
-                        <div style="font-size:9px; color:${neutral >= cp ? 'var(--green)' : 'var(--red)'};">${neuPct >= 0 ? '+' : ''}${neuPct}%</div>
+                        <div style="font-size:9px; color:${neutral >= cp ? 'var(--red)' : 'var(--green)'};">${neuPct >= 0 ? '+' : ''}${neuPct}%</div>
                         <div style="font-size:9px; color:var(--text-secondary); opacity:0.85; margin-top:2px;">概率 ${neuProb}%</div>
                     </div>
                     <div style="background:rgba(0,0,0,0.25); border-radius:8px; padding:6px 8px;">
@@ -6179,7 +6515,7 @@ function renderLongtermAnalysis(stockInfo, klines) {
             </div>
             <div style="text-align:center; padding:10px; background:var(--bg-inset); border-radius:8px;">
                 <div style="font-size:10px; color:var(--text-muted);">MACD</div>
-                <div style="font-size:14px; font-weight:700; color:${bar > 0 ? 'var(--green)' : 'var(--red)'};">${bar ? (bar > 0 ? '红柱' : '绿柱') : '--'}</div>
+                <div style="font-size:14px; font-weight:700; color:${bar > 0 ? 'var(--red)' : 'var(--green)'};">${bar ? (bar > 0 ? '红柱' : '绿柱') : '--'}</div>
             </div>
             <div style="text-align:center; padding:10px; background:var(--bg-inset); border-radius:8px;">
                 <div style="font-size:10px; color:var(--text-muted);">布林</div>
@@ -7060,7 +7396,9 @@ async function refreshProfit() {
         const el = document.getElementById(id);
         if (el) {
             el.textContent = `¥${val.toFixed(2)}`;
-            el.className = 'profit-value ' + (val > 0 ? 'positive' : val < 0 ? 'negative' : 'zero');
+            el.className = 'profit-value';
+            // 【修复】使用内联样式，避免被CSS文件的正负色覆盖（中国股市：红涨绿跌）
+            el.style.color = val > 0 ? 'var(--red)' : val < 0 ? 'var(--green)' : 'var(--text-primary)';
         }
     };
     
@@ -7120,7 +7458,7 @@ async function refreshProfit() {
                 <div class="stock-profit-item" id="home-holding-${idx}">
                     <div>
                         <div class="stock-profit-name">${escapeHtml(s.name)}</div>
-                        <div class="stock-profit-detail">${escapeHtml(s.code)} · ${s.quantity}股 · ¥<span id="home-price-${idx}">${s.current_price.toFixed(2)}</span></div>
+                        <div class="stock-profit-detail">${escapeHtml(s.code)} · ${s.quantity}股 · 成本¥${s.avg_cost.toFixed(2)} · 现价¥<span id="home-price-${idx}">${s.current_price.toFixed(2)}</span></div>
                     </div>
                     <div class="stock-profit-value" id="home-profit-${idx}" style="color:${s.profit >= 0 ? 'var(--red)' : 'var(--green)'}">
                         ${s.profit >= 0 ? '+' : ''}¥${s.profit.toFixed(2)}

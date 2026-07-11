@@ -399,7 +399,7 @@ body.modal-open {
 #subtab-panorama,
 #subtab-news,
 #subtab-longterm {
-    padding-bottom: calc(140px + env(safe-area-inset-bottom));
+    padding-bottom: calc(90px + env(safe-area-inset-bottom));
 }
 
 /* 交易页底部留空（学习页单独定义） */
@@ -417,7 +417,7 @@ body.modal-open {
 }
 
 #tab-settings > .card:last-child {
-    padding-bottom: calc(100px + env(safe-area-inset-bottom));
+    padding-bottom: calc(70px + env(safe-area-inset-bottom));
 }
 
 /* ==================== 策略页顶部选项卡 ==================== */
@@ -1477,6 +1477,206 @@ body.modal-open {
     border-radius: var(--radius-sm);
     font-weight: 600;
     cursor: pointer;
+}
+
+/* ==================== 交易记录表格 ==================== */
+.trade-group-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.trade-section-title {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 10px 0 6px;
+    border-bottom: 1px solid var(--border-soft);
+    margin-bottom: 4px;
+}
+
+.trade-pair-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.trade-pair-card.profit {
+    border-left: 3px solid var(--green);
+}
+
+.trade-pair-card.loss {
+    border-left: 3px solid var(--red);
+}
+
+.trade-pair-card.open-holding {
+    border-left: 3px solid var(--accent);
+}
+
+.trade-pair-summary {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 10px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border-soft);
+    flex-wrap: wrap;
+}
+
+.trade-pair-summary .trade-stock-name {
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.trade-pair-hold-days {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+
+.trade-pair-profit {
+    font-size: 13px;
+    font-weight: 700;
+    margin-left: auto;
+}
+
+.trade-pair-profit.positive { color: var(--green); }
+.trade-pair-profit.negative { color: var(--red); }
+
+.trade-pair-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 10px;
+    border-bottom: 1px solid var(--border-soft);
+    flex-wrap: wrap;
+    transition: background 0.15s;
+}
+
+.trade-pair-row:last-child {
+    border-bottom: none;
+}
+
+.trade-pair-row:hover {
+    background: var(--bg-hover);
+}
+
+.trade-pair-price {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.trade-pair-amount {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.trade-pair-time {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin-left: auto;
+}
+
+.trade-pair-status.holding {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    padding: 2px 8px;
+    background: rgba(99, 102, 241, 0.12);
+    border-radius: 10px;
+}
+
+.trade-mini-btn {
+    background: rgba(239, 68, 68, 0.1);
+    color: var(--red);
+    border: none;
+    border-radius: 4px;
+    padding: 3px 8px;
+    cursor: pointer;
+    font-size: 10px;
+    flex-shrink: 0;
+}
+
+.trade-pair-card .trade-pair-time {
+    font-size: 10px;
+    color: var(--text-muted);
+    padding: 4px 10px 6px;
+    margin: 0;
+}
+
+.trade-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.trade-table-header {
+    background: var(--bg-inset);
+    position: sticky;
+    top: 0;
+}
+
+.trade-table-header th {
+    padding: 8px 6px;
+    text-align: center;
+    font-weight: 600;
+    color: var(--text-secondary);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border-glass);
+}
+
+.trade-table-body td {
+    padding: 8px 6px;
+    text-align: center;
+    border-bottom: 1px solid var(--border-soft);
+    vertical-align: middle;
+}
+
+.trade-table-body tr:hover {
+    background: var(--bg-hover);
+}
+
+.trade-stock-name {
+    font-weight: 600;
+    font-size: 12px;
+    display: block;
+}
+
+.trade-stock-code {
+    font-size: 10px;
+    color: var(--text-muted);
+    display: block;
+    margin-top: 1px;
+}
+
+.trade-type-tag {
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 700;
+}
+
+.trade-type-tag.buy { background: rgba(239, 68, 68, 0.15); color: var(--red); }
+.trade-type-tag.sell { background: rgba(34, 197, 94, 0.15); color: var(--green); }
+
+.trade-price { font-weight: 600; }
+.trade-amount { font-weight: 500; }
+
+.trade-table-time {
+    font-size: 10px;
+    color: var(--text-muted);
+}
+
+.trade-table-empty {
+    text-align: center;
+    padding: 30px 0;
+    color: var(--text-muted);
+    font-size: 13px;
 }
 
 /* ==================== 交易记录 ==================== */
